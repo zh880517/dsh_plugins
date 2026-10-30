@@ -25,6 +25,7 @@
 | 插件 | 文档入口 | 代码目录 | 市场条目 |
 |---|---|---|---|
 | aiworkflow | [docs/plugins/aiworkflow/README.md](./plugins/aiworkflow/README.md) | `plugins/aiworkflow/` | `@aiworkflow/dsh-plugin` |
+| handoff | [docs/plugins/handoff/README.md](./plugins/handoff/README.md) | `plugins/handoff/` | `@handoff/dsh-plugin` |
 
 ## 链接规则（`npm run check:docs` 会校验）
 

@@ -1,0 +1,3 @@
+- insert:
+    - id: handoff
+      name: '@handoff/dsh-plugin'

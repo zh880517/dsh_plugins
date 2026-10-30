@@ -1,0 +1,11 @@
+{
+  "title": {
+    "en": "handoff",
+    "zh": "会话交接"
+  },
+  "description": {
+    "en": "Replace the whole conversation suffix with one reviewed handoff document, backed up to disk first.",
+    "zh": "用一份可复核的交接单替换整个会话后缀，并先把交接单落盘备份。"
+  },
+  "keywords": ["handoff", "compaction", "context", "session", "dsh"]
+}

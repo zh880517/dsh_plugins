@@ -8,6 +8,7 @@ DSH 侧就是 Plugins 里的多张卡片，各自安装、开关、卸载、升�
 | 插件 | 一句话 | 安装 | 文档 |
 |---|---|---|---|
 | aiworkflow | 把流程画成图，Agent 一次只领一步 | `git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/aiworkflow` | [docs/plugins/aiworkflow](docs/plugins/aiworkflow/README.md) |
+| handoff | 用一次摘要把整个会话后缀换成一份可复核的交接单 | `git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/handoff` | [docs/plugins/handoff](docs/plugins/handoff/README.md) |
 
 ## 安装
 

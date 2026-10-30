@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session handoff",
+    "description": "Replace the whole conversation suffix with one reviewed handoff document, backed up to disk first."
+  }
+}
