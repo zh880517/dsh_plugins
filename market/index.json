@@ -38,11 +38,11 @@
       "versions": [
         {
           "version": "0.1.5",
-          "publishTimestamp": 1793330869,
+          "publishTimestamp": 1793341524,
           "source": {
             "type": "git",
             "url": "https://github.com/zh880517/dsh_plugins",
-            "commit": "e7e715dfa76156e472ffe75d1dd64d8d50adc8b0",
+            "commit": "231eb57dd3079b75b7b1ac4742947780b6519866",
             "path": "plugins/aiworkflow"
           }
         },
@@ -54,6 +54,45 @@
             "url": "https://github.com/zh880517/AIWorkFlow",
             "commit": "dc5faf6edc10f568281ed03634086b9815458066",
             "path": "plugins/aiworkflow"
+          }
+        }
+      ]
+    },
+    {
+      "name": "@handoff/dsh-plugin",
+      "title": {
+        "en": "handoff",
+        "zh": "会话交接"
+      },
+      "description": {
+        "en": "Replace the whole conversation suffix with one reviewed handoff document, backed up to disk first.",
+        "zh": "用一份可复核的交接单替换整个会话后缀，并先把交接单落盘备份。"
+      },
+      "icon": "../plugins/handoff/icon.svg",
+      "author": "zh880517",
+      "homepage": "https://github.com/zh880517/dsh_plugins",
+      "repository": {
+        "url": "https://github.com/zh880517/dsh_plugins",
+        "directory": "plugins/handoff"
+      },
+      "metadata": {
+        "keywords": [
+          "handoff",
+          "compaction",
+          "context",
+          "session",
+          "dsh"
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1793341524,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/zh880517/dsh_plugins",
+            "commit": "231eb57dd3079b75b7b1ac4742947780b6519866",
+            "path": "plugins/handoff"
           }
         }
       ]
