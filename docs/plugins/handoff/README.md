@@ -8,7 +8,7 @@
 Agent 换人/换会话/换阶段时，需要的不是「压缩后的对话」，而是一页能复核、能接着干的交接材料。
 
 这是本仓库的第二个 DSH 插件，包目录 `plugins/handoff/`。它**不替换**用户的压缩后端，只借用同一套
-「摘要 + 替换后缀」机制自己走一遍；除 P1 的 `/handoff` 命令外，只有 P2 的一个只读草稿路由，不引入独立服务。
+「摘要 + 替换后缀」机制自己走一遍；除 `/handoff` 命令外，只有一个只读草稿路由，不引入独立服务。
 设计细节见 [design.md](./design.md)。
 
 ---
@@ -33,7 +33,16 @@ git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/handoff
 
 ## 怎么用
 
-P1 只有命令，没有按钮：
+两个入口，共用同一套守卫与摘要：
+
+**输入框左侧的「交接」按钮**（只在有活会话的会话页出现；新会话首屏没有）打开面板，两项：
+
+- **在当前会话交接**：用交接单替换整个会话后缀。客户端直接调用 `/handoff` 命令
+  （`remote.commands.execute`），与手敲完全等价；不发 composer、不 submit、不经过斜杠菜单。
+- **开启新会话交接**：向 Host 要一份只读草稿（`GET /handoff/draft`），新建会话、把交接单作为
+  首条消息发进去，再切过去；旧会话一个字节不动。
+
+**命令**：
 
 ```
 /handoff
@@ -46,19 +55,23 @@ P1 只有命令，没有按钮：
 3. 先落备份，再 `append` 一条带 `surfaceOp: replace` 的 `user/message`；
 4. 结果行告诉你「遮蔽 N 条、备份路径」。
 
-P1 的成功文案是固定的 `已交接：遮蔽 N 条，备份 <path>`，不附 token 数：取 `tokenMeter` 需要
-`import '@deepseek-ai/dsh-token-meter'`，被本仓库的层次约束（插件不得 import `@deepseek-ai/*`）禁止，
-这是既定限制，不是待做项。
+两个入口共用上面这套守卫与摘要。命令的成功文案是固定的 `已交接：遮蔽 N 条，备份 <path>`，不附 token 数：
+取 `tokenMeter` 需要 `import '@deepseek-ai/dsh-token-meter'`，被本仓库的层次约束（插件不得 import
+`@deepseek-ai/*`）禁止，这是既定限制，不是待做项。
 
 完成后当前会话只剩 system、工作区指令和交接单，原历史不再进入模型上下文；要看原文就去读备份文件。
-**P2 才会**在输入框左侧加「交接」按钮（在当前会话交接 / 开启新会话交接两项菜单）与只读草稿路由
-`GET /handoff/draft`。其中「在当前会话交接」只是把 `/handoff` 送进 composer，与手敲完全等价；
-「开启新会话交接」由 Client 用这份草稿新建会话，旧会话不动。
+
+新会话交接的 Host 端只有那个只读路由：不 append、不遮蔽、不建 session、不写备份。没有可交接的历史时
+它返回 `doc: null` / `shadowable: 0`，面板就地提示，不会拿空文本去建新会话。草稿只服务已挂载的活跃会话；
+冷会话（持久化但没在当前 DSH 里打开）返回 404，不 resume——resume 会挂载 Agent 并落事件，违反"草稿不写任何东西"。
 
 ---
 
 ## 会做什么
 
+- **两个入口，一套核心**：`/handoff` 命令与输入框按钮共用守卫、摘要与交接单生成；按钮的就地交接只是
+  把同一条命令交给客户端 `remote.commands.execute`，不另开通道。
+- **新会话交接只读**：Host 只生成草稿，不碰旧会话；新会话由 Client 建，首条消息就是交接单。
 - **整段交接**：把 `session.surface.nodes` 的全部后缀（system 之后、含所有消息与工具调用）替换成一条交接单，
   不留原文；替换区间天然是完整后缀，不会切断 tool call / result 配对。
 - **生成结构化交接单**：`# 交接：<阶段名>` + 目标 / 不变式 / 当前状态 / 关键决策 / 死路 / 下一步 / 指针七个小节。
@@ -77,6 +90,8 @@ P1 的成功文案是固定的 `已交接：遮蔽 N 条，备份 <path>`，不�
 - **不可撤销**：替换后的对话上下文无法恢复，只能从备份文件回读原文；要保留现场就在执行前自己另存。
 - **不做自动触发、不做 fork、不做「保留最近一轮」的中间挖段**。
 - **不在轮次运行中执行**：有轮次正在跑或压缩正在进行时直接拒绝。
+- **不 resume 冷会话**：草稿只服务已挂载的活跃会话，冷会话（持久化但没在当前 DSH 里打开）返回 404；
+  要交接就先把它在 DSH 里打开。
 - **不改会话日志文件**：只用 `Session.append` 写入，不直接动日志。
 
 ---
@@ -101,7 +116,8 @@ npm run check:docs                # 文档目录与链接完整性
 npm run check                     # typecheck + test + check:plugin + check:docs
 ```
 
-Host 半依赖 DSH 的 `commands`、`sessions`、`llm` 服务；P2 追加 `webServer`。装到本机 profile 后，
+Host 半依赖 DSH 的 `commands`、`sessions`、`llm`、`webServer` 服务；没有 Web 服务的组合（headless /
+SDK-minimal）里插件不激活，`/handoff` 也随之消失。装到本机 profile 后，
 改 Host 半需要让条目重新加载（`plugin_manager` 先关再开）；改 Client 半需要重新构建并重载条目。
 
 ---

@@ -1,6 +1,6 @@
 {
   "name": "@handoff/dsh-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "把整个会话后缀替换成一份可复核的交接单（会话交接）",
@@ -16,7 +16,7 @@
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": []
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
     }
   }
 }

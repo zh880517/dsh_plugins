@@ -283,35 +283,6 @@ async function summarizeForHandoff(ctx, input, agent, signal) {
 //#endregion
 //#region
 /**
-* 替换消息的引导语：告诉读这条消息的模型"此前对话已被这份交接单取代"。
-*
-* 与压缩的 checkpoint 引导语同一个用途（design.md §4.3）；`<handoff>` 包裹段由本模块
-* 拼接，备份文件里**不带**这层包裹（备份只有交接单原文）。
-*/
-var PREAMBLE = `This conversation was handed off: everything before this message has been replaced by the handoff document below.
-Treat it as established background, including its "下一步" (next steps), and continue the work from there.
-Do not ask the user to restate anything the document already records.`;
-/** design.md §4.5 的固定文案。 */
-var TEXT_BUSY = "当前有轮次正在运行或压缩正在进行，交接暂不可用。";
-var TEXT_NO_HISTORY = "没有可交接的历史。";
-var TEXT_CHANGED = "交接期间会话发生了变化，未执行。请重试。";
-var TEXT_SUMMARY_FAILED = "交接单生成失败（模型未返回有效内容），未执行。";
-var TEXT_BACKUP_FAILED = "备份写入失败，未执行交接。";
-var TEXT_CANCELLED = "交接已取消。";
-/** 取消的统一出口（`kind: 'error'`：命令失败但什么都没写）。 */
-function cancelled() {
-	return {
-		kind: "error",
-		text: TEXT_CANCELLED
-	};
-}
-/** 调用的 Agent 里取出 session；形状不对属于宿主接线错误，交给外层兜底。 */
-function sessionOf(agent) {
-	const candidate = agent !== null && typeof agent === "object" ? agent.session : void 0;
-	if (candidate === null || typeof candidate !== "object") throw new TypeError("调用现场没有关联的会话");
-	return candidate;
-}
-/**
 * surface 节点的视图（design.md §4.3 / core.ts 的输入）。
 *
 * `session.surface.nodes` 是**数字 seq 数组**，不是节点对象；这里逐个 `eventAt(seq)`
@@ -361,15 +332,6 @@ function eventViews(session) {
 	}
 	return views;
 }
-/** surface 快照比较：守卫 C 用（design.md §4.4）。 */
-function sameNodes(left, right) {
-	if (left.length !== right.length) return false;
-	return left.every((seq, index) => seq === right[index]);
-}
-/** 失败原因收敛成一行，供兜底文案使用。 */
-function reasonOf(error) {
-	return error instanceof Error ? error.message : String(error);
-}
 /**
 * 取消信号是否已触发。
 *
@@ -378,6 +340,107 @@ function reasonOf(error) {
 */
 function isAborted(signal) {
 	return signal?.aborted === true;
+}
+/** 失败原因收敛成一行，供兜底文案使用。 */
+function reasonOf(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+/**
+* design.md §4.5 的固定文案。
+*
+* 两个入口共用：draft 只用到 `busy` / `noHistory` / `summaryFailed` / `cancelled`；
+* `changed` 与 `backupFailed` 是 `/handoff` 独有的阶段（draft 不做选区稳定检查、不写备份）。
+*/
+var HANDOFF_TEXTS = {
+	busy: "当前有轮次正在运行或压缩正在进行，交接暂不可用。",
+	noHistory: "没有可交接的历史。",
+	changed: "交接期间会话发生了变化，未执行。请重试。",
+	summaryFailed: "交接单生成失败（模型未返回有效内容），未执行。",
+	backupFailed: "备份写入失败，未执行交接。",
+	cancelled: "交接已取消。"
+};
+/**
+* 交接单文档（design.md §6）：头部注释 + 摘要正文。
+*
+* 备份文件、替换消息的 `<handoff>` 段与 draft 响应里的 `doc` 共用这一个拼法，
+* 三处不会出现"头部格式略有不同"。头部时间与备份文件名用同一个 `now`。
+*
+* @param input.sessionId - 源会话 id。
+* @param input.range - 被遮蔽区间（只取两端 seq 写进头部）。
+* @param input.text - 摘要正文。
+* @param input.now - 头部时间；`/handoff` 同时用它命名备份文件。
+* @returns 完整交接单（含头部注释）。
+*/
+function buildHandoffDoc(input) {
+	return `<!-- handoff: ${randomUUID()} at ${input.now.toISOString()} from session ${input.sessionId} (seq ${input.range.startSeq}..${input.range.endSeq}) -->\n\n${input.text}`;
+}
+/**
+* 守卫 + 摘要：两个入口共用的一段（design.md §2）。
+*
+* 顺序与 `/handoff` 一致：取消 → 忙 → 有历史 → 摘要。**不**在这里做"选区稳定"检查：
+* 那是 `/handoff` 替换前的要求（拿到 doc 之后 surface 又变了，replace 区间就可能遮蔽错
+* 东西）；draft 不需要它，理由写在 draft.ts 里。所以这里只把快照交出去，由调用方决定。
+*
+* 失败原因都收敛成 stage 的 `kind`，不抛异常；只有 surface / 事件读取自相矛盾这类宿主
+* 接线错误会逃出去，由调用方兜底（`/handoff` 折成 `交接未执行：<原因>。`）。
+*
+* @param ctx - 宿主上下文（只需 `llm.stream`）。
+* @param session - 只读会话视图。
+* @param agent - 提供目标模型、session id 与 tool history 的真实 Agent。
+* @param signal - 可选取消信号。
+* @returns 阶段结果；`ready` 才表示拿到了交接单。
+*/
+async function prepareHandoff(ctx, session, agent, signal) {
+	if (isAborted(signal)) return { kind: "cancelled" };
+	if (inspectBusy(eventViews(session)) !== "idle") return { kind: "busy" };
+	const pinned = pinnedNodeCount(surfaceViews(session));
+	const range = shadowedRange(session.surface.nodes, pinned);
+	if (range === null) return { kind: "no-history" };
+	const surface = [...session.surface.nodes];
+	const messages = session.deriveMessages();
+	let text;
+	try {
+		text = (await summarizeForHandoff(ctx, { messages }, agent, signal)).text;
+	} catch {
+		if (isAborted(signal)) return { kind: "cancelled" };
+		return { kind: "summary-failed" };
+	}
+	const now = /* @__PURE__ */ new Date();
+	return {
+		kind: "ready",
+		doc: buildHandoffDoc({
+			sessionId: session.id,
+			range,
+			text,
+			now
+		}),
+		shadowable: range.seqs.length,
+		range,
+		now,
+		surface
+	};
+}
+//#endregion
+//#region
+/**
+* 替换消息的引导语：告诉读这条消息的模型"此前对话已被这份交接单取代"。
+*
+* 与压缩的 checkpoint 引导语同一个用途（design.md §4.3）；`<handoff>` 包裹段由本模块
+* 拼接，备份文件里**不带**这层包裹（备份只有交接单原文）。
+*/
+var PREAMBLE = `This conversation was handed off: everything before this message has been replaced by the handoff document below.
+Treat it as established background, including its "下一步" (next steps), and continue the work from there.
+Do not ask the user to restate anything the document already records.`;
+/** 调用的 Agent 里取出 session；形状不对属于宿主接线错误，交给外层兜底。 */
+function sessionOf(agent) {
+	const candidate = agent !== null && typeof agent === "object" ? agent.session : void 0;
+	if (candidate === null || typeof candidate !== "object") throw new TypeError("调用现场没有关联的会话");
+	return candidate;
+}
+/** surface 快照比较：守卫 C 用（design.md §4.4）。 */
+function sameNodes(left, right) {
+	if (left.length !== right.length) return false;
+	return left.every((seq, index) => seq === right[index]);
 }
 /**
 * 执行一次 `/handoff`：守卫 → 摘要 → 备份 → 替换（design.md §4.3）。
@@ -402,52 +465,49 @@ async function runHandoff(ctx, invocation) {
 async function executeHandoff(ctx, invocation) {
 	const session = sessionOf(invocation.agent);
 	const signal = invocation.signal;
-	if (isAborted(signal)) return cancelled();
-	if (inspectBusy(eventViews(session)) !== "idle") return {
-		kind: "error",
-		text: TEXT_BUSY
-	};
-	const pinned = pinnedNodeCount(surfaceViews(session));
-	const range = shadowedRange(session.surface.nodes, pinned);
-	if (range === null) return {
-		kind: "success",
-		text: TEXT_NO_HISTORY
-	};
-	const surfaceBefore = [...session.surface.nodes];
-	const messages = session.deriveMessages();
-	let text;
-	try {
-		text = (await summarizeForHandoff(ctx, { messages }, invocation.agent, signal)).text;
-	} catch {
-		if (isAborted(signal)) return cancelled();
-		return {
+	const stage = await prepareHandoff(ctx, session, invocation.agent, signal);
+	switch (stage.kind) {
+		case "busy": return {
 			kind: "error",
-			text: TEXT_SUMMARY_FAILED
+			text: HANDOFF_TEXTS.busy
+		};
+		case "no-history": return {
+			kind: "success",
+			text: HANDOFF_TEXTS.noHistory
+		};
+		case "cancelled": return {
+			kind: "error",
+			text: HANDOFF_TEXTS.cancelled
+		};
+		case "summary-failed": return {
+			kind: "error",
+			text: HANDOFF_TEXTS.summaryFailed
 		};
 	}
-	const now = /* @__PURE__ */ new Date();
-	const doc = `<!-- handoff: ${randomUUID()} at ${now.toISOString()} from session ${session.id} (seq ${range.startSeq}..${range.endSeq}) -->\n\n${text}`;
-	if (!sameNodes(session.surface.nodes, surfaceBefore)) return {
+	if (!sameNodes(session.surface.nodes, stage.surface)) return {
 		kind: "error",
-		text: TEXT_CHANGED
+		text: HANDOFF_TEXTS.changed
 	};
-	if (isAborted(signal)) return cancelled();
+	if (isAborted(signal)) return {
+		kind: "error",
+		text: HANDOFF_TEXTS.cancelled
+	};
 	let backupPath;
 	try {
 		backupPath = await writeBackup({
 			sessionId: session.id,
-			doc,
-			now
+			doc: stage.doc,
+			now: stage.now
 		});
 	} catch {
 		return {
 			kind: "error",
-			text: TEXT_BACKUP_FAILED
+			text: HANDOFF_TEXTS.backupFailed
 		};
 	}
 	if (isAborted(signal)) return {
 		kind: "error",
-		text: `${TEXT_CANCELLED}（交接单已备份到 ${backupPath}，会话未修改）`
+		text: `${HANDOFF_TEXTS.cancelled}（交接单已备份到 ${backupPath}，会话未修改）`
 	};
 	try {
 		const event = session.append("user/message", {
@@ -456,19 +516,19 @@ async function executeHandoff(ctx, invocation) {
 			source: { kind: "user" },
 			content: [{
 				type: "text",
-				text: `${PREAMBLE}\n\n<handoff>\n${doc}\n</handoff>`
+				text: `${PREAMBLE}\n\n<handoff>\n${stage.doc}\n</handoff>`
 			}]
 		}, {
 			surfaceOp: {
 				op: "replace",
-				startSeq: range.startSeq,
-				endSeq: range.endSeq
+				startSeq: stage.range.startSeq,
+				endSeq: stage.range.endSeq
 			},
-			sourceEventSeqs: [...range.seqs]
+			sourceEventSeqs: [...stage.range.seqs]
 		});
 		return {
 			kind: "success",
-			text: `已交接：遮蔽 ${range.seqs.length} 条，备份 ${backupPath}`,
+			text: `已交接：遮蔽 ${stage.range.seqs.length} 条，备份 ${backupPath}`,
 			sourceEventSeq: event.seq
 		};
 	} catch (error) {
@@ -480,19 +540,132 @@ async function executeHandoff(ctx, invocation) {
 }
 //#endregion
 //#region
+/** 失败结果的小工厂。 */
+function failure(status, code, message) {
+	return {
+		status,
+		body: {
+			ok: false,
+			error: {
+				code,
+				message
+			}
+		}
+	};
+}
+function asRecord(value) {
+	return value !== null && typeof value === "object" ? value : void 0;
+}
+/** 结构检查：只认 `HandoffSessionView` 需要的那几个成员，形状不对就当没有。 */
+function isSessionView(value) {
+	const record = asRecord(value);
+	if (record === void 0) return false;
+	return typeof record["id"] === "string" && typeof record["seq"] === "number" && asRecord(record["surface"]) !== void 0 && typeof record["eventAt"] === "function" && typeof record["deriveMessages"] === "function";
+}
+/**
+* 按 id 找活跃 Agent：`ctx.get('agents')` 是 `dsh-agent` 的 `AgentRegistry`，`get(id)`
+* 返回 live `Agent`（Agent 上带 `session` 与 `options`，正是摘要需要的两样）。
+*
+* 拿不到 agents 服务、服务里没有这个会话、或形状不对时返回 `undefined`，不抛。
+*/
+function findAgent(ctx, sessionId) {
+	try {
+		const agents = asRecord(ctx.get?.("agents"));
+		const get = agents?.["get"];
+		if (typeof get !== "function") return void 0;
+		const agent = get.call(agents, sessionId);
+		const record = asRecord(agent);
+		if (record === void 0 || !isSessionView(record["session"])) return void 0;
+		return agent;
+	} catch {
+		return;
+	}
+}
+/** 按 id 找 live Session：`ctx.sessions` 是 `dsh-session` 的 `SessionStore`。 */
+function findSession(ctx, sessionId) {
+	try {
+		const session = ctx.sessions.get(sessionId);
+		return isSessionView(session) ? session : void 0;
+	} catch {
+		return;
+	}
+}
+/**
+* 生成一份新会话交接草稿：只读，**不写会话、不建 session、不写备份**（design.md §3.2）。
+*
+* @param ctx - 宿主上下文（`llm` / `sessions` / `get('agents')`）。
+* @param sessionId - 源会话 id（URL 的 `?session=`，原始 DSH 会话 id）。
+* @param signal - 可选取消信号（HTTP 层在客户端断开时 abort）。
+* @returns 状态码 + JSON 体；不会抛异常（兜底折成 500 `internal`）。
+*/
+async function runHandoffDraft(ctx, sessionId, signal) {
+	const id = sessionId.trim();
+	if (id === "") return failure(400, "bad-request", "需要 session 参数（会话 id）。");
+	if (isAborted(signal)) return failure(499, "cancelled", HANDOFF_TEXTS.cancelled);
+	const agent = findAgent(ctx, id);
+	const session = agent?.session ?? findSession(ctx, id);
+	if (session === void 0) return failure(404, "session-not-found", `找不到活跃会话 ${id}。`);
+	if (agent === void 0) return failure(409, "agent-not-live", `会话 ${id} 没有活跃的 Agent（摘要需要它的模型路由），无法生成交接单。`);
+	let stage;
+	try {
+		stage = await prepareHandoff(ctx, session, agent, signal);
+	} catch (error) {
+		return failure(500, "internal", `交接单生成失败：${reasonOf(error)}。`);
+	}
+	switch (stage.kind) {
+		case "busy": return failure(409, "busy", HANDOFF_TEXTS.busy);
+		case "no-history": return {
+			status: 200,
+			body: {
+				ok: true,
+				doc: null,
+				shadowable: 0
+			}
+		};
+		case "cancelled": return failure(499, "cancelled", HANDOFF_TEXTS.cancelled);
+		case "summary-failed": return failure(502, "summary-failed", HANDOFF_TEXTS.summaryFailed);
+		case "ready": return {
+			status: 200,
+			body: {
+				ok: true,
+				doc: stage.doc,
+				shadowable: stage.shadowable
+			}
+		};
+	}
+}
+//#endregion
+//#region
+/**
+* 注入的服务。
+*
+* `webServer` 是 P2 追加的（design.md §4.1）：没有 Web 服务的组合里本插件不激活，
+* 也就没有 `/handoff` 命令 —— 这是设计上接受的取舍（P2 的按钮只存在于 Web/桌面壳）。
+* `sessions` 用来按 id 找 live 会话；`agents` 不做 inject，走 `ctx.get('agents')`
+* （aiworkflow 同款），缺它时命令照常、draft 返回 409。
+*/
 var inject = [
 	"commands",
 	"sessions",
-	"llm"
+	"llm",
+	"webServer"
 ];
+/** 路由前缀：不以 `/` 结尾（宿主按 `path === prefix || path.startsWith(prefix + '/')` 匹配）。 */
+var ROUTE_PREFIX = "/handoff/draft";
 /**
-* 注册 `/handoff`，并在卸载时等待进行中的交接结算。
-* @param ctx - 宿主上下文（`commands` / `sessions` / `llm` 已注入）。
+* 注册 `/handoff` 与 `/handoff/draft`，并在卸载时等待进行中的交接结算。
+* @param ctx - 宿主上下文（`commands` / `sessions` / `llm` / `webServer` 已注入）。
 */
 function apply(ctx) {
 	const active = /* @__PURE__ */ new Set();
-	const handler = (invocation) => {
-		const operation = runHandoff(ctx, invocation);
+	/** 在飞的取消控制器（draft 等）：卸载时先 abort 再 drain，别让不响应 signal 的适配器拖住退出。 */
+	const controllers = /* @__PURE__ */ new Set();
+	/**
+	* 记入 `active`，让插件卸载时等这次交接结算（命令与草稿共用）。
+	* @param operation - 进行中的交接。
+	* @returns 原样的 promise。
+	*/
+	const track = (operation) => {
 		active.add(operation);
 		const retire = () => {
 			active.delete(operation);
@@ -500,8 +673,11 @@ function apply(ctx) {
 		operation.then(retire, retire);
 		return operation;
 	};
+	const handler = (invocation) => track(runHandoff(ctx, invocation));
 	ctx.effect(function* () {
 		yield async () => {
+			for (const controller of controllers) controller.abort();
+			controllers.clear();
 			await Promise.allSettled(active);
 		};
 		yield ctx.commands.register({
@@ -511,6 +687,119 @@ function apply(ctx) {
 			handler
 		});
 	}, "handoff lifecycle");
+	ctx.effect(() => {
+		const disposeRoute = ctx.webServer.register({
+			kind: "prefix",
+			path: ROUTE_PREFIX,
+			handler: (req, res) => handleDraftRequest(ctx, req, res, track, controllers)
+		});
+		return () => {
+			disposeRoute();
+		};
+	}, "handoff draft route");
+}
+/**
+* `GET /handoff/draft?session=<sessionId>`：只读草稿。
+*
+* HTTP 细节（CORS / 状态码 / JSON 形状 / 客户端断开）都在这里，业务在 draft.ts，
+* 这样单测可以直接喂假 ctx / 假 req / 假 res。
+*/
+async function handleDraftRequest(ctx, req, res, track, controllers) {
+	try {
+		const url = new URL(req.url ?? "/", "http://127.0.0.1");
+		const method = req.method ?? "GET";
+		if (method === "OPTIONS") {
+			res.statusCode = 204;
+			setCorsHeaders(req, res);
+			res.end();
+			return;
+		}
+		if (url.pathname !== ROUTE_PREFIX && url.pathname !== `${ROUTE_PREFIX}/`) {
+			sendNotFound(req, res, url.pathname);
+			return;
+		}
+		if (method !== "GET") {
+			sendJson(req, res, 405, {
+				ok: false,
+				error: {
+					code: "method-not-allowed",
+					message: "method not allowed"
+				}
+			});
+			return;
+		}
+		const controller = new AbortController();
+		controllers.add(controller);
+		const onClose = () => {
+			if (!res.writableEnded) controller.abort();
+		};
+		if (typeof res.on === "function") res.on("close", onClose);
+		let result;
+		try {
+			result = await track(runHandoffDraft(ctx, url.searchParams.get("session") ?? "", controller.signal));
+		} finally {
+			controllers.delete(controller);
+			if (typeof res.off === "function") res.off("close", onClose);
+		}
+		if (controller.signal.aborted && res.destroyed) return;
+		sendJson(req, res, result.status, result.body);
+	} catch (error) {
+		sendJson(req, res, 500, {
+			ok: false,
+			error: {
+				code: "internal",
+				message: reasonOf(error)
+			}
+		});
+	}
+}
+function sendJson(req, res, status, body) {
+	const text = JSON.stringify(body);
+	res.statusCode = status;
+	res.setHeader("content-type", "application/json; charset=utf-8");
+	res.setHeader("cache-control", "no-store");
+	setCorsHeaders(req, res);
+	res.end(text);
+}
+function sendNotFound(req, res, pathname) {
+	sendJson(req, res, 404, {
+		ok: false,
+		error: {
+			code: "not-found",
+			message: `unknown route ${pathname}`
+		}
+	});
+}
+/**
+* 只读本地数据的跨源放行，按 `Origin` 分层（不按 remoteAddress 白名单，那会打断局域网用法）：
+*
+* - 没有 `Origin`（同源请求 / 非浏览器）→ 不设 ACAO（同源本来不受 CORS 限制）；
+* - `Origin: null`（桌面壳 `file://` 渲染器）→ `ACAO: null`；
+* - `Origin` 的 host 与 `req.headers.host` 相同 → 回显该 origin；
+* - 其它（陌生网页）→ 不设 ACAO，浏览器读不到响应体。
+*
+* 这条 GET 会返回会话摘要正文并触发一次付费 LLM 调用，所以不能再 `*`。
+*/
+function setCorsHeaders(req, res) {
+	const origin = typeof req.headers.origin === "string" ? req.headers.origin : void 0;
+	if (origin === void 0 || origin === "") return;
+	let allow;
+	if (origin === "null") allow = "null";
+	else {
+		let originHost;
+		try {
+			originHost = new URL(origin).host;
+		} catch {
+			originHost = void 0;
+		}
+		const requestHost = req.headers.host;
+		if (originHost !== void 0 && typeof requestHost === "string" && originHost === requestHost) allow = origin;
+	}
+	if (allow === void 0) return;
+	res.setHeader("access-control-allow-origin", allow);
+	res.setHeader("access-control-allow-methods", "GET, OPTIONS");
+	res.setHeader("access-control-allow-headers", "accept, content-type");
+	res.setHeader("access-control-max-age", "600");
 }
 //#endregion
 export { apply, inject };
