@@ -63,6 +63,36 @@ sequenceDiagram
   H-->>C: 结果行：遮蔽 N 条 / 备份路径
 ```
 
+上面那张表达**谁和谁说话**，下面这张表达**判定分支与失败出口**：哪一步会拒绝、拒绝时的文案、备份与 append 的先后关系（同一个流程的另一个切面，不是另一条路径）。主干只有 8 个节点，失败出口都挂在主干两侧；取消与兜底等细节见挂图后的补充。
+
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 35, "rankSpacing": 32, "diagramPadding": 6, "wrappingWidth": 300}}}%%
+flowchart TD
+  A["点「交接」按钮或 /handoff<br/>Client → Host：<br/>remote.commands.execute"] --> G1{"会话空闲？<br/>守卫 A · 最新 session/end-seed 之后"}
+  G1 -->|"否：忙碌"| X1["当前有轮次正在运行或压缩正在进行，<br/>交接暂不可用。"]
+  G1 -->|"是"| G2{"有可交接的历史？<br/>守卫 B · shadowedRange 非空"}
+  G2 -->|"否"| X2["没有可交接的历史。<br/>按成功返回，不报错"]
+  G2 -->|"是"| S["LLM 生成交接单<br/>一次 ctx.llm.stream"]
+  S --> G3{"选区稳定？<br/>守卫 C · surface.nodes 未变"}
+  S -.->|"失败"| X6["交接单生成失败（未返回有效内容），<br/>未执行。"]
+  G3 -->|"否"| X3["交接期间会话发生了变化，<br/>未执行。请重试。"]
+  G3 -->|"是"| BK["写备份（fail closed）<br/>~/.dsh/handoff/&lt;会话id&gt;-&lt;时间&gt;.md"]
+  BK --> AP["替换会话后缀<br/>session.append + surfaceOp: replace"]
+  BK -.->|"失败"| X4["备份写入失败，未执行交接。"]
+  AP --> DONE["完成：surface 只剩 system<br/>（+ 前导注入）与交接单"]
+  AP -.->|"失败"| X5["交接单写入会话失败（原因），<br/>会话未修改；备份见路径"]
+```
+
+挂图后的补充（只从代码里才看得出来、图上已省略）：
+
+- **守卫 C 在「摘要后取消检查」之前**（`command.ts` 先 `sameNodes` 再 `isAborted`）：两者同时不成立时，用户看到的是「会话发生了变化」，不是「已取消」。
+- **摘要阶段抛错分两种出口**：`signal` 已取消 → 「交接已取消。」；其余（空文本、`error` / `max-tokens` / `tool-calls`、以及拿不到 provider/model）→ 「交接单生成失败」。
+- **无历史按成功返回**（`kind: 'success'`），所以面板按成功展示「没有可交接的历史。」并在 1.6 秒后自动收起，而不是报错。失败出口同样经 `command/done` 回到同一个状态行，只是**不**自动关闭，留在面板上等用户关掉。
+- **三处取消检查**：入口、摘要后、备份后各查一次 `signal.aborted`。前两处报「交接已取消。」；备份已落盘的那次报「交接已取消。（交接单已备份到 <path>，会话未修改）」并**不** append——命令层已把这次调用记成 cancelled，此时再替换，用户会看到「已取消」而历史已经没了。备份文件按时间戳命名，留着可读、可重跑。
+- **兜底**：`runHandoff` 外层 `catch` 把 `sessionOf` 取不到 session、surface / 事件读取等未预料异常折成「交接未执行：<原因>。」，不向命令层抛未捕获异常。它不属于任何单一步骤，所以图上不画。
+- **不写 `compaction/*`、不进压缩锁**：但守卫 A **读**压缩锁（有未闭合 `compaction/start` 即忙碌），否则会和自动压缩撞车。
+- **事件与面板**：Host 在 handler 前后写 `command/run` / `command/done`；面板状态行显示 `result.text`，成功与「无历史」1.6 秒后自动关，失败不关。
+
 ### 3.2 新会话交接
 
 ```mermaid
