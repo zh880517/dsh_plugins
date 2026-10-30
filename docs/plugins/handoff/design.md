@@ -1,7 +1,7 @@
 # 会话交接（Handoff）— 插件设计文档
 
 日期：2026-10-30
-状态：P1 已发布（`/handoff` 命令，0.1.0）；P2 已实现（输入框按钮 + `GET /handoff/draft`，111 个单测通过），待真机验收，版本待 bump 到 0.1.1
+状态：P1、P2 均已实现并发布（0.1.1）；handoff 129 个单测通过，真机验收待做
 适用范围：`plugins/handoff/`（仓库内的一个插件包）
 参考实现：`@deepseek-ai/dsh-compaction-basic`（摘要 + 替换）、`@deepseek-ai/dsh-command-compact`（`/compact` 命令）
 
@@ -321,6 +321,8 @@ const outcome = await ctx.remote.commands.execute(sessionId, '/handoff', []);
    `using` 见 `.../client/sessions/service.js:204`，`reference.binding.session` 见 `:472`，`prompt(content, mode)` 见 `.../client/sessions/session.js:171`。`{ source: 'handoff' }` 标明这次借用来自交接，第二个参数 `'queue'` 是投递模式。
 4. `ctx.uiWorkspace.openSession(newId)`（`dsh-client-ui-workspace/lib/client.js:1471`）切过去。
 
+该链路对运行时做了版本兼容探测：`sessions.using` → `sessions.retain` → `sessions.binding` 三级回退，三者都用 `typeof === 'function'` 判断、不读版本号字符串，另外兼容 `create` 直接返回带 `prompt` 的会话对象；桌面运行时实测 0.2.1-rc.5 走 `using`，回退分支是给不同 DSH 版本的保险。
+
 任何一步失败都留在原会话、不切走；`prompt` 失败时已建出的新会话不自动删除。旧会话一个字节都不动。
 
 ### 5.6 i18n
@@ -401,7 +403,7 @@ plugins/handoff/
 
 | 项 | 值 |
 |---|---|
-| 包名 | `@handoff/dsh-plugin`，版本 `0.1.0`（P2 待 bump 到 `0.1.1`） |
+| 包名 | `@handoff/dsh-plugin`，版本 `0.1.1` |
 | 路由 | `GET /handoff/draft`（只读，`kind: 'prefix'` 注册） |
 | 命令 | `/handoff` |
 | Slot | 入口 `handoff` @ `conversation.input.left`（`order: 30`）；面板 `handoff-panel` @ `shell.overlay`（`order: 80`） |
@@ -439,7 +441,7 @@ V1 已结案：真实日志里工作区指令基线就是一条 `source.kind: "a
 | T8 | draft 路由 | `GET /handoff/draft?session=`，`inject` 加 `webServer` | 返回 `{ doc, shadowable }`；忙/空历史走同一守卫 | T4 | 已完成（已实现，待真机验收） |
 | T9 | 输入框按钮与面板 | `conversation.input.left` 按钮 + `shell.overlay` 面板 + `i18n.ts` + locale 文件 | 点「就地」走 `remote.commands.execute('/handoff')`；点「新会话」走 T10 | T1 | 已完成（已实现，待真机验收） |
 | T10 | 新会话模式 | 草稿 → `sessions.create` → `using(prompt)` → `openSession` | 新会话首条即交接单；旧会话不被触碰；V3 已结案 | T8 T9 | 已完成（已实现，待真机验收） |
-| T11 | 发布 0.1.1 | 版本 bump、构建、文档、市场 | `npm run check` 全绿 | T8–T10 | 未完成（版本仍 0.1.0，待 bump 到 0.1.1 并发布） |
+| T11 | 发布 0.1.1 | 版本 bump、构建、文档、市场 | `npm run check` 全绿 | T8–T10 | 已完成（0.1.1 已发布） |
 
 ### 顺序与并行
 
