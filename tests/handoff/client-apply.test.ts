@@ -47,7 +47,7 @@ describe('客户端接线', () => {
     expect(inject).toEqual(['slots', 'locale', 'remote', 'remote.commands', 'sessions', 'uiWorkspace']);
   });
 
-  it('在 conversation.input.left 注册 28×28 交接按钮（order 30）', () => {
+  it('在 conversation.input.left 注册「图标 + 文字」胶囊交接按钮（order 30）', () => {
     const { ctx, registrations } = harness();
     apply(ctx);
 
@@ -70,6 +70,11 @@ describe('客户端接线', () => {
     expect(html).toContain('class="hpf-btn"');
     expect(html).toContain('title="交接"');
     expect(html).toContain('aria-label="交接"');
+    // 胶囊里必须同时有图标与短标签（用户反馈图标太小、意义不明）。
+    expect(html).toContain('<svg');
+    expect(html).toContain('width="18" height="18"');
+    expect(html).toContain('class="hpf-btn-label"');
+    expect(html).toContain('<span class="hpf-btn-label">交接</span>');
   });
 
   it('面板挂在 shell.overlay（locale 声明为 handoff）；关闭时不渲染任何可见节点', () => {

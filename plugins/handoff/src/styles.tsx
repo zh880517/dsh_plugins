@@ -3,15 +3,16 @@
 import * as React from 'react';
 
 export const css = `
-/* 输入框工具行左侧的入口：与同行的「＋」同规格（28×28 圆形、图标 14） */
-.hpf-btn{width:28px;height:28px;display:inline-grid;place-items:center;flex:none;padding:0;
-  border:none;border-radius:50%;background:var(--dsw-specific-selector);
-  color:var(--dsw-alias-label-secondary);font-family:inherit;cursor:pointer;
-  transition:background .12s ease,color .12s ease}
-.hpf-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
+/* 输入框工具行左侧的入口：图标 + 文字胶囊（28 高，同行为基准） */
+.hpf-btn{height:28px;display:inline-flex;align-items:center;gap:6px;flex:none;
+  padding:0 12px 0 10px;border:none;border-radius:14px;
+  background:var(--dsw-specific-selector);color:var(--dsw-alias-label-primary);
+  font-family:inherit;font-size:12px;font-weight:500;line-height:1;
+  white-space:nowrap;cursor:pointer;transition:background .12s ease}
+.hpf-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}
 .hpf-btn:disabled{opacity:.5;cursor:default}
 .hpf-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.hpf-btn svg{display:block}
+.hpf-btn svg{display:block;flex:none}
 
 /* 面板：贴着输入框上方居中；backdrop 透明，只负责接“点外部关闭” */
 .hpf-backdrop{position:fixed;inset:0;z-index:80;background:transparent;pointer-events:auto}

@@ -1,4 +1,4 @@
-// Client 半入口：输入框工具行左侧的「交接」图标按钮 + 一个两项面板。
+// Client 半入口：输入框工具行左侧的「交接」胶囊按钮（图标 + 文字）+ 一个两项面板。
 //
 // 为什么是按钮：用户不该为了交接去记 `/handoff`。按钮只做入口，真正的动作有两条：
 //   1. 就地交接：`remote.commands.execute(sessionId, '/handoff', [])`。和斜杠菜单走同一条
@@ -77,28 +77,28 @@ const panelTarget = {
 function HandoffIcon(): React.ReactElement {
   return (
     <svg
-      width="14"
-      height="14"
+      width="18"
+      height="18"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.7"
+      strokeWidth="1.9"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      {/* 后面的文档（浅一点，做出叠放层次） */}
-      <path d="M4.6 6.3V4.5c0-.6.5-1.1 1.1-1.1h6.5c.6 0 1.1.5 1.1 1.1v8.9" opacity=".55" />
-      {/* 前面要交出去的那份 */}
-      <rect x="6.6" y="6.6" width="8" height="11" rx="1.5" />
-      {/* 交给下一个上下文 */}
-      <path d="M16.6 12.1h4.3m0 0-1.9-1.9m1.9 1.9-1.9 1.9" />
+      {/* 交接单本身 */}
+      <path d="M5 4.4h8.2a1.7 1.7 0 0 1 1.7 1.7v12a1.7 1.7 0 0 1-1.7 1.7H5a1.7 1.7 0 0 1-1.7-1.7V6.1A1.7 1.7 0 0 1 5 4.4Z" />
+      {/* 文档里的两条内容线 */}
+      <path d="M6.5 9.3h4.2M6.5 12.6h2.8" />
+      {/* 交出去 */}
+      <path d="M16 12h5.4M18.9 9.5 21.7 12l-2.8 2.5" />
     </svg>
   );
 }
 
 /**
- * 输入框左侧的图标按钮（`conversation.input.left`）。
+ * 输入框左侧的胶囊按钮（`conversation.input.left`）：图标旁边带「交接」短标签。
  *
  * 新会话必须落在**当前会话所属的工作区**里：宿主 `session.create` 只有在收到
  * `workspaceId` 时才 `attachSession`，只给 cwd 建出来的会话不属于任何工作区，
@@ -148,6 +148,7 @@ function HandoffButton(props: Record<string, unknown>): React.ReactElement {
         onClick={onClick}
       >
         <HandoffIcon />
+        <span className="hpf-btn-label">{t('button.label')}</span>
       </button>
     </React.Fragment>
   );

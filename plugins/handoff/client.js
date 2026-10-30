@@ -455,15 +455,16 @@ function registerTexts(ctx) {
 //#endregion
 //#region
 var css = `
-/* 输入框工具行左侧的入口：与同行的「＋」同规格（28×28 圆形、图标 14） */
-.hpf-btn{width:28px;height:28px;display:inline-grid;place-items:center;flex:none;padding:0;
-  border:none;border-radius:50%;background:var(--dsw-specific-selector);
-  color:var(--dsw-alias-label-secondary);font-family:inherit;cursor:pointer;
-  transition:background .12s ease,color .12s ease}
-.hpf-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid);color:var(--dsw-alias-label-primary)}
+/* 输入框工具行左侧的入口：图标 + 文字胶囊（28 高，同行为基准） */
+.hpf-btn{height:28px;display:inline-flex;align-items:center;gap:6px;flex:none;
+  padding:0 12px 0 10px;border:none;border-radius:14px;
+  background:var(--dsw-specific-selector);color:var(--dsw-alias-label-primary);
+  font-family:inherit;font-size:12px;font-weight:500;line-height:1;
+  white-space:nowrap;cursor:pointer;transition:background .12s ease}
+.hpf-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}
 .hpf-btn:disabled{opacity:.5;cursor:default}
 .hpf-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
-.hpf-btn svg{display:block}
+.hpf-btn svg{display:block;flex:none}
 
 /* 面板：贴着输入框上方居中；backdrop 透明，只负责接“点外部关闭” */
 .hpf-backdrop{position:fixed;inset:0;z-index:80;background:transparent;pointer-events:auto}
@@ -655,28 +656,19 @@ var panelTarget = {
 };
 function HandoffIcon() {
 	return /* @__PURE__ */ react.createElement("svg", {
-		width: "14",
-		height: "14",
+		width: "18",
+		height: "18",
 		viewBox: "0 0 24 24",
 		fill: "none",
 		stroke: "currentColor",
-		strokeWidth: "1.7",
+		strokeWidth: "1.9",
 		strokeLinecap: "round",
 		strokeLinejoin: "round",
 		"aria-hidden": "true"
-	}, /* @__PURE__ */ react.createElement("path", {
-		d: "M4.6 6.3V4.5c0-.6.5-1.1 1.1-1.1h6.5c.6 0 1.1.5 1.1 1.1v8.9",
-		opacity: ".55"
-	}), /* @__PURE__ */ react.createElement("rect", {
-		x: "6.6",
-		y: "6.6",
-		width: "8",
-		height: "11",
-		rx: "1.5"
-	}), /* @__PURE__ */ react.createElement("path", { d: "M16.6 12.1h4.3m0 0-1.9-1.9m1.9 1.9-1.9 1.9" }));
+	}, /* @__PURE__ */ react.createElement("path", { d: "M5 4.4h8.2a1.7 1.7 0 0 1 1.7 1.7v12a1.7 1.7 0 0 1-1.7 1.7H5a1.7 1.7 0 0 1-1.7-1.7V6.1A1.7 1.7 0 0 1 5 4.4Z" }), /* @__PURE__ */ react.createElement("path", { d: "M6.5 9.3h4.2M6.5 12.6h2.8" }), /* @__PURE__ */ react.createElement("path", { d: "M16 12h5.4M18.9 9.5 21.7 12l-2.8 2.5" }));
 }
 /**
-* 输入框左侧的图标按钮（`conversation.input.left`）。
+* 输入框左侧的胶囊按钮（`conversation.input.left`）：图标旁边带「交接」短标签。
 *
 * 新会话必须落在**当前会话所属的工作区**里：宿主 `session.create` 只有在收到
 * `workspaceId` 时才 `attachSession`，只给 cwd 建出来的会话不属于任何工作区，
@@ -703,7 +695,7 @@ function HandoffButton(props) {
 		"aria-label": t("button.label"),
 		"aria-haspopup": "dialog",
 		onClick
-	}, /* @__PURE__ */ react.createElement(HandoffIcon, null)));
+	}, /* @__PURE__ */ react.createElement(HandoffIcon, null), /* @__PURE__ */ react.createElement("span", { className: "hpf-btn-label" }, t("button.label"))));
 }
 /** 错误详情：只有 Error 的 message 值得展示；其它一律留空给兜底文案。 */
 function abortDetail(cause) {

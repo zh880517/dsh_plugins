@@ -144,6 +144,11 @@ describe('i18n 字典', () => {
     }
   });
 
+  it('按钮文字是短标签（渲染在图标旁，不能写成长句）', () => {
+    expect(TEXTS.zh['button.label']).toBe('交接');
+    expect(TEXTS.en['button.label']).toBe('Handoff');
+  });
+
   it('面板两套选项与结果文案齐全', () => {
     for (const key of [
       'button.label',
