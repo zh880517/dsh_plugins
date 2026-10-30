@@ -38,11 +38,11 @@
       "versions": [
         {
           "version": "0.1.5",
-          "publishTimestamp": 1793348010,
+          "publishTimestamp": 1793350095,
           "source": {
             "type": "git",
             "url": "https://github.com/zh880517/dsh_plugins",
-            "commit": "76639186e226f389c4c46de1c4854feb9584dfac",
+            "commit": "a61ff8be35cc59b5094351410014f77b6be58ee8",
             "path": "plugins/aiworkflow"
           }
         },
@@ -85,6 +85,16 @@
         ]
       },
       "versions": [
+        {
+          "version": "0.1.2",
+          "publishTimestamp": 1793350095,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/zh880517/dsh_plugins",
+            "commit": "a61ff8be35cc59b5094351410014f77b6be58ee8",
+            "path": "plugins/handoff"
+          }
+        },
         {
           "version": "0.1.1",
           "publishTimestamp": 1793348010,
