@@ -49,7 +49,8 @@ function assertShippedCommitted(plugin) {
     const repoRelative = `plugins/${plugin.id}/${relative}`;
     let at;
     try {
-      at = execFileSync('git', ['show', `${head}:${repoRelative}`], { cwd: repo });
+      // maxBuffer 提到 64MB：viewer.js 这类内联 three.js 的产物超过默认 1MB
+      at = execFileSync('git', ['show', `${head}:${repoRelative}`], { cwd: repo, maxBuffer: 64 * 1024 * 1024 });
     } catch {
       throw new Error(`${repoRelative} 不在 HEAD（${head.slice(0, 7)}）里：先把插件文件提交，再生成市场索引。`);
     }
