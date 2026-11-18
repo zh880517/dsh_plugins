@@ -38,11 +38,11 @@
       "versions": [
         {
           "version": "0.1.5",
-          "publishTimestamp": 1794987590,
+          "publishTimestamp": 1794988635,
           "source": {
             "type": "git",
             "url": "https://github.com/zh880517/dsh_plugins",
-            "commit": "97f6a37d5714266b234af30f2278fe982400fee9",
+            "commit": "2f8727831b40a8e46fac9722e80bc334852105ee",
             "path": "plugins/aiworkflow"
           }
         },
@@ -87,11 +87,11 @@
       "versions": [
         {
           "version": "0.1.2",
-          "publishTimestamp": 1794987590,
+          "publishTimestamp": 1794988635,
           "source": {
             "type": "git",
             "url": "https://github.com/zh880517/dsh_plugins",
-            "commit": "97f6a37d5714266b234af30f2278fe982400fee9",
+            "commit": "2f8727831b40a8e46fac9722e80bc334852105ee",
             "path": "plugins/handoff"
           }
         },
@@ -148,6 +148,16 @@
         ]
       },
       "versions": [
+        {
+          "version": "0.3.0",
+          "publishTimestamp": 1794988635,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/zh880517/dsh_plugins",
+            "commit": "2f8727831b40a8e46fac9722e80bc334852105ee",
+            "path": "plugins/kinemesh"
+          }
+        },
         {
           "version": "0.2.0",
           "publishTimestamp": 1794987590,
