@@ -53,5 +53,4 @@ npm run check
 
 ## 文档索引
 
-- 架构与关键决策：[design.md](./design.md)
-- 设计草稿（评审输入，定稿后删除）：仓库 `docs/dev/2026-11-18-kinemesh-design.md`
+- 架构与关键决策（M1–M5 全部里程碑）：[design.md](./design.md)

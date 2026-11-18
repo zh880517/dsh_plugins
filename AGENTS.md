@@ -11,7 +11,7 @@
 |---|---|
 | `aiworkflow` | 流程图驱动的分步执行：在 DSH 里画流程图、发起 run、看进度与运行图；Agent 每领一步指令 → 做完回报 `summary`/`payload` → 再领下一步。核心理念是**管理 Agent 的注意力预算（逐步披露），引导而非约束**。 |
 | `handoff` | 会话交接：把整个会话后缀替换成一份可复核的交接单，先落盘备份再替换。 |
-| `kinemesh` | 三维模型/动画资源的 AI 预览与分析（动析）：提取动画片段/骨骼/网格信息与单位体检；后续里程碑加视角截图、Skill+CLI、MCP。 |
+| `kinemesh` | 三维模型/动画资源的 AI 预览与分析（动析）：提取动画片段/骨骼/网格信息与单位体检、按视角截图（kinemesh_render）、会话内预览面板与「发送给 AI 分析」；同 core 另有 Skill+CLI 与 MCP 出口。 |
 
 面向 DSH 以外的 AI Agent 工具，只支持 **Skill** 和 **MCP** 两种形式。
 aiworkflow 的 Host 半用 `node:sqlite` 直接打开 `~/.aiworkflow/aiworkflow.db`，不依赖任何外部服务。
@@ -19,7 +19,7 @@ aiworkflow 的 Host 半用 `node:sqlite` 直接打开 `~/.aiworkflow/aiworkflow.
 必读文档：
 
 - aiworkflow 设计文档（已评审，是所有实现的依据）：[docs/plugins/aiworkflow/design.md](docs/plugins/aiworkflow/design.md)
-- kinemesh 设计文档（M1 已实施）：[docs/plugins/kinemesh/design.md](docs/plugins/kinemesh/design.md)
+- kinemesh 设计文档（M1–M5 已实施）：[docs/plugins/kinemesh/design.md](docs/plugins/kinemesh/design.md)
 - 文档规则与插件索引：[docs/README.md](docs/README.md)
 - 多插件仓库结构（已实施）：[docs/2026-10-30-multi-plugin-repo-design.md](docs/2026-10-30-multi-plugin-repo-design.md)
 
@@ -84,7 +84,7 @@ npm run release:plugin [-- --only <id>]   # 构建 → 提交 → 刷新索引 �
 - `shared/src/` 不得 import 任何 `plugins/*`；不要引入 HTTP 框架或原生 SQLite 绑定（`better-sqlite3` 等）。数据库访问只通过最小 `SqlDatabase` / `SqlWriter` 接口，Host 半用 `node:sqlite` 适配。
 - `shared/src/index.ts` 只导出浏览器半也能用的纯逻辑；依赖 `node:fs` 的模块（`flows.ts`）走显式子路径 `@shared/flows.js`，不进 client bundle。`node:sqlite` 的适配在各插件 `src/sqlite.ts`（Host 半专用）。
 - 测试按插件分组（`tests/<id>/`），共用 `tests/support/` 的内存 `node:sqlite` 库，不要退回 `better-sqlite3`。
-- 构建/发布脚本只写 `scripts/`，插件目录里不放构建脚本；新增插件不改脚本分支逻辑。
+- **构建/发布脚本只写 `scripts/`，插件目录里不放构建脚本；新增插件不改脚本分支逻辑**。约定产物按入口存在性构建：`src/viewer-page.ts` → `viewer.js`、`src/cli.ts` → `skill/cli/<id>.cjs`、`src/mcp-server.ts` → `mcp/<id>-mcp.js`（没有入口的插件不受影响），存在即随源码一起提交，`check:plugin` / 市场索引会校验。
 - 阶段开发流程：实现 → 测试跑通 → 在阶段记录里勾选并 git commit。
 
 ## 已知注意点

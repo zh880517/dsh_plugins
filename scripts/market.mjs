@@ -27,10 +27,17 @@ const SHIPPED = [
   'README.md',
 ];
 
-/** 约定产物 viewer.js（src/viewer-page.ts 存在的插件才有）也必须已提交 */
+/** 约定产物（viewer.js / skill/cli/<id>.js）存在时也必须已提交 */
 function shippedFiles(plugin) {
   const files = [...SHIPPED];
-  if (existsSync(path.join(plugin.dir, 'viewer.js'))) files.push('viewer.js');
+  const extras = [
+    path.join(plugin.dir, 'viewer.js'),
+    path.join(plugin.dir, 'skill', 'cli', `${plugin.id}.cjs`),
+    path.join(plugin.dir, 'mcp', `${plugin.id}-mcp.js`),
+  ];
+  for (const extra of extras) {
+    if (existsSync(extra)) files.push(path.relative(plugin.dir, extra).replaceAll('\\', '/'));
+  }
   return files;
 }
 

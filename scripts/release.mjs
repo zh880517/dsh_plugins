@@ -92,8 +92,13 @@ if (!noCommit) {
 console.log(`\n[1/4] 构建插件产物（${plugins.map((plugin) => plugin.id).join('、')}）…`);
 for (const plugin of plugins) {
   const result = await buildPlugin(plugin);
-  const viewer = result.viewerKiB === null ? '' : `, viewer.js ${result.viewerKiB} KiB`;
-  console.log(`  ${result.id}: index.js ${result.hostKiB} KiB, client.js ${result.clientKiB} KiB${viewer}`);
+  const extras = [
+    result.viewerKiB === null ? null : `viewer.js ${result.viewerKiB} KiB`,
+    result.cliKiB === null ? null : `skill/cli/${result.id}.cjs ${result.cliKiB} KiB`,
+    result.mcpKiB === null ? null : `mcp/${result.id}-mcp.js ${result.mcpKiB} KiB`,
+  ].filter(Boolean);
+  const suffix = extras.length === 0 ? '' : `, ${extras.join(', ')}`;
+  console.log(`  ${result.id}: index.js ${result.hostKiB} KiB, client.js ${result.clientKiB} KiB${suffix}`);
 }
 
 // 2) 提交源码 + 产物（同一笔，保证这个提交里产物和源码一致）

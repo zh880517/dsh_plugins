@@ -1,0 +1,223 @@
+// CLI 入口（M4）：`node kinemesh.js info <file>` / `render <file> --frames 0,15,30 …`。
+// 契约（设计文档 §5.2）：stdout 出 JSON、图片落盘、非零退出码 + stderr 报错（Agent 解析友好）。
+// 构建成单文件 CJS（skill/cli/kinemesh.js，three.js 全内联；playwright 保持外部依赖）。
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { analyzeModel } from './core/analyze-file.js';
+import { KinemeshError, reasonOf } from './core/errors.js';
+import { renderScreenshots } from './core/render/screenshot.js';
+import type { ViewMode } from './core/viewstate.js';
+
+const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
+
+用法：
+  kinemesh info <file>
+      输出模型结构信息 JSON（动画片段/骨骼/网格/贴图/包围盒/单位体检）。
+
+  kinemesh render <file> [选项]
+      按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
+      --clip <name>            动画片段名（先 info 查）；静态模型省略
+      --frames 0,15,30         帧号列表（逗号分隔，≤64 个）；或 --frame 30 单帧
+      --view-preset <name>     front / side / back / three-quarter / orbit8（八方位连拍）
+      --azimuth <deg> --elevation <deg> --distance <n> --target x,y,z --fov <deg>
+                               自定义球坐标视角（与 --view-preset 二选一）
+      --mode <name>            default / wireframe / skeleton / bones-overlay
+      --width <px> --height <px>
+      --out-dir <dir>          PNG 输出目录（缺省系统临时目录 kinemesh-shots/）
+
+  kinemesh --help
+
+输出契约：成功 → stdout 一行 JSON（ok:true）；失败 → stderr 一行 JSON（ok:false 带
+what/guidance/step 三段式）+ 非零退出码。截图需要 playwright：
+  npm i playwright && npx playwright install chromium
+`;
+
+interface ParsedArgv {
+  command: string;
+  positional: string[];
+  flags: Record<string, string>;
+}
+
+function parseArgv(argv: string[]): ParsedArgv {
+  const positional: string[] = [];
+  const flags: Record<string, string> = {};
+  let command = '';
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] ?? '';
+    if (token.startsWith('--')) {
+      const inline = token.slice(2);
+      const eq = inline.indexOf('=');
+      if (eq >= 0) {
+        flags[inline.slice(0, eq)] = inline.slice(eq + 1);
+        continue;
+      }
+      const value = argv[index + 1];
+      if (value !== undefined && !value.startsWith('--')) {
+        flags[inline] = value;
+        index += 1;
+      } else {
+        flags[inline] = 'true';
+      }
+      continue;
+    }
+    if (command === '') command = token;
+    else positional.push(token);
+  }
+  return { command, positional, flags };
+}
+
+function expandHome(input: string): string {
+  if (input === '~') return homedir();
+  if (input.startsWith('~/') || input.startsWith('~\\')) return path.join(homedir(), input.slice(2));
+  return input;
+}
+
+function fail(message: string, guidance: string, step: string): number {
+  process.stderr.write(
+    `${JSON.stringify({ ok: false, what: message, guidance, step: `当前这一步：${step}` })}\n`,
+  );
+  return 1;
+}
+
+async function readModel(fileArg: string | undefined): Promise<{ data: ArrayBuffer; abs: string } | null> {
+  if (fileArg === undefined || fileArg.trim() === '') {
+    fail('缺少模型文件路径。', 'kinemesh info <file> / render <file> …（file 支持 ~ 与相对路径）', '读取模型');
+    return null;
+  }
+  const abs = path.resolve(expandHome(fileArg.trim()));
+  try {
+    const buffer = await readFile(abs);
+    return { data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer, abs };
+  } catch (error) {
+    fail(reasonOf(error), '确认路径存在且可读；相对路径按当前工作目录解析。', `读取 ${abs}`);
+    return null;
+  }
+}
+
+function emit(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+async function runInfo(fileArg: string | undefined): Promise<number> {
+  const loaded = await readModel(fileArg);
+  if (loaded === null) return 1;
+  try {
+    const report = await analyzeModel(loaded.data, path.basename(loaded.abs));
+    emit({ ok: true, ...report });
+    return 0;
+  } catch (error) {
+    if (error instanceof KinemeshError) return fail(error.message, error.guidance, `分析 ${loaded.abs}`);
+    return fail(reasonOf(error), '确认文件是完整的模型文件后重试。', `分析 ${loaded.abs}`);
+  }
+}
+
+function numberFlag(flags: Record<string, string>, name: string): number | undefined {
+  const raw = flags[name];
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function buildView(flags: Record<string, string>): unknown | undefined {
+  const hasCustom =
+    flags.azimuth !== undefined ||
+    flags.elevation !== undefined ||
+    flags.distance !== undefined ||
+    flags.target !== undefined ||
+    flags.fov !== undefined;
+  if (!hasCustom) return undefined;
+  const targetRaw = flags.target ?? '0,0,0';
+  const target = targetRaw.split(',').map((axis) => Number(axis.trim()));
+  return {
+    camera: {
+      azimuth: numberFlag(flags, 'azimuth') ?? 0,
+      elevation: numberFlag(flags, 'elevation') ?? 0,
+      distance: numberFlag(flags, 'distance'),
+      target,
+      fov: numberFlag(flags, 'fov'),
+    },
+  };
+}
+
+async function runRender(fileArg: string | undefined, flags: Record<string, string>): Promise<number> {
+  const framesRaw = flags.frames ?? flags.frame;
+  if (framesRaw === undefined || framesRaw === 'true') {
+    return fail('缺少 --frames。', '给帧号列表，例如 --frames 0,15,30；静态模型 --frames 0。', '解析渲染参数');
+  }
+  const frames = framesRaw
+    .split(',')
+    .map((token) => Number(token.trim()))
+    .filter((value) => Number.isInteger(value) && value >= 0);
+  if (frames.length === 0) {
+    return fail('frames 里没有合法帧号。', '帧号是非负整数，逗号分隔：--frames 0,15,30。', '解析渲染参数');
+  }
+  const loaded = await readModel(fileArg);
+  if (loaded === null) return 1;
+  const view = buildView(flags);
+  const viewInput = {
+    view,
+    viewPreset: view === undefined ? flags['view-preset'] : undefined,
+    mode: flags.mode as ViewMode | undefined,
+    clip: flags.clip,
+  };
+  try {
+    const result = await renderScreenshots({
+      data: loaded.data,
+      fileName: path.basename(loaded.abs),
+      viewInput,
+      frames,
+      width: numberFlag(flags, 'width'),
+      height: numberFlag(flags, 'height'),
+      outDir: flags['out-dir'] === undefined ? undefined : expandHome(flags['out-dir']),
+    });
+    emit({ ok: true, images: result.images, count: result.images.length, warnings: result.warnings, hint: '用读图工具逐张查看后再给结论。' });
+    return 0;
+  } catch (error) {
+    if (error instanceof KinemeshError) return fail(error.message, error.guidance, `渲染 ${loaded.abs}`);
+    return fail(reasonOf(error), '减少帧数/降低分辨率后重试；确认模型能被 info 解析。', `渲染 ${loaded.abs}`);
+  }
+}
+
+export async function main(argv: string[]): Promise<number> {
+  const { command, positional, flags } = parseArgv(argv);
+  const wantsHelp = flags.help !== undefined || command === '--help' || command === '-h';
+  if (wantsHelp) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  if (command === '') {
+    process.stderr.write(USAGE);
+    return 2;
+  }
+  if (command === 'info') return runInfo(positional[0]);
+  if (command === 'render') return runRender(positional[0], flags);
+  process.stderr.write(
+    `${JSON.stringify({
+      ok: false,
+      what: `未知命令「${command}」。`,
+      guidance: '可用命令：info <file> / render <file> [选项]；--help 看全部。',
+      step: '解析命令行',
+    })}\n`,
+  );
+  return 2;
+}
+
+// 直接执行时才跑（测试 / MCP 里 import main 不触发）；ESM 源码态没有 __filename，落在 catch
+const invokedDirectly = (() => {
+  try {
+    const self = path.resolve(__filename);
+    const invoked = path.resolve(process.argv[1] ?? '');
+    return invoked !== '' && invoked === self;
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
+  main(process.argv.slice(2))
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      process.stderr.write(`${JSON.stringify({ ok: false, what: reasonOf(error), guidance: '未知错误，重试或缩小参数范围。', step: 'CLI 执行' })}\n`);
+      process.exit(1);
+    });
+}

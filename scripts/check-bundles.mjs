@@ -6,7 +6,7 @@
 // 别人按 GitHub spec 安装时不会在本机构建，所以产物必须与源码同步。
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { buildPlugin } from './build-plugin.mjs';
 import { repo, selectPlugins } from './plugins.mjs';
@@ -50,13 +50,20 @@ if (unstaged !== '' || untracked !== '') {
 const hash = (data) => createHash('sha256').update(data).digest('hex');
 const stale = [];
 for (const plugin of plugins) {
-  for (const file of ['index.js', 'client.js']) {
-    const relative = `plugins/${plugin.id}/${file}`;
+  // 约定产物按存在性纳入校验（viewer.js / skill/cli/<id>.cjs / mcp/<id>-mcp.js）
+  const files = ['index.js', 'client.js'];
+  if (existsSync(path.join(plugin.dir, 'viewer.js'))) files.push('viewer.js');
+  const cliArtifact = path.join('skill', 'cli', `${plugin.id}.cjs`);
+  if (existsSync(path.join(plugin.dir, cliArtifact))) files.push(cliArtifact);
+  const mcpArtifact = path.join('mcp', `${plugin.id}-mcp.js`);
+  if (existsSync(path.join(plugin.dir, mcpArtifact))) files.push(mcpArtifact);
+  for (const file of files) {
+    const relative = `plugins/${plugin.id}/${file}`.replaceAll('\\', '/');
     const built = hash(readFileSync(path.join(plugin.dir, file)));
     let staged = 'missing';
     try {
-      // `:path` 读暂存区版本（未暂存改动不算）
-      staged = hash(execFileSync('git', ['show', `:${relative}`], { cwd: repo }));
+      // `:path` 读暂存区版本（未暂存改动不算）；maxBuffer 给大产物（内联 three.js）留足空间
+      staged = hash(execFileSync('git', ['show', `:${relative}`], { cwd: repo, maxBuffer: 64 * 1024 * 1024 }));
     } catch {
       // 暂存区里没有这个文件（还没 git add 过产物）
     }

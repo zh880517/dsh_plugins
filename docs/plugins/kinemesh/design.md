@@ -1,7 +1,7 @@
 # kinemesh（动析）架构设计
 
-> 状态：v0.2（M1 已实施）。定稿输入来自 `docs/dev/2026-11-18-kinemesh-design.md`（草稿评审版，
-> 全部落地后删除）；本文是长期有效的正式文档。
+> 状态：v0.3（**M1–M5 全部已实施**）。设计输入来自 `docs/dev/2026-11-18-kinemesh-design.md`
+>（草稿评审版，结论已全部回写本文，该草稿已按 docs/dev 生命周期删除）；本文是长期有效的正式文档。
 
 ## 1. 定位与三出口
 
@@ -136,6 +136,27 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
 - **client 依赖的宿主模块**：`dsh.client.inject: ['@deepseek-ai/dsh-client-ui-conversation']`
   （输入框/浮层槽位都在会话 UI 包里）。预览直接内联 viewer 模块（client.js ≈ 1.7 MiB）。
 
+### 3.10 M4：Skill + CLI
+
+- **技能目录**：`plugins/kinemesh/skill/` = `SKILL.md + cli/kinemesh.cjs`，复制目录即用（草稿 §5.2）。
+  落点决定（草稿 §11 开放问题的决定）：技能目录放在插件目录内（`plugins/<id>/skill/`），
+  不进 DSH 安装包（package.json `files` 不含它），随仓库分发。
+- **CLI 产物**：`src/cli.ts` → `skill/cli/kinemesh.cjs`（构建约定第四产物）：单文件 CJS + shebang，
+  three.js 全内联、免 npm install；playwright 保持外部依赖（render 前置，SKILL.md 写明）。
+  **用 `.cjs` 而不是 `.js`**：技能目录会被拷进任意工程，宿主 `"type":"module"` 不会把它当 ESM。
+  构建脚本给 CLI 关闭了 node: 内建的 browser 桩（`external: [/^node:/]`），否则 `path/fs` 全变空壳。
+- 契约：成功 stdout 一行 JSON（ok:true）；失败 stderr 三段式 JSON + 非零退出码；
+  `info <file>` / `render <file> --frames 0,15,30 --view-preset front --mode skeleton --out-dir …`。
+
+### 3.11 M5：MCP Server
+
+- **MCP 产物**：`src/mcp-server.ts` → `mcp/kinemesh-mcp.js`（构建约定第五产物）：单文件 ESM，
+  MCP SDK（@modelcontextprotocol/sdk 1.32）+ zod 4 + core 全内联；playwright 保持外部依赖；
+  stdio 传输。原位运行（ESM 依赖同目录 package.json），配置片段见 [mcp/README.md](../../plugins/kinemesh/mcp/README.md)。
+- 工具同名同参：schema 用 zod 定义并映射 DSH / CLI 的参数口径；缺参数不走 SDK 协议错误，
+  而是在 handler 里返回 `isError` + 三段式 JSON（与 CLI / DSH 工具的自愈口径一致）。
+- 集成测试直接 spawn 产物走 stdio JSON-RPC：initialize → tools/list → tools/call 全链路。
+
 ## 4. 数据流
 
 ```
@@ -159,8 +180,12 @@ heightMeters）/ warnings[]`。
 | M1 | core：Loader 注册表 + info 提取（FBX/glTF/OBJ） | ✅ 已实施（0.1.0） |
 | M2 | viewer 模块 + 截图管线（Playwright，按次启停） | ✅ 已实施（0.2.0） |
 | M3 | DSH 插件完整链路（预览面板 + 发送给 AI + `kinemesh_render`） | ✅ 已实施（0.3.0） |
-| M4 | Skill + CLI 打包（esbuild 单文件 + SKILL.md） | 进行中 |
-| M5 | MCP Server（stdio） | 待做 |
+| M4 | Skill + CLI 打包（单文件 CLI + SKILL.md） | ✅ 已实施（0.4.0） |
+| M5 | MCP Server（stdio） | ✅ 已实施（0.4.0） |
+
+> 三出口的工具契约以 `core` 为准：同名（`kinemesh_info` / `kinemesh_render`）、同参数口径、
+> 同返回结构；DSH 的 JSON Schema、CLI 的 flag、MCP 的 zod 分别投影自同一套 core 入参
+> （`core/viewstate.ts` 的 `resolveView` 负责校验与缺省）。
 
 开放问题（草稿 §10）的处理约定：
 

@@ -1,8 +1,12 @@
 // 单插件构建：把 shared/ 与插件 src 打成自包含产物。
-//   index.js   —— Host 半，Node ESM，只外置 node: 内建模块
-//   client.js  —— Client 半，套上宿主的 __ModuleLoader__ 懒加载 factory 外壳
-//   viewer.js  —— 约定产物：src/viewer-page.ts 存在时额外构建（IIFE 全内联，浏览器独立可跑，
-//                 用途：kinemesh 的截图页）；没有该入口的插件不受影响。
+//   index.js           —— Host 半，Node ESM，只外置 node: 内建模块
+//   client.js          —— Client 半，套上宿主的 __ModuleLoader__ 懒加载 factory 外壳
+//   viewer.js          —— 约定产物：src/viewer-page.ts 存在时额外构建（IIFE 全内联，浏览器独立可跑，
+//                         用途：kinemesh 的截图页）；没有该入口的插件不受影响。
+//   skill/cli/<id>.cjs —— 约定产物：src/cli.ts 存在时额外构建（单文件 CJS + shebang，three.js 全内联，
+//                         playwright 保持外部依赖），与 skill/SKILL.md 组成自包含技能目录（M4）。
+//   mcp/<id>-mcp.js    —— 约定产物：src/mcp-server.ts 存在时额外构建（单文件 ESM，MCP SDK 内联，
+//                         playwright 保持外部依赖；stdio），配置进任意 MCP 客户端（M5）。
 //
 // 所有插件共用这一份构建；插件差异只允许来自它自己的 package.json 与源码。
 import { existsSync } from 'node:fs';
@@ -102,6 +106,58 @@ async function buildViewer(plugin, work) {
   return code.length;
 }
 
+/** 约定第四产物：src/cli.ts → skill/cli/<id>.cjs（单文件 CJS + shebang；playwright 保持外部依赖）。
+ *  用 .cjs 而不是 .js：技能目录会被拷进任意工程，宿主 package.json 的 "type":"module" 不会把它当 ESM。 */
+async function buildCli(plugin, work) {
+  const entry = path.join(plugin.dir, 'src', 'cli.ts');
+  if (!existsSync(entry)) return null;
+  await build({
+    configFile: false,
+    root: repo,
+    logLevel: 'warn',
+    resolve: { alias: sharedAlias },
+    build: {
+      lib: { entry, formats: ['cjs'], fileName: () => 'cli.cjs' },
+      outDir: path.join(work, 'cli'),
+      emptyOutDir: true,
+      minify: false,
+      target: 'node18',
+      // node: 内建必须外置（否则 vite 会给它们注入 browser 桩，path/fs 全变成空壳）；playwright 由用户环境提供
+      rollupOptions: { external: [/^node:/, 'playwright'] },
+    },
+  });
+  const body = stripRegionPaths(await readFile(path.join(work, 'cli', 'cli.cjs'), 'utf8'));
+  const out = path.join(plugin.dir, 'skill', 'cli', `${plugin.id}.cjs`);
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, `#!/usr/bin/env node\n${body}`, 'utf8');
+  return body.length;
+}
+
+/** 约定第五产物：src/mcp-server.ts → mcp/<id>-mcp.js（单文件 ESM；stdio；playwright 保持外部依赖） */
+async function buildMcp(plugin, work) {
+  const entry = path.join(plugin.dir, 'src', 'mcp-server.ts');
+  if (!existsSync(entry)) return null;
+  await build({
+    configFile: false,
+    root: repo,
+    logLevel: 'warn',
+    resolve: { alias: sharedAlias },
+    build: {
+      lib: { entry, formats: ['es'], fileName: () => `${plugin.id}-mcp.js` },
+      outDir: path.join(work, 'mcp'),
+      emptyOutDir: true,
+      minify: false,
+      target: 'node18',
+      rollupOptions: { external: [/^node:/, 'playwright'] },
+    },
+  });
+  const body = stripRegionPaths(await readFile(path.join(work, 'mcp', `${plugin.id}-mcp.js`), 'utf8'));
+  const out = path.join(plugin.dir, 'mcp', `${plugin.id}-mcp.js`);
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, body, 'utf8');
+  return body.length;
+}
+
 /** Host 产物里的 import 只应剩 node: 内建；其余说明打包没闭合 */
 function assertSelfContained(code, label) {
   const imports = [...code.matchAll(/(?:^|\n)\s*import\s+[^;]*?from\s+["']([^"']+)["']/g)].map((match) => match[1]);
@@ -126,6 +182,8 @@ export async function buildPlugin(plugin) {
   await mkdir(work, { recursive: true });
 
   const viewerKiB = await buildViewer(plugin, work);
+  const cliKiB = await buildCli(plugin, work);
+  const mcpKiB = await buildMcp(plugin, work);
   await Promise.all([buildHost(plugin, work), buildClient(plugin, work)]);
 
   const hostCode = stripRegionPaths(await readFile(path.join(work, 'host', 'index.js'), 'utf8'));
@@ -144,5 +202,7 @@ export async function buildPlugin(plugin) {
     hostKiB: (hostCode.length / 1024).toFixed(1),
     clientKiB: (clientCode.length / 1024).toFixed(1),
     viewerKiB: viewerKiB === null ? null : (viewerKiB / 1024).toFixed(1),
+    cliKiB: cliKiB === null ? null : (cliKiB / 1024).toFixed(1),
+    mcpKiB: mcpKiB === null ? null : (mcpKiB / 1024).toFixed(1),
   };
 }

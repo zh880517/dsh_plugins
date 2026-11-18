@@ -5,7 +5,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { KinemeshError, reasonOf } from '../errors.js';
 import { orbit8Azimuths, resolveView, type NormalizedViewInput, type ViewState } from '../viewstate.js';
 
@@ -129,21 +129,35 @@ async function applyView(page: import('playwright').Page, view: ViewState): Prom
   await page.evaluate((payload) => (window as unknown as BridgeHost).__kinemeshViewer.applyView(payload), view);
 }
 
-/** viewer.js 与 index.js 同目录（构建产物一起分发）。
- *  源码态（vitest/typecheck）import.meta.url 在 src/core/render/ 下，运行态在插件根 index.js——
- *  逐级向上探测，两边都能找到。 */
+/** viewer.js 与 index.js / cli 产物同仓分发。
+ *  基准目录：CJS（CLI bundle）用 __filename；ESM（index.js / 源码测试态）用 import.meta.url——
+ *  vite 会把 CJS 里的 import.meta.url 编译成空值，所以两条路都要有。从基准目录逐级向上找 viewer.js。 */
+function viewerSearchDir(): string | null {
+  try {
+    return path.dirname(path.resolve(__filename));
+  } catch {
+    // ESM 态没有 __filename
+  }
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return null;
+  }
+}
+
 async function readViewerBundle(): Promise<string> {
-  for (const relative of ['./viewer.js', '../viewer.js', '../../viewer.js', '../../../viewer.js']) {
-    const candidate = new URL(relative, import.meta.url);
+  const base = viewerSearchDir();
+  let dir = base;
+  for (let depth = 0; dir !== null && depth < 5; depth += 1) {
     try {
-      return await readFile(candidate, 'utf8');
+      return await readFile(path.join(dir, 'viewer.js'), 'utf8');
     } catch {
-      // 试下一个层级
+      dir = path.dirname(dir);
     }
   }
   throw new KinemeshError(
     '找不到 viewer 产物（viewer.js）。',
-    'viewer.js 与 index.js 一起构建/分发（npm run build -- --only kinemesh）；插件安装包缺文件时重装插件。',
+    'viewer.js 与插件产物一起构建/分发（npm run build -- --only kinemesh）；插件安装包缺文件时重装插件。',
   );
 }
 

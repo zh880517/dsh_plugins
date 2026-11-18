@@ -26,6 +26,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@types/node": "^26.4.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
@@ -37,6 +38,7 @@
     "three": "0.187.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "zod": "4.6.7"
   }
 }
