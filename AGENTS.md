@@ -11,7 +11,7 @@
 |---|---|
 | `aiworkflow` | 流程图驱动的分步执行：在 DSH 里画流程图、发起 run、看进度与运行图；Agent 每领一步指令 → 做完回报 `summary`/`payload` → 再领下一步。核心理念是**管理 Agent 的注意力预算（逐步披露），引导而非约束**。 |
 
-不提供独立 MCP 服务，不提供 CLI，也不适配其它 Agent 宿主。
+面向 DSH 以外的 AI Agent 工具，只支持 **Skill** 和 **MCP** 两种形式。
 aiworkflow 的 Host 半用 `node:sqlite` 直接打开 `~/.aiworkflow/aiworkflow.db`，不依赖任何外部服务。
 
 必读文档：
@@ -63,7 +63,7 @@ npm run release:plugin [-- --only <id>]   # 构建 → 提交 → 刷新索引 �
 - **改代码必须 bump 版本**：每个插件独立 semver；`release:plugin` 会拒绝「内容变了、版本号没变」，否则市场索引里同一版本会对应多个 commit。
 - **命名空间自带前缀**：bundle 包名全局唯一；loader row id（如 `aiworkflow-progress`）、Host 路由前缀（如 `/aiworkflow`）、Client slot / 面板 id 都要按插件加前缀，避免同 profile 多插件冲突。
 - **文档与插件一一对应**：新增 `plugins/<id>/` 必须同时建 `docs/plugins/<id>/{README,design}.md`，并在根 README 与 `docs/README.md` 各加一行链接；`npm run check:docs` 会拦。
-- **只支持 DSH 插件**：不要恢复独立服务、HTTP MCP 端点、install / hook / Skill 宿主集成或其它 Agent 客户端适配。
+- **DSH 以外的 AI Agent 工具只支持 Skill 和 MCP**：不要恢复独立服务、install / hook 宿主集成或其它 Agent 客户端深度适配。
 
 ### aiworkflow 专属红线（来自其设计文档）
 
