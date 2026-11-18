@@ -1,0 +1,3 @@
+- insert:
+    - id: kinemesh
+      name: '@kinemesh/dsh-plugin'

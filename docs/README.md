@@ -26,6 +26,7 @@
 |---|---|---|---|
 | aiworkflow | [docs/plugins/aiworkflow/README.md](./plugins/aiworkflow/README.md) | `plugins/aiworkflow/` | `@aiworkflow/dsh-plugin` |
 | handoff | [docs/plugins/handoff/README.md](./plugins/handoff/README.md) | `plugins/handoff/` | `@handoff/dsh-plugin` |
+| kinemesh | [docs/plugins/kinemesh/README.md](./plugins/kinemesh/README.md) | `plugins/kinemesh/` | `@kinemesh/dsh-plugin` |
 
 ## 链接规则（`npm run check:docs` 会校验）
 
@@ -45,4 +46,5 @@
   - 审计修复补丁：[dev/2026-10-29-audit-fixes.patch](./dev/2026-10-29-audit-fixes.patch)（已应用到源码，保留作记录）
   - 复现用例：[dev/2026-10-29-audit-repro.test.ts](./dev/2026-10-29-audit-repro.test.ts)（复制到 `tests/` 运行）
 
-> 项目只面向 DeepSeek Harness 插件；不再维护独立 MCP 服务、CLI 或其它 Agent 宿主的接入文档。
+> 项目以 DeepSeek Harness 插件为主；DSH 以外的 AI Agent 形态只支持 Skill 与 MCP
+> （不做独立服务、install / hook 宿主集成或其它 Agent 客户端深度适配）。

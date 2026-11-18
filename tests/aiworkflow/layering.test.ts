@@ -48,19 +48,46 @@ function escapes(file: string, specifier: string, allowedDir: string): boolean {
 }
 
 /** plugins/ 下每个插件目录（只看有 package.json 的） */
-function pluginDirs(): Array<{ id: string; src: string }> {
+function pluginDirs(): Array<{ id: string; src: string; pkg: Record<string, any> }> {
   return fs
     .readdirSync(pluginsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
     .filter((entry) => fs.existsSync(path.join(pluginsRoot, entry.name, 'package.json')))
-    .map((entry) => ({ id: entry.name, src: path.join(pluginsRoot, entry.name, 'src') }))
+    .map((entry) => ({
+      id: entry.name,
+      src: path.join(pluginsRoot, entry.name, 'src'),
+      pkg: JSON.parse(fs.readFileSync(path.join(pluginsRoot, entry.name, 'package.json'), 'utf8')),
+    }))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
+/**
+ * 构建期第三方依赖白名单：根 devDependencies（React / React Flow / three.js 等，构建时内联进产物）
+ * + 各插件自己 package.json 声明的 dependencies / devDependencies。
+ * 白名单只影响打包期 import；运行期依赖一律内联，不允许「装的时候还要 npm install」。
+ */
+const rootDevDeps: ReadonlySet<string> = new Set(
+  Object.keys(
+    (JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { devDependencies?: Record<string, unknown> })
+      .devDependencies ?? {},
+  ),
+);
+
+/** 'three/examples/jsm/loaders/FBXLoader.js' → 'three'；'@scope/pkg/sub' → '@scope/pkg' */
+function packageName(specifier: string): string {
+  const segments = specifier.split('/');
+  return specifier.startsWith('@') ? segments.slice(0, 2).join('/') : (segments[0] ?? specifier);
+}
+
 describe('层次约束：插件只依赖 shared/', () => {
-  it('plugins/*/src 只引用 @shared/*、自身目录内的相对路径与 node: 内建', () => {
+  it('plugins/*/src 只引用 @shared/*、自身目录内的相对路径、node: 内建与声明的构建期依赖', () => {
     const bad: string[] = [];
     for (const plugin of pluginDirs()) {
+      const allowed = new Set([
+        ...rootDevDeps,
+        ...Object.keys(plugin.pkg.dependencies ?? {}),
+        ...Object.keys(plugin.pkg.devDependencies ?? {}),
+      ]);
       for (const file of walk(plugin.src)) {
         for (const specifier of specifiers(fs.readFileSync(file, 'utf8'))) {
           if (specifier.startsWith('.')) {
@@ -68,14 +95,13 @@ describe('层次约束：插件只依赖 shared/', () => {
             continue;
           }
           if (specifier.startsWith('@shared/') || specifier.startsWith('node:')) continue;
-          // 构建期第三方依赖（React / React Flow）允许
-          if (specifier === 'react' || specifier === 'react-dom' || specifier.startsWith('react/')) continue;
-          if (specifier.startsWith('@xyflow/')) continue;
-          bad.push(`${path.relative(root, file)} → ${specifier}`);
+          if (!allowed.has(packageName(specifier))) {
+            bad.push(`${path.relative(root, file)} → ${specifier}（不在根 devDependencies 或本插件 package.json 里）`);
+          }
         }
       }
     }
-    expect(bad, '插件里出现了 shared/ 之外的依赖，把共用逻辑挪到 shared/src/').toEqual([]);
+    expect(bad, '插件里出现了 shared/ 之外的未声明依赖：构建期第三方依赖要在根 devDependencies 声明').toEqual([]);
   });
 
   it('插件之间不互相 import', () => {
