@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 /**
 * @license
 * Copyright 2010-2026 Three.js Authors
@@ -775,7 +777,7 @@ function generateUUID() {
 * @param {number} max - The max value.
 * @return {number} The clamped value.
 */
-function clamp(value, min, max) {
+function clamp$1(value, min, max) {
 	return Math.max(min, Math.min(max, value));
 }
 /**
@@ -1091,7 +1093,7 @@ var MathUtils = {
 	* @param {number} max - The max value.
 	* @return {number} The clamped value.
 	*/
-	clamp,
+	clamp: clamp$1,
 	/**
 	* Computes the Euclidean modulo of the given parameters that
 	* is `( ( n % m ) + m ) % m`.
@@ -1656,8 +1658,8 @@ var Vector2 = class {
 	* @return {Vector2} A reference to this vector.
 	*/
 	clamp(min, max) {
-		this.x = clamp(this.x, min.x, max.x);
-		this.y = clamp(this.y, min.y, max.y);
+		this.x = clamp$1(this.x, min.x, max.x);
+		this.y = clamp$1(this.y, min.y, max.y);
 		return this;
 	}
 	/**
@@ -1671,8 +1673,8 @@ var Vector2 = class {
 	* @return {Vector2} A reference to this vector.
 	*/
 	clampScalar(minVal, maxVal) {
-		this.x = clamp(this.x, minVal, maxVal);
-		this.y = clamp(this.y, minVal, maxVal);
+		this.x = clamp$1(this.x, minVal, maxVal);
+		this.y = clamp$1(this.y, minVal, maxVal);
 		return this;
 	}
 	/**
@@ -1687,7 +1689,7 @@ var Vector2 = class {
 	*/
 	clampLength(min, max) {
 		const length = this.length();
-		return this.divideScalar(length || 1).multiplyScalar(clamp(length, min, max));
+		return this.divideScalar(length || 1).multiplyScalar(clamp$1(length, min, max));
 	}
 	/**
 	* The components of this vector are rounded down to the nearest integer value.
@@ -1811,7 +1813,7 @@ var Vector2 = class {
 		const denominator = Math.sqrt(this.lengthSq() * v.lengthSq());
 		if (denominator === 0) return Math.PI / 2;
 		const theta = this.dot(v) / denominator;
-		return Math.acos(clamp(theta, -1, 1));
+		return Math.acos(clamp$1(theta, -1, 1));
 	}
 	/**
 	* Computes the distance from the given vector to this instance.
@@ -2319,7 +2321,7 @@ var Quaternion = class {
 	* @return {number} The angle in radians.
 	*/
 	angleTo(q) {
-		return 2 * Math.acos(Math.abs(clamp(this.dot(q), -1, 1)));
+		return 2 * Math.acos(Math.abs(clamp$1(this.dot(q), -1, 1)));
 	}
 	/**
 	* Rotates this quaternion by a given angular step to the given quaternion.
@@ -3061,9 +3063,9 @@ var Vector3 = class {
 	* @return {Vector3} A reference to this vector.
 	*/
 	clamp(min, max) {
-		this.x = clamp(this.x, min.x, max.x);
-		this.y = clamp(this.y, min.y, max.y);
-		this.z = clamp(this.z, min.z, max.z);
+		this.x = clamp$1(this.x, min.x, max.x);
+		this.y = clamp$1(this.y, min.y, max.y);
+		this.z = clamp$1(this.z, min.z, max.z);
 		return this;
 	}
 	/**
@@ -3077,9 +3079,9 @@ var Vector3 = class {
 	* @return {Vector3} A reference to this vector.
 	*/
 	clampScalar(minVal, maxVal) {
-		this.x = clamp(this.x, minVal, maxVal);
-		this.y = clamp(this.y, minVal, maxVal);
-		this.z = clamp(this.z, minVal, maxVal);
+		this.x = clamp$1(this.x, minVal, maxVal);
+		this.y = clamp$1(this.y, minVal, maxVal);
+		this.z = clamp$1(this.z, minVal, maxVal);
 		return this;
 	}
 	/**
@@ -3094,7 +3096,7 @@ var Vector3 = class {
 	*/
 	clampLength(min, max) {
 		const length = this.length();
-		return this.divideScalar(length || 1).multiplyScalar(clamp(length, min, max));
+		return this.divideScalar(length || 1).multiplyScalar(clamp$1(length, min, max));
 	}
 	/**
 	* The components of this vector are rounded down to the nearest integer value.
@@ -3304,7 +3306,7 @@ var Vector3 = class {
 		const denominator = Math.sqrt(this.lengthSq() * v.lengthSq());
 		if (denominator === 0) return Math.PI / 2;
 		const theta = this.dot(v) / denominator;
-		return Math.acos(clamp(theta, -1, 1));
+		return Math.acos(clamp$1(theta, -1, 1));
 	}
 	/**
 	* Computes the distance from the given vector to this instance.
@@ -5429,10 +5431,10 @@ var Vector4 = class {
 	* @return {Vector4} A reference to this vector.
 	*/
 	clamp(min, max) {
-		this.x = clamp(this.x, min.x, max.x);
-		this.y = clamp(this.y, min.y, max.y);
-		this.z = clamp(this.z, min.z, max.z);
-		this.w = clamp(this.w, min.w, max.w);
+		this.x = clamp$1(this.x, min.x, max.x);
+		this.y = clamp$1(this.y, min.y, max.y);
+		this.z = clamp$1(this.z, min.z, max.z);
+		this.w = clamp$1(this.w, min.w, max.w);
 		return this;
 	}
 	/**
@@ -5446,10 +5448,10 @@ var Vector4 = class {
 	* @return {Vector4} A reference to this vector.
 	*/
 	clampScalar(minVal, maxVal) {
-		this.x = clamp(this.x, minVal, maxVal);
-		this.y = clamp(this.y, minVal, maxVal);
-		this.z = clamp(this.z, minVal, maxVal);
-		this.w = clamp(this.w, minVal, maxVal);
+		this.x = clamp$1(this.x, minVal, maxVal);
+		this.y = clamp$1(this.y, minVal, maxVal);
+		this.z = clamp$1(this.z, minVal, maxVal);
+		this.w = clamp$1(this.w, minVal, maxVal);
 		return this;
 	}
 	/**
@@ -5464,7 +5466,7 @@ var Vector4 = class {
 	*/
 	clampLength(min, max) {
 		const length = this.length();
-		return this.divideScalar(length || 1).multiplyScalar(clamp(length, min, max));
+		return this.divideScalar(length || 1).multiplyScalar(clamp$1(length, min, max));
 	}
 	/**
 	* The components of this vector are rounded down to the nearest integer value.
@@ -6811,7 +6813,7 @@ var Euler = class Euler {
 		const m31 = te[2], m32 = te[6], m33 = te[10];
 		switch (order) {
 			case "XYZ":
-				this._y = Math.asin(clamp(m13, -1, 1));
+				this._y = Math.asin(clamp$1(m13, -1, 1));
 				if (Math.abs(m13) < .9999999) {
 					this._x = Math.atan2(-m23, m33);
 					this._z = Math.atan2(-m12, m11);
@@ -6821,7 +6823,7 @@ var Euler = class Euler {
 				}
 				break;
 			case "YXZ":
-				this._x = Math.asin(-clamp(m23, -1, 1));
+				this._x = Math.asin(-clamp$1(m23, -1, 1));
 				if (Math.abs(m23) < .9999999) {
 					this._y = Math.atan2(m13, m33);
 					this._z = Math.atan2(m21, m22);
@@ -6831,7 +6833,7 @@ var Euler = class Euler {
 				}
 				break;
 			case "ZXY":
-				this._x = Math.asin(clamp(m32, -1, 1));
+				this._x = Math.asin(clamp$1(m32, -1, 1));
 				if (Math.abs(m32) < .9999999) {
 					this._y = Math.atan2(-m31, m33);
 					this._z = Math.atan2(-m12, m22);
@@ -6841,7 +6843,7 @@ var Euler = class Euler {
 				}
 				break;
 			case "ZYX":
-				this._y = Math.asin(-clamp(m31, -1, 1));
+				this._y = Math.asin(-clamp$1(m31, -1, 1));
 				if (Math.abs(m31) < .9999999) {
 					this._x = Math.atan2(m32, m33);
 					this._z = Math.atan2(m21, m11);
@@ -6851,7 +6853,7 @@ var Euler = class Euler {
 				}
 				break;
 			case "YZX":
-				this._z = Math.asin(clamp(m21, -1, 1));
+				this._z = Math.asin(clamp$1(m21, -1, 1));
 				if (Math.abs(m21) < .9999999) {
 					this._x = Math.atan2(-m23, m22);
 					this._y = Math.atan2(-m31, m11);
@@ -6861,7 +6863,7 @@ var Euler = class Euler {
 				}
 				break;
 			case "XZY":
-				this._z = Math.asin(-clamp(m12, -1, 1));
+				this._z = Math.asin(-clamp$1(m12, -1, 1));
 				if (Math.abs(m12) < .9999999) {
 					this._x = Math.atan2(m32, m22);
 					this._y = Math.atan2(m13, m11);
@@ -8563,8 +8565,8 @@ var Color = class {
 	*/
 	setHSL(h, s, l, colorSpace = ColorManagement.workingColorSpace) {
 		h = euclideanModulo(h, 1);
-		s = clamp(s, 0, 1);
-		l = clamp(l, 0, 1);
+		s = clamp$1(s, 0, 1);
+		l = clamp$1(l, 0, 1);
 		if (s === 0) this.r = this.g = this.b = l;
 		else {
 			const p = l <= .5 ? l * (1 + s) : l + s - l * s;
@@ -8717,7 +8719,7 @@ var Color = class {
 	*/
 	getHex(colorSpace = SRGBColorSpace) {
 		ColorManagement.workingToColorSpace(_color$1.copy(this), colorSpace);
-		return Math.round(clamp(_color$1.r * 255, 0, 255)) * 65536 + Math.round(clamp(_color$1.g * 255, 0, 255)) * 256 + Math.round(clamp(_color$1.b * 255, 0, 255));
+		return Math.round(clamp$1(_color$1.r * 255, 0, 255)) * 65536 + Math.round(clamp$1(_color$1.g * 255, 0, 255)) * 256 + Math.round(clamp$1(_color$1.b * 255, 0, 255));
 	}
 	/**
 	* Returns the hexadecimal value of this color as a string (for example, 'FFFFFF').
@@ -16397,13 +16399,13 @@ var Curve = class {
 			vec.crossVectors(tangents[i - 1], tangents[i]);
 			if (vec.length() > Number.EPSILON) {
 				vec.normalize();
-				const theta = Math.acos(clamp(tangents[i - 1].dot(tangents[i]), -1, 1));
+				const theta = Math.acos(clamp$1(tangents[i - 1].dot(tangents[i]), -1, 1));
 				normals[i].applyMatrix4(mat.makeRotationAxis(vec, theta));
 			}
 			binormals[i].crossVectors(tangents[i], normals[i]);
 		}
 		if (closed === true) {
-			let theta = Math.acos(clamp(normals[0].dot(normals[segments]), -1, 1));
+			let theta = Math.acos(clamp$1(normals[0].dot(normals[segments]), -1, 1));
 			theta /= segments;
 			if (tangents[0].dot(vec.crossVectors(normals[0], normals[segments])) > 0) theta = -theta;
 			for (let i = 1; i <= segments; i++) {
@@ -17490,7 +17492,7 @@ var MeshPhysicalMaterial = class extends MeshStandardMaterial {
 		*/
 		Object.defineProperty(this, "reflectivity", {
 			get: function() {
-				return clamp(2.5 * (this.ior - 1) / (this.ior + 1), 0, 1);
+				return clamp$1(2.5 * (this.ior - 1) / (this.ior + 1), 0, 1);
 			},
 			set: function(reflectivity) {
 				this.ior = (1 + .4 * reflectivity) / (1 - .4 * reflectivity);
@@ -29604,6 +29606,358 @@ function headBytes(data) {
 }
 //#endregion
 //#region
+var VIEW_PRESETS = {
+	front: {
+		azimuth: 0,
+		elevation: 0
+	},
+	side: {
+		azimuth: 90,
+		elevation: 0
+	},
+	back: {
+		azimuth: 180,
+		elevation: 0
+	},
+	"three-quarter": {
+		azimuth: 45,
+		elevation: 20
+	}
+};
+/** orbit8 = 八方位连拍：每 45° 一个方位 */
+var ORBIT8_AZIMUTHS = [
+	0,
+	45,
+	90,
+	135,
+	180,
+	225,
+	270,
+	315
+];
+var DEFAULT_DISTANCE_FACTOR = 2.2;
+/**
+* 把工具/CLI 入参（view 或 viewPreset 二选一 + mode/clip/frame）解析成规范 ViewState。
+* 场景信息（bounds/clips）由调用方提供，用于缺省 target/distance 与 clip 校验。
+* 参数不合法时抛 KinemeshError（自愈文案）。
+*/
+function resolveView(input, scene) {
+	const warnings = [];
+	const mode = parseMode(input.mode);
+	const clip = parseClip(input.clip, scene.clips);
+	const frame = parseFrame(input.frame, clip);
+	let azimuth = null;
+	let elevation = null;
+	let orbit8 = false;
+	const hasView = input.view !== void 0 && input.view !== null;
+	const hasPreset = input.viewPreset !== void 0 && input.viewPreset !== null;
+	if (hasView && hasPreset) throw new KinemeshError("view 与 viewPreset 同时给出了，二选一。", "要么给完整 view 对象（azimuth/elevation/distance/target/fov），要么只给 viewPreset 名称。");
+	if (hasView) {
+		const camera = parseViewCamera(input.view, scene);
+		azimuth = camera.azimuth;
+		elevation = camera.elevation;
+		return {
+			view: withDefaults({
+				camera: {
+					...camera,
+					target: camera.target,
+					fov: camera.fov
+				},
+				clip,
+				frame,
+				mode
+			}, scene),
+			orbit8: false,
+			warnings
+		};
+	}
+	if (hasPreset) {
+		const preset = String(input.viewPreset);
+		if (preset === "orbit8") {
+			orbit8 = true;
+			elevation = 20;
+		} else {
+			const definition = VIEW_PRESETS[preset];
+			if (definition === void 0) throw new KinemeshError(`未知 viewPreset「${preset}」。`, `可选值：${Object.keys(VIEW_PRESETS).join(" / ")} / orbit8（八方位连拍）。`);
+			azimuth = definition.azimuth;
+			elevation = definition.elevation;
+		}
+	}
+	const view = {
+		camera: {
+			azimuth: azimuth ?? VIEW_PRESETS["three-quarter"].azimuth,
+			elevation: elevation ?? VIEW_PRESETS["three-quarter"].elevation,
+			distance: scene.radius * DEFAULT_DISTANCE_FACTOR,
+			target: [...scene.center],
+			fov: 40
+		},
+		clip,
+		frame,
+		mode
+	};
+	if (input.viewPreset === void 0 && input.view === void 0) warnings.push("未指定视角，按 three-quarter 缺省视角渲染。");
+	if (frame !== null && clip === null) warnings.push("指定了 frame 但没指定 clip：按静态姿态渲染，frame 被忽略。");
+	return {
+		view: withDefaults(view, scene),
+		orbit8,
+		warnings
+	};
+}
+function withDefaults(view, scene) {
+	const camera = view.camera;
+	return {
+		camera: {
+			azimuth: normalizeDegrees(camera.azimuth),
+			elevation: clamp(camera.elevation, -89, 89),
+			distance: camera.distance > 0 ? camera.distance : scene.radius * DEFAULT_DISTANCE_FACTOR,
+			target: camera.target,
+			fov: clamp(camera.fov, 5, 120)
+		},
+		clip: view.clip,
+		frame: view.frame,
+		mode: view.mode
+	};
+}
+/** orbit8 展开：返回逐方位的方位角表 */
+function orbit8Azimuths() {
+	return [...ORBIT8_AZIMUTHS];
+}
+function normalizeDegrees(degrees) {
+	const wrapped = degrees % 360;
+	return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+function clamp(value, low, high) {
+	return Math.min(high, Math.max(low, value));
+}
+function parseMode(input) {
+	if (input === void 0 || input === null) return "default";
+	const value = String(input);
+	if (value === "default" || value === "wireframe" || value === "skeleton" || value === "bones-overlay") return value;
+	throw new KinemeshError(`未知渲染模式「${value}」。`, "可选值：default / wireframe / skeleton / bones-overlay。");
+}
+function parseClip(input, clips) {
+	if (input === void 0 || input === null || input === "") return null;
+	const value = String(input);
+	if (!clips.includes(value)) throw new KinemeshError(`场景里没有动画片段「${value}」。`, clips.length === 0 ? "这个模型没有动画片段，去掉 clip 参数按静态渲染。" : `可用片段：${clips.join(" / ")}（先调 kinemesh_info 确认）。`);
+	return value;
+}
+function parseFrame(input, clip) {
+	if (input === void 0 || input === null) return clip === null ? null : 0;
+	const value = Number(input);
+	if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) throw new KinemeshError(`frame 必须是非负整数帧号，收到「${String(input)}」。`, "frame 是帧号（整数），按 30fps 换算成秒：time = frame / 30。");
+	return value;
+}
+function parseViewCamera(input, scene) {
+	if (typeof input !== "object" || input === null) throw new KinemeshError("view 必须是对象（camera: {azimuth,elevation,distance,target,fov}）。", "view 形如 {\"camera\":{\"azimuth\":45,\"elevation\":15,\"distance\":3.2,\"target\":[0,1,0],\"fov\":40}}；省略字段按场景包围盒缺省。");
+	const raw = input;
+	const rawCamera = typeof raw.camera === "object" && raw.camera !== null ? raw.camera : raw;
+	const numberAt = (name, fallback) => {
+		const value = rawCamera[name];
+		if (value === void 0 || value === null) {
+			if (fallback !== void 0) return fallback;
+			throw new KinemeshError(`view.camera.${name} 缺失。`, `补上 ${name}（数字）；或直接用 viewPreset 简化。`);
+		}
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) throw new KinemeshError(`view.camera.${name} 不是数字：${String(value)}。`, `补上合法数字；或直接用 viewPreset 简化。`);
+		return parsed;
+	};
+	const rawTarget = Array.isArray(rawCamera.target) ? rawCamera.target : scene.center;
+	const target = [
+		Number(rawTarget[0] ?? scene.center[0]),
+		Number(rawTarget[1] ?? scene.center[1]),
+		Number(rawTarget[2] ?? scene.center[2])
+	];
+	if (target.some((axis) => !Number.isFinite(axis))) throw new KinemeshError("view.camera.target 必须是 [x, y, z] 数字数组。", "例如 \"target\": [0, 1, 0]。");
+	return {
+		azimuth: numberAt("azimuth", 0),
+		elevation: numberAt("elevation", 0),
+		distance: numberAt("distance", scene.radius * DEFAULT_DISTANCE_FACTOR),
+		target,
+		fov: numberAt("fov", 40)
+	};
+}
+//#endregion
+//#region
+function parseAnalyzeRequest(body) {
+	if (typeof body !== "object" || body === null) return {
+		ok: false,
+		message: "请求体必须是 JSON 对象。"
+	};
+	const raw = body;
+	const path = typeof raw.path === "string" ? raw.path.trim() : "";
+	if (path === "") return {
+		ok: false,
+		message: "缺少 path（模型文件路径）。"
+	};
+	const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
+	if (sessionId === "") return {
+		ok: false,
+		message: "缺少 sessionId（当前会话 id）。"
+	};
+	const clip = typeof raw.clip === "string" && raw.clip.trim() !== "" ? raw.clip.trim() : null;
+	const frameRaw = raw.frame;
+	return {
+		ok: true,
+		request: {
+			path,
+			sessionId,
+			clip,
+			frame: typeof frameRaw === "number" && Number.isFinite(frameRaw) && frameRaw >= 0 && Number.isInteger(frameRaw) ? frameRaw : clip === null ? null : 0,
+			view: isViewStateLike(raw.view) ? raw.view : null,
+			note: typeof raw.note === "string" && raw.note.trim() !== "" ? raw.note.trim() : null
+		}
+	};
+}
+function isViewStateLike(value) {
+	if (typeof value !== "object" || value === null) return false;
+	const camera = value.camera;
+	return typeof camera === "object" && camera !== null;
+}
+/** 组装投递给 Agent 的用户态消息（followup）：视角描述 + 明确的工具调用指令 */
+function composeAnalyzeMessage(request) {
+	const view = request.view;
+	const viewText = view === null ? "缺省视角（three-quarter：azimuth 45° / elevation 20°，距离按模型包围球自适应）" : `azimuth ${round(view.camera.azimuth)}°，elevation ${round(view.camera.elevation)}°，distance ${round(view.camera.distance)}，target [${view.camera.target.map((axis) => round(axis)).join(", ")}]，fov ${round(view.camera.fov)}，渲染模式 ${view.mode}`;
+	const clipText = request.clip === null ? "（无动画/静态）" : `「${request.clip}」`;
+	const frameText = request.frame === null ? "0" : String(request.frame);
+	const lines = [
+		"【动析 kinemesh】用户在 3D 预览面板里请求对模型做视觉分析。",
+		`模型文件：${request.path}`,
+		`动画片段：${clipText}；帧号：${frameText}（换算 time = frame / 30）`,
+		`视角：${viewText}`
+	];
+	if (request.note !== null) lines.push("用户附言：", "\"\"\"", request.note, "\"\"\"");
+	lines.push("请调用 kinemesh_render 渲染上面这个视角的截图（clip/frames/view 按上面取值；view 直接传完整对象），然后用读图工具查看 PNG，给出视觉分析（结构、动作质量、穿模/悬空、比例等，按用户附言侧重）。");
+	return lines.join("\n");
+}
+function round(value) {
+	return Number.isInteger(value) ? value : Number(value.toFixed(2));
+}
+//#endregion
+//#region
+var MAX_FRAMES = 64;
+var PAGE_TIMEOUT_MS = 6e4;
+async function renderScreenshots(request) {
+	const frames = request.frames;
+	if (!Array.isArray(frames) || frames.length === 0) throw new KinemeshError("frames 为空：至少给一个帧号。", "frames 是整数数组，例如 \"frames\": [30]；静态模型传 [0]。");
+	if (frames.length > MAX_FRAMES) throw new KinemeshError(`一次最多渲染 ${MAX_FRAMES} 帧（收到 ${frames.length}）。`, "分批调用；连拍动画关键帧建议 5～9 帧。");
+	const width = clampInt(request.width ?? 1280, 64, 4096);
+	const height = clampInt(request.height ?? 720, 64, 4096);
+	const viewerJs = await readViewerBundle();
+	const workDir = path.join(request.outDir ?? path.join(tmpdir(), "kinemesh-shots"), `run-${Date.now()}-${process.pid}`);
+	await mkdir(workDir, { recursive: true });
+	const pageFile = path.join(workDir, "viewer.html");
+	await writeFile(pageFile, composePage(viewerJs, width, height), "utf8");
+	const browser = await (await loadChromium()).launch({ headless: true });
+	const warnings = [];
+	const images = [];
+	try {
+		const page = await browser.newPage({ viewport: {
+			width,
+			height
+		} });
+		page.setDefaultTimeout(PAGE_TIMEOUT_MS);
+		page.on("pageerror", (error) => warnings.push(`页面异常：${error.message}`));
+		await page.goto(pathToFileURL(pageFile).href);
+		await page.evaluate(() => window.__kinemeshViewer.ready());
+		const base64 = Buffer.from(request.data).toString("base64");
+		const loadOutcome = await page.evaluate(async ({ b64, fileName }) => {
+			return window.__kinemeshViewer.load(b64, fileName);
+		}, {
+			b64: base64,
+			fileName: request.fileName
+		});
+		if (!loadOutcome.ok) throw new KinemeshError(`模型载入失败：${loadOutcome.error}`, "先把文件交给 kinemesh_info 确认能解析，再渲染。");
+		const resolution = resolveView(request.viewInput, {
+			center: loadOutcome.bounds.center,
+			radius: loadOutcome.bounds.radius,
+			clips: loadOutcome.clips
+		});
+		warnings.push(...resolution.warnings);
+		const baseView = resolution.view;
+		const azimuths = resolution.orbit8 ? orbit8Azimuths() : [baseView.camera.azimuth];
+		const baseName = sanitizeBaseName(request.fileName);
+		let index = 0;
+		for (const azimuth of azimuths) {
+			const view = withAzimuth(baseView, azimuth);
+			await applyView(page, view);
+			for (const frame of frames) {
+				if (view.clip !== null) await page.evaluate((target) => window.__kinemeshViewer.seekFrame(target), frame);
+				const shot = await page.screenshot({ type: "png" });
+				const name = `${String(index + 1).padStart(2, "0")}-${baseName}-${view.clip ?? "static"}-f${frame}-az${Math.round(azimuth)}${view.mode === "default" ? "" : `-${view.mode}`}.png`;
+				const file = path.join(workDir, name);
+				await writeFile(file, shot);
+				images.push(file);
+				index += 1;
+			}
+		}
+	} finally {
+		await browser.close();
+	}
+	return {
+		images,
+		warnings
+	};
+}
+function withAzimuth(view, azimuth) {
+	return {
+		...view,
+		camera: {
+			...view.camera,
+			azimuth
+		}
+	};
+}
+async function applyView(page, view) {
+	await page.evaluate((payload) => window.__kinemeshViewer.applyView(payload), view);
+}
+/** viewer.js 与 index.js 同目录（构建产物一起分发）。
+*  源码态（vitest/typecheck）import.meta.url 在 src/core/render/ 下，运行态在插件根 index.js——
+*  逐级向上探测，两边都能找到。 */
+async function readViewerBundle() {
+	for (const relative of [
+		"./viewer.js",
+		"../viewer.js",
+		"../../viewer.js",
+		"../../../viewer.js"
+	]) {
+		const candidate = new URL(relative, import.meta.url);
+		try {
+			return await readFile(candidate, "utf8");
+		} catch {}
+	}
+	throw new KinemeshError("找不到 viewer 产物（viewer.js）。", "viewer.js 与 index.js 一起构建/分发（npm run build -- --only kinemesh）；插件安装包缺文件时重装插件。");
+}
+function composePage(viewerJs, width, height) {
+	return [
+		"<!doctype html>",
+		"<html>",
+		"<head>",
+		"<meta charset=\"utf-8\">",
+		`<style>html,body{margin:0;padding:0;overflow:hidden}#app{width:${width}px;height:${height}px}</style>`,
+		"</head>",
+		"<body>",
+		"<div id=\"app\"></div>",
+		`<script>${viewerJs}<\/script>`,
+		"</body>",
+		"</html>"
+	].join("\n");
+}
+async function loadChromium() {
+	try {
+		return (await import("./playwright-BLPky7o0.js")).chromium;
+	} catch (error) {
+		throw new KinemeshError(`本机没有 playwright（${reasonOf(error)}）。`, "渲染截图需要 playwright：npm install playwright && npx playwright install chromium；DSH 插件出口在缺少它时只提供 kinemesh_info，截图走 CLI/Skill/MCP 出口。");
+	}
+}
+function clampInt(value, low, high) {
+	return Math.min(high, Math.max(low, Number.isFinite(value) ? Math.floor(value) : low));
+}
+function sanitizeBaseName(fileName) {
+	const stem = fileName.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_");
+	return stem === "" ? "model" : stem;
+}
+//#endregion
+//#region
 function textResult(value) {
 	return [{
 		type: "text",
@@ -29626,12 +29980,32 @@ function expandHome(input) {
 }
 /** 注册 Agent 工具，返回一次性释放句柄 */
 function registerTools(ctx) {
-	const dispose = ctx.tools.register(infoTool());
+	const disposers = [ctx.tools.register(infoTool()), ctx.tools.register(renderTool())];
 	return () => {
-		try {
+		for (const dispose of disposers.reverse()) try {
 			dispose();
 		} catch {}
 	};
+}
+async function readModelFile(rawPath) {
+	if (rawPath.trim() === "") return {
+		ok: false,
+		payload: errorPayload("缺少 path 参数。", "传入模型文件路径，例如 {\"path\": \"D:/assets/hero.fbx\"}。", "读取模型")
+	};
+	const abs = path.resolve(expandHome(rawPath.trim()));
+	try {
+		const buffer = await readFile(abs);
+		return {
+			ok: true,
+			data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+			abs
+		};
+	} catch (error) {
+		return {
+			ok: false,
+			payload: errorPayload(reasonOf(error), "确认路径存在且可读（Windows 路径用正斜杠或双反斜杠），必要时换绝对路径重试。", `读取 ${abs}`)
+		};
+	}
 }
 function infoTool() {
 	return {
@@ -29655,27 +30029,319 @@ function infoTool() {
 		},
 		timeoutMs: 6e4,
 		async execute(args) {
-			const given = typeof args?.path === "string" ? args.path.trim() : "";
-			if (given === "") return errorPayload("缺少 path 参数。", "传入模型文件路径，例如 {\"path\": \"D:/assets/hero.fbx\"}。", "读取模型信息");
-			const abs = path.resolve(expandHome(given));
+			const loaded = await readModelFile(typeof args?.path === "string" ? args.path : "");
+			if (!loaded.ok) return loaded.payload;
 			try {
-				const buffer = await readFile(abs);
 				return {
 					ok: true,
-					...await analyzeModel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength), path.basename(abs))
+					...await analyzeModel(loaded.data, path.basename(loaded.abs))
 				};
 			} catch (error) {
-				if (error instanceof KinemeshError) return errorPayload(error.message, error.guidance, `读取 ${abs} 的模型信息`);
-				return errorPayload(reasonOf(error), "确认路径存在且可读（Windows 路径用正斜杠或双反斜杠），必要时换绝对路径重试。", `读取 ${abs} 的模型信息`);
+				if (error instanceof KinemeshError) return errorPayload(error.message, error.guidance, `读取 ${loaded.abs} 的模型信息`);
+				return errorPayload(reasonOf(error), "确认文件是完整的模型文件后重试。", `读取 ${loaded.abs} 的模型信息`);
+			}
+		}
+	};
+}
+function renderTool() {
+	return {
+		name: "kinemesh_render",
+		description: "按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，orbit8 = 八方位连拍）；渲染模式 default / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需）。截屏构图与 DSH「动析」预览面板完全一致。",
+		parameters: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）"
+				},
+				clip: {
+					type: "string",
+					description: "动画片段名（先 kinemesh_info 查）；静态模型省略"
+				},
+				frames: {
+					type: "array",
+					items: { type: "integer" },
+					description: "要渲染的帧号（非负整数，按 30fps 换算 time=frame/30）；动作分析建议关键帧 3～9 帧，一次最多 64"
+				},
+				view: {
+					type: "object",
+					description: "完整视角对象 {\"camera\":{\"azimuth\":45,\"elevation\":15,\"distance\":3.2,\"target\":[0,1,0],\"fov\":40}}；与 viewPreset 二选一，省略字段按场景包围盒缺省",
+					additionalProperties: true
+				},
+				viewPreset: {
+					type: "string",
+					description: "front / side / back / three-quarter / orbit8；与 view 二选一"
+				},
+				mode: {
+					type: "string",
+					description: "default / wireframe / skeleton / bones-overlay，缺省 default"
+				},
+				width: {
+					type: "integer",
+					description: "宽度像素，缺省 1280"
+				},
+				height: {
+					type: "integer",
+					description: "高度像素，缺省 720"
+				},
+				out: {
+					type: "string",
+					description: "PNG 输出目录；缺省系统临时目录"
+				}
+			},
+			required: ["path", "frames"],
+			additionalProperties: false
+		},
+		output: {
+			schema: {
+				type: "object",
+				additionalProperties: true
+			},
+			render: (_args, value) => textResult(value)
+		},
+		timeoutMs: 18e4,
+		async execute(args) {
+			const frames = Array.isArray(args?.frames) ? args.frames : void 0;
+			if (frames === void 0) return errorPayload("缺少 frames 参数。", "frames 是帧号整数数组，例如 \"frames\": [0, 15, 30]；静态模型传 [0]。", "渲染截图");
+			const loaded = await readModelFile(typeof args?.path === "string" ? args.path : "");
+			if (!loaded.ok) return loaded.payload;
+			try {
+				const result = await renderScreenshots({
+					data: loaded.data,
+					fileName: path.basename(loaded.abs),
+					viewInput: {
+						view: args?.view,
+						viewPreset: args?.viewPreset,
+						mode: args?.mode,
+						clip: args?.clip
+					},
+					frames: frames.map((frame) => Number(frame)),
+					width: typeof args?.width === "number" ? args.width : void 0,
+					height: typeof args?.height === "number" ? args.height : void 0,
+					outDir: typeof args?.out === "string" && args.out.trim() !== "" ? expandHome(args.out.trim()) : void 0
+				});
+				return {
+					ok: true,
+					images: result.images,
+					count: result.images.length,
+					warnings: result.warnings,
+					hint: "PNG 已落盘，用读图工具逐张查看后再给结论。"
+				};
+			} catch (error) {
+				if (error instanceof KinemeshError) return errorPayload(error.message, error.guidance, `渲染 ${loaded.abs} 的截图`);
+				return errorPayload(reasonOf(error), "缩小 frames 数量或降低分辨率后重试；确认模型能被 kinemesh_info 解析。", `渲染 ${loaded.abs} 的截图`);
 			}
 		}
 	};
 }
 //#endregion
 //#region
-var inject = ["tools"];
+var inject = ["webServer", "tools"];
+/** 路由前缀：不以 `/` 结尾（宿主按 `path === prefix || path.startsWith(prefix + '/')` 匹配） */
+var ROUTE_PREFIX = "/kinemesh";
+/** 路由供模型的体积上限，与 kinemesh_info 的分析上限一致 */
+var MAX_MODEL_BYTES = 536870912;
 function apply(ctx) {
 	ctx.effect(() => registerTools(ctx));
+	ctx.effect(() => {
+		const disposeRoute = ctx.webServer.register({
+			kind: "prefix",
+			path: ROUTE_PREFIX,
+			handler: (req, res) => handleRequest(ctx, req, res)
+		});
+		return () => {
+			disposeRoute();
+		};
+	});
+}
+async function handleRequest(ctx, req, res) {
+	try {
+		const url = new URL(req.url ?? "/", "http://127.0.0.1");
+		const method = req.method ?? "GET";
+		const routePath = url.pathname;
+		if (method === "OPTIONS") {
+			res.statusCode = 204;
+			setCorsHeaders(res);
+			res.end();
+			return;
+		}
+		if (routePath === `${ROUTE_PREFIX}/model` && method === "GET") {
+			await serveModel(res, url.searchParams.get("path") ?? "");
+			return;
+		}
+		if (routePath === `${ROUTE_PREFIX}/info` && method === "GET") {
+			await serveInfo(res, url.searchParams.get("path") ?? "");
+			return;
+		}
+		if (routePath === `${ROUTE_PREFIX}/analyze` && method === "POST") {
+			const parsed = parseAnalyzeRequest(await readJson(req));
+			if (!parsed.ok) {
+				send(res, 400, {
+					ok: false,
+					error: {
+						code: "bad-request",
+						message: parsed.message
+					}
+				});
+				return;
+			}
+			if (!wakeAgent(ctx, parsed.request.sessionId, composeAnalyzeMessage(parsed.request))) {
+				send(res, 409, {
+					ok: false,
+					error: {
+						code: "agent-offline",
+						message: "没有找到该会话的在线 Agent（面板与 Agent 不在同一个 Host 进程，或会话 id 不对）。把模型路径直接发给 Agent，让它自己调 kinemesh_info / kinemesh_render 也能完成分析。"
+					}
+				});
+				return;
+			}
+			send(res, 200, {
+				ok: true,
+				delivered: true
+			});
+			return;
+		}
+		send(res, 404, {
+			ok: false,
+			error: {
+				code: "not-found",
+				message: `unknown route ${routePath}`
+			}
+		});
+	} catch (error) {
+		send(res, 500, {
+			ok: false,
+			error: {
+				code: "internal",
+				message: reasonOf(error)
+			}
+		});
+	}
+}
+/** GET /kinemesh/model?path=…：给预览面板供模型字节 */
+async function serveModel(res, rawPath) {
+	if (rawPath.trim() === "") {
+		send(res, 400, {
+			ok: false,
+			error: {
+				code: "bad-request",
+				message: "缺少 path 参数。"
+			}
+		});
+		return;
+	}
+	const abs = resolveLocal(rawPath);
+	const info = await stat(abs).catch(() => void 0);
+	if (info === void 0 || !info.isFile()) {
+		send(res, 404, {
+			ok: false,
+			error: {
+				code: "not-found",
+				message: `文件不存在：${abs}`
+			}
+		});
+		return;
+	}
+	if (info.size > MAX_MODEL_BYTES) {
+		send(res, 413, {
+			ok: false,
+			error: {
+				code: "too-large",
+				message: `文件 ${(info.size / 1024 / 1024).toFixed(0)} MiB 超过预览上限。`
+			}
+		});
+		return;
+	}
+	const data = await readFile(abs);
+	res.statusCode = 200;
+	res.setHeader("content-type", "application/octet-stream");
+	res.setHeader("content-length", data.byteLength);
+	res.setHeader("cache-control", "no-store");
+	setCorsHeaders(res);
+	res.end(data);
+}
+/** GET /kinemesh/info?path=…：轻量 InfoReport（面板侧栏 / 快速体检） */
+async function serveInfo(res, rawPath) {
+	if (rawPath.trim() === "") {
+		send(res, 400, {
+			ok: false,
+			error: {
+				code: "bad-request",
+				message: "缺少 path 参数。"
+			}
+		});
+		return;
+	}
+	const abs = resolveLocal(rawPath);
+	const data = await readFile(abs);
+	send(res, 200, {
+		ok: true,
+		info: await analyzeModel(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), path.basename(abs))
+	});
+}
+/**
+* 唤醒绑定的 Agent（与 aiworkflow / 定时提醒同一套机制：followup 一条用户态消息）。
+* 返回 false 表示 Agent 不在线（路由层回 409 并给自愈文案）。
+*/
+function wakeAgent(ctx, sessionId, message) {
+	try {
+		const agent = ctx?.get?.("agents")?.get?.(sessionId);
+		if (agent === void 0 || typeof agent.followup !== "function") return false;
+		agent.followup({
+			id: randomUUID(),
+			role: "user",
+			content: [{
+				type: "text",
+				text: message
+			}],
+			source: { kind: "schedule" }
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+/** ~ 与相对路径的解析（相对宿主进程 cwd） */
+function resolveLocal(input) {
+	const trimmed = input.trim();
+	if (trimmed === "~") return homedir();
+	if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) return path.join(homedir(), trimmed.slice(2));
+	return path.resolve(trimmed);
+}
+async function readJson(req) {
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of req) {
+		const buffer = chunk;
+		size += buffer.length;
+		if (size > 2097152) throw new Error("请求体过大");
+		chunks.push(buffer);
+	}
+	const text = Buffer.concat(chunks).toString("utf8").trim();
+	if (text === "") return void 0;
+	try {
+		return JSON.parse(text);
+	} catch {
+		return;
+	}
+}
+function send(res, status, body) {
+	const text = JSON.stringify(body);
+	res.statusCode = status;
+	res.setHeader("content-type", "application/json; charset=utf-8");
+	res.setHeader("cache-control", "no-store");
+	setCorsHeaders(res);
+	res.end(text);
+}
+/**
+* 跨源放行（同 aiworkflow）：页面可能来自 `dsh web`（同源无需 CORS），
+* 也可能来自桌面壳 file:// 渲染器（源为 null），后者必须显式允许。
+*/
+function setCorsHeaders(res) {
+	res.setHeader("access-control-allow-origin", "*");
+	res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+	res.setHeader("access-control-allow-headers", "accept, content-type");
+	res.setHeader("access-control-max-age", "600");
 }
 //#endregion
 export { apply, inject };

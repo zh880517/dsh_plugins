@@ -19,20 +19,21 @@ interface RegisteredTool {
 }
 
 function setup(): { tool: RegisteredTool; dispose: () => void } {
-  let registered: RegisteredTool | undefined;
+  const registered = new Map<string, RegisteredTool>();
   const ctx = {
     tools: {
       register(definition: RegisteredTool): () => void {
-        registered = definition;
+        registered.set(definition.name, definition);
         return () => {
-          registered = undefined;
+          registered.delete(definition.name);
         };
       },
     },
   };
   const dispose = registerTools(ctx);
-  if (registered === undefined) throw new Error('工具没有注册成功');
-  return { tool: registered, dispose };
+  const tool = registered.get('kinemesh_info');
+  if (tool === undefined) throw new Error('kinemesh_info 没有注册成功');
+  return { tool, dispose };
 }
 
 const workDir = await mkdtemp(path.join(tmpdir(), 'kinemesh-info-'));

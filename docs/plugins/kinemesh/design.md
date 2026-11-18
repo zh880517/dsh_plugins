@@ -118,6 +118,24 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
 - **测试**：`tests/kinemesh/screenshot.int.test.ts` 用合成 FBX 走真实 chromium 渲染
   （两帧内容不同、尺寸正确、orbit8 八张、空 frames 报错）；chromium 缺席时整组跳过。
 
+### 3.9 M3：DSH 插件完整链路
+
+- **工具**：`kinemesh_info` + `kinemesh_render`（png 落盘返回绝对路径数组——设计文档的稳妥路径，
+  Agent 用读图工具查看；playwright 缺席时给安装指引，info 不受影响）。
+- **路由**（`/kinemesh` 前缀，CORS 放行同 aiworkflow）：
+  - `GET /kinemesh/model?path=…`：给预览面板供模型字节（512 MiB 上限，octet-stream）；
+  - `GET /kinemesh/info?path=…`：轻量 InfoReport；
+  - `POST /kinemesh/analyze`：**「发送给 AI 分析」**的宿主入口——Client 把当前路径/片段/帧号/
+    ViewState 描述 POST 上来，Host 用 `ctx.get('agents').get(sessionId).followup({role:'user',…})`
+    唤醒该会话 Agent（与 aiworkflow / 定时提醒同一机制；设计草稿里的 `agent.inject/followup`
+    经 cordis_inspect 验证后落定为此形态）。Agent 收到的消息明确指示它调 `kinemesh_render`
+    渲染该视角并读图分析——闭环「收到视角 → 截图 → 分析」。Agent 不在线时回 409 + 自愈文案。
+- **面板入口形态**（草稿 §10 开放问题的决定）：参照 aiworkflow 的模式——输入框左侧「动析」胶囊
+  + 浮层预览对话框，不占主面板。浮层内：路径加载、clip/渲染模式选择、帧滑条与播放、
+  视角实时回读（OrbitControls 拖转 → 球坐标 ViewState）、发送按钮。
+- **client 依赖的宿主模块**：`dsh.client.inject: ['@deepseek-ai/dsh-client-ui-conversation']`
+  （输入框/浮层槽位都在会话 UI 包里）。预览直接内联 viewer 模块（client.js ≈ 1.7 MiB）。
+
 ## 4. 数据流
 
 ```
@@ -140,14 +158,16 @@ heightMeters）/ warnings[]`。
 |---|---|---|
 | M1 | core：Loader 注册表 + info 提取（FBX/glTF/OBJ） | ✅ 已实施（0.1.0） |
 | M2 | viewer 模块 + 截图管线（Playwright，按次启停） | ✅ 已实施（0.2.0） |
-| M3 | DSH 插件完整链路（预览面板 + 发送给 AI + `kinemesh_render`） | 待做 |
-| M4 | Skill + CLI 打包（esbuild 单文件 + SKILL.md） | 待做 |
+| M3 | DSH 插件完整链路（预览面板 + 发送给 AI + `kinemesh_render`） | ✅ 已实施（0.3.0） |
+| M4 | Skill + CLI 打包（esbuild 单文件 + SKILL.md） | 进行中 |
 | M5 | MCP Server（stdio） | 待做 |
 
 开放问题（草稿 §10）的处理约定：
 
-- 截图输出目录：默认系统临时目录，`out` 参数可指定（M2 实施时确认）；
-- 性能预算：`kinemesh_info` 文件上限 512 MiB（超出给减负指引），工具超时 60s；
-- BVH 重定向 / 多模型对比：v1 不做；
-- 预览面板入口形态：参考 aiworkflow 的主面板 + 胶囊模式（M3 定稿）；
-- 长尾格式（.blend 等）assimpjs 兜底：M2/M4 视体积与稳定性接入，当前给离线转换指引。
+- 预览面板入口形态：**已决定**——输入框左侧「动析」胶囊 + 浮层预览（aiworkflow picker 模式，见 3.9）；
+- 截图输出目录：**已决定**——`kinemesh_render` 的 `out` 参数可指定；缺省系统临时目录
+  `<tmp>/kinemesh-shots/run-<时间戳>-<pid>/`；
+- 性能预算：`kinemesh_info` / 模型路由文件上限 512 MiB，info 工具超时 60s，render 工具超时 180s，
+  一次渲染 ≤ 64 帧，页面操作超时 60s；
+- BVH 重定向 / 多模型同场景对比：v1 不做；
+- 长尾格式（.blend 等）assimpjs 兜底：暂缓（当前给离线转换指引），注册表已为它留好位置。
