@@ -27,6 +27,13 @@ const SHIPPED = [
   'README.md',
 ];
 
+/** 约定产物 viewer.js（src/viewer-page.ts 存在的插件才有）也必须已提交 */
+function shippedFiles(plugin) {
+  const files = [...SHIPPED];
+  if (existsSync(path.join(plugin.dir, 'viewer.js'))) files.push('viewer.js');
+  return files;
+}
+
 function git(...args) {
   return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
 }
@@ -38,7 +45,7 @@ const headTime = Number(git('show', '-s', '--format=%ct', 'HEAD'));
 
 /** 索引必须钉在"目录内容与工作区一致"的提交上，否则市场会装到旧文件 */
 function assertShippedCommitted(plugin) {
-  for (const relative of SHIPPED) {
+  for (const relative of shippedFiles(plugin)) {
     const repoRelative = `plugins/${plugin.id}/${relative}`;
     let at;
     try {

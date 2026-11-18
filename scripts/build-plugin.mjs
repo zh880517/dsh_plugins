@@ -1,8 +1,11 @@
-// 单插件构建：把 shared/ 与插件 src 打成两个自包含产物。
-//   index.js  —— Host 半，Node ESM，只外置 node: 内建模块
-//   client.js —— Client 半，套上宿主的 __ModuleLoader__ 懒加载 factory 外壳
+// 单插件构建：把 shared/ 与插件 src 打成自包含产物。
+//   index.js   —— Host 半，Node ESM，只外置 node: 内建模块
+//   client.js  —— Client 半，套上宿主的 __ModuleLoader__ 懒加载 factory 外壳
+//   viewer.js  —— 约定产物：src/viewer-page.ts 存在时额外构建（IIFE 全内联，浏览器独立可跑，
+//                 用途：kinemesh 的截图页）；没有该入口的插件不受影响。
 //
 // 所有插件共用这一份构建；插件差异只允许来自它自己的 package.json 与源码。
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { build } from 'vite';
@@ -77,6 +80,28 @@ ${body}
 `;
 }
 
+/** 约定第三产物：src/viewer-page.ts → viewer.js（IIFE，全内联；kinemesh 截图页用） */
+async function buildViewer(plugin, work) {
+  const entry = path.join(plugin.dir, 'src', 'viewer-page.ts');
+  if (!existsSync(entry)) return null;
+  await build({
+    configFile: false,
+    root: repo,
+    logLevel: 'warn',
+    resolve: { alias: sharedAlias },
+    build: {
+      lib: { entry, formats: ['iife'], name: `${plugin.id}Viewer`, fileName: () => 'viewer.js' },
+      outDir: path.join(work, 'viewer'),
+      emptyOutDir: true,
+      minify: false,
+      target: 'es2022',
+    },
+  });
+  const code = stripRegionPaths(await readFile(path.join(work, 'viewer', 'viewer.js'), 'utf8'));
+  await writeFile(path.join(plugin.dir, 'viewer.js'), code, 'utf8');
+  return code.length;
+}
+
 /** Host 产物里的 import 只应剩 node: 内建；其余说明打包没闭合 */
 function assertSelfContained(code, label) {
   const imports = [...code.matchAll(/(?:^|\n)\s*import\s+[^;]*?from\s+["']([^"']+)["']/g)].map((match) => match[1]);
@@ -100,6 +125,7 @@ export async function buildPlugin(plugin) {
   await rm(work, { recursive: true, force: true });
   await mkdir(work, { recursive: true });
 
+  const viewerKiB = await buildViewer(plugin, work);
   await Promise.all([buildHost(plugin, work), buildClient(plugin, work)]);
 
   const hostCode = stripRegionPaths(await readFile(path.join(work, 'host', 'index.js'), 'utf8'));
@@ -117,5 +143,6 @@ export async function buildPlugin(plugin) {
     id: plugin.id,
     hostKiB: (hostCode.length / 1024).toFixed(1),
     clientKiB: (clientCode.length / 1024).toFixed(1),
+    viewerKiB: viewerKiB === null ? null : (viewerKiB / 1024).toFixed(1),
   };
 }

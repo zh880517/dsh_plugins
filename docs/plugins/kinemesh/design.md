@@ -88,11 +88,35 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
   确定性输出、零仓库体积；
 - 真实样例（three.js 仓库 Samba Dancing.fbx 等）放 `tests/fixtures/kinemesh/`（gitignore），
   缺文件自动跳过——骨骼/人形识别/单位体检有真实数据兜底；
-- 合成 FBX 是手写的最小二进制树，注意两个坑（也是读 FBX 文档的备忘）：
+- 合成 FBX 是手写的最小二进制树，注意几个坑（也是读 FBX 文档的备忘）：
   节点头第二个 u32 是**属性数量**（不是子节点数，子节点靠 endOffset 截断）；
-  数组属性头是 3×u32（length/encoding/compressedLength）。ASCII 文本的探测有陷阱：
-  TextParser 会把任何不认识的行当数组续行，而 `isFbxFormatASCII` 又在固定位置比对二进制
-  magic——头注释的形状有讲究（见 fixtures 注释）。
+  数组属性头是 3×u32（length/encoding/compressedLength）；多边形顶点要按
+  **从外侧看逆时针**排（绕向反了 FrontSide 裁剪会让整个网格正面不可见）。
+  ASCII 文本的探测有陷阱：TextParser 会把任何不认识的行当数组续行，而 `isFbxFormatASCII`
+  又在固定位置比对二进制 magic——头注释的形状有讲究（见 fixtures 注释）。
+
+### 3.8 M2：viewer 模块与截图管线
+
+- **`core/viewer/kinemesh-viewer.ts`**：框架无关，`mountViewer(container)` → handle
+  （loadScene / applyView / getViewState / play / pause / seekFrame / frameInfo / sceneBounds）。
+  OrbitControls 拖转后经 `cameraFromPosition` 反解回球坐标 ViewState；时间轴用 AnimationMixer，
+  **帧号统一按 30fps 换算**（`RENDER_FPS`，源 fps 拿不到时的约定）。DSH Client 预览面板（M3）
+  与截图页加载同一模块——「预览里看到的构图 = AI 截图拿到的画面」。
+- **`src/viewer-page.ts` → `viewer.js`（约定产物）**：构建脚本为存在该入口的插件多打一个
+  IIFE（three.js 全内联、浏览器独立可跑）。`render/screenshot.ts` 运行时把它内联进独立
+  HTML（不依赖 node_modules），Playwright(chromium) 打开 → 桥接 `window.__kinemeshViewer`
+  → 载入模型 → 逐帧截图 → PNG 落盘返回绝对路径。浏览器按次启停，无常驻服务（红线）。
+- **截图确定性**：`applyView`/模式切换后同步 render 一帧（截图不等下一个 rAF）；
+  `seekFrame` 在「渲染完该帧」后才 resolve。
+- **实现备忘（都是踩过的坑）**：AnimationAction 置 `paused=true` 会把 effectiveTimeScale 归零，
+  `mixer.setTime` 的 scrub 无效——循环里用播放守卫而不是 paused；FBX 缺 LayerElementNormal 时
+  Phong 材质渲染成纯黑，载入时对缺法线的几何补 `computeVertexNormals()`。
+- **orbit8**：解析层展开为 8 个方位角（每帧 × 8 张）；`view`/`viewPreset` 二选一在
+  `core/viewstate.ts` 校验并给自愈文案。
+- **依赖**：playwright 钉在根 devDependencies（0.1.x），chromium 由 `npx playwright install chromium`
+  安装；DSH 插件出口在宿主没有 playwright 时给出安装指引（M3 工具层降级）。
+- **测试**：`tests/kinemesh/screenshot.int.test.ts` 用合成 FBX 走真实 chromium 渲染
+  （两帧内容不同、尺寸正确、orbit8 八张、空 frames 报错）；chromium 缺席时整组跳过。
 
 ## 4. 数据流
 
@@ -114,8 +138,8 @@ heightMeters）/ warnings[]`。
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| M1 | core：Loader 注册表 + info 提取（FBX/glTF/OBJ） | ✅ 已实施（本版本 0.1.0） |
-| M2 | viewer 模块 + 截图管线（Playwright，按次启停） | 待做 |
+| M1 | core：Loader 注册表 + info 提取（FBX/glTF/OBJ） | ✅ 已实施（0.1.0） |
+| M2 | viewer 模块 + 截图管线（Playwright，按次启停） | ✅ 已实施（0.2.0） |
 | M3 | DSH 插件完整链路（预览面板 + 发送给 AI + `kinemesh_render`） | 待做 |
 | M4 | Skill + CLI 打包（esbuild 单文件 + SKILL.md） | 待做 |
 | M5 | MCP Server（stdio） | 待做 |

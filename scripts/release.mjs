@@ -92,7 +92,8 @@ if (!noCommit) {
 console.log(`\n[1/4] 构建插件产物（${plugins.map((plugin) => plugin.id).join('、')}）…`);
 for (const plugin of plugins) {
   const result = await buildPlugin(plugin);
-  console.log(`  ${result.id}: index.js ${result.hostKiB} KiB, client.js ${result.clientKiB} KiB`);
+  const viewer = result.viewerKiB === null ? '' : `, viewer.js ${result.viewerKiB} KiB`;
+  console.log(`  ${result.id}: index.js ${result.hostKiB} KiB, client.js ${result.clientKiB} KiB${viewer}`);
 }
 
 // 2) 提交源码 + 产物（同一笔，保证这个提交里产物和源码一致）

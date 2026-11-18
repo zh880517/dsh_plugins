@@ -10,5 +10,6 @@ if (plugins.length === 0) {
 
 for (const plugin of plugins) {
   const result = await buildPlugin(plugin);
-  console.log(`built ${result.id}: index.js ${result.hostKiB} KiB, client.js ${result.clientKiB} KiB`);
+  const viewer = result.viewerKiB === null ? '' : `, viewer.js ${result.viewerKiB} KiB`;
+  console.log(`built ${result.id}: index.js ${result.hostKiB} KiB, client.js ${result.clientKiB} KiB${viewer}`);
 }
