@@ -11,10 +11,17 @@
   骨骼统计（数量/最大深度/是否人形）、网格统计（三角面/顶点/蒙皮比例/材质数）、贴图清单、
   包围盒与单位体检（厘米未换算这类坑会标出来）。
 - 支持格式：**FBX**（ASCII ≥7.0 / 二进制 ≥6400）、**glTF / GLB**（含 VRM 按 GLB 处理）、**OBJ**。
+- **`kinemesh_analyze`**（Agent 工具，M6）：动作分析——产出中间文件集（summary / 分段 / 关键帧 /
+  轨迹 SVG / 关节曲线）与 summaryDigest 事实句，含循环/归位检测（`loopMode`）；关键参数：
+  `clip`（缺省第一个，`"*"` 批量）、`range` 切片、`sampleFps`、`detail`（summary/standard/full）、
+  `vocab` 词汇表、`boneMap` 骨架映射；AI 只读数据做语义推测，不计算数值。
+- **`kinemesh_skeleton`**（Agent 工具，M7）：骨架识别与映射——skeleton-report（约定识别 / 覆盖统计 /
+  结构统计）+ 骨骼名标注截图交 AI 读图定案，结论写 `kinemesh-bones.json` 确定性消费；关键参数：
+  `shots`（auto 缺省有缺口才出图 / none / all）、`boneMap`（参数 > 资产同目录 > cwd 发现）、`out`。
 - 本地只读分析：只读模型文件本身，不联网、不写模型所在目录。
 
-后续里程碑（见 [design.md](./design.md)）：预览面板与截图（M2/M3）、`kinemesh_render`、Skill + CLI（M4）、
-MCP Server（M5）。
+当前版本 0.5.0：M1–M7 已全部实施——四工具 `kinemesh_info` / `kinemesh_render` / `kinemesh_analyze` /
+`kinemesh_skeleton` 三出口同名同参，M6/M7 状态见 [design.md](./design.md) §5。
 
 ## 安装
 
@@ -53,4 +60,4 @@ npm run check
 
 ## 文档索引
 
-- 架构与关键决策（M1–M5 全部里程碑）：[design.md](./design.md)
+- 架构与关键决策（M1–M7 全部里程碑）：[design.md](./design.md)

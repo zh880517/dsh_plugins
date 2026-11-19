@@ -1,6 +1,6 @@
 # kinemesh（动析）架构设计
 
-> 状态：v0.4（**M1–M5 已实施；M6 动作分析与 M7 骨架识别设计定稿，未实施**）。
+> 状态：v0.5.0（**M1–M7 已实施**：M6 动作分析与 M7 骨架识别随 0.5.0 发布）。
 > M1 设计输入来自 `docs/dev/2026-11-18-kinemesh-design.md`（已按 docs/dev 生命周期删除）；
 > M6/M7 设计输入来自 `docs/dev/2026-11-18-kinemesh-motion-analysis-design.md`（草稿 v0.1–v0.9，
 > 经 14 条拍板决策定稿，结论已全部回写本文，草稿已删除）。本文是长期有效的正式文档。
@@ -23,8 +23,8 @@
 | Skill + CLI | Skill 目录 + 单文件 CLI bundle | M4 |
 | MCP Server | stdio，zod schema 与 DSH 同名同参 | M5 |
 
-工具共四个：`kinemesh_info` / `kinemesh_render`（已实施）；`kinemesh_analyze`（M6）/
-`kinemesh_skeleton`（M7）——设计定稿未实施，契约见 §6.7 / §7.3。
+工具共四个，均已实施：`kinemesh_info` / `kinemesh_render`（M1/M3）；`kinemesh_analyze`（M6）/
+`kinemesh_skeleton`（M7）随 0.5.0 发布，契约见 §6.7 / §7.3。
 
 ## 2. 总体架构
 
@@ -200,8 +200,8 @@ heightMeters）/ warnings[]`。
 | M3 | DSH 插件完整链路（预览面板 + 发送给 AI + `kinemesh_render`） | ✅ 已实施（0.3.0） |
 | M4 | Skill + CLI 打包（单文件 CLI + SKILL.md） | ✅ 已实施（0.4.0） |
 | M5 | MCP Server（stdio） | ✅ 已实施（0.4.0） |
-| M6 | 动作分析：`kinemesh_analyze` + 中间文件集 + 循环/归位 + 预览页（§6、附录 A） | 📐 设计定稿（计划 0.5.0） |
-| M7 | 骨架识别与映射：`kinemesh_skeleton` + kinemesh-bones.json + archetype（§7、附录 B） | 📐 设计定稿（计划 0.6.0） |
+| M6 | 动作分析：`kinemesh_analyze` + 中间文件集 + 循环/归位 + 预览页（§6、附录 A） | ✅ 已实施（0.5.0） |
+| M7 | 骨架识别与映射：`kinemesh_skeleton` + kinemesh-bones.json + archetype（§7、附录 B） | ✅ 已实施（0.5.0） |
 
 > 三出口的工具契约以 `core` 为准：同名（`kinemesh_info` / `kinemesh_render` / `kinemesh_analyze` /
 > `kinemesh_skeleton`）、同参数口径、同返回结构；DSH 的 JSON Schema、CLI 的 flag、MCP 的 zod
@@ -401,7 +401,8 @@ intro–loop–outro 结构的片段（如 0–5 帧起手、5–30 帧才是真
 
 全部进 `motion-summary.json` 的 `loopCheck` 块：
 `{referenceFrame: 0, poseMatch, positionMatch, velocityMatch, components{各分量原值+阈值}, verdict,
-worstJoints[], bestLoopRange?}` + 一条 facts 事实句。阈值常量与强度档位同管理：内置、随输出回显、
+worstJoints[], bestLoopRange?}` + 一条 facts 事实句。`bestLoopRange?` 无合格区间时序列化为
+null（字段恒在）。阈值常量与强度档位同管理：内置、随输出回显、
 可审计、不开放参数（用户拍板固定）。
 
 ### 6.6 分段、强度与词汇表
@@ -506,6 +507,8 @@ kinemesh_analyze(path, {
 | M6e | DSH 模型预览页（会话页签，详见 §6.10）：模型列表 + 预览工具 + 强度曲线时间轴（分段色带 + loopCheck/bestLoopRange 高亮）+ 「发送给 AI 分析」附带 digest；host 新增 `/kinemesh/analysis`、`/kinemesh/session-models` 路由 | 未用插件的会话无页签；曲线数值与中间文件一致；发送消息含 digest |
 | M6f | 批量 clip（`clip:"*"`）+ `range` 切片 + 场景缓存 + morph-only 自愈 + A.16 校准回路（快照测试） | 一文件多 clip 全出 digest；重复分析命中缓存；morph-only 报错自愈；快照容差断言全绿 |
 
+> 实际落地注记：M6a–M6f 均已交付并随 0.5.0 发布，实现细节以 `core/motion/` 与 `tests/kinemesh/` 为准。
+
 测试延续现有策略：fixtures 合成「已知答案」的动画（构造循环=两端同姿、构造顿挫=末帧速度不为零、
 构造位移=线性 root 轨迹），真实资产做兜底。版本 0.5.0。
 
@@ -598,7 +601,8 @@ kinemesh_analyze(path, {
 
 ### 7.3 交付物
 
-- **新工具 `kinemesh_skeleton(path, {shots?, views?, labelBatch?})`**（三出口同名，第 4 个工具）：
+- **新工具 `kinemesh_skeleton(path, {shots?, boneMap?, out?})`**（三出口同名，第 4 个工具；
+  视角/分批固化进 renderRecipe 配方）：
   - `skeleton-report.json`：每骨 `{name, parent, depth, children, restWorldPos, partGuess,
     confidence, source: "dict"|null}` + 约定识别 `{convention, matched/total}` +
     结构统计 `{limbChains, groundTips, symmetryPairs, maxChainDepth}` +
@@ -609,8 +613,9 @@ kinemesh_analyze(path, {
   - digest：convention、unmapped 清单、report/截图路径 + **两级指引 fact**
     （先读 report 推断；不透明再 `shots:"all"` 出图 → 写映射文件 → 重跑）。
 - **`kinemesh-bones.json`（映射文件）**：AI/人工写，schema 与校验见 B.5；
-  `kinemesh_info` / `kinemesh_analyze` 增 `boneMap` 参数显式指定。
-- `info` 升级：`bones.convention` + `bones.mapped`（`humanoidLike` 保留 = core ≥ 12/15，向后兼容）。
+  `boneMap` 走 B.5 发现顺序（参数 > 资产同目录 > cwd），info 不单设参数。
+- `info` 升级：`bones.convention` + `bones.mapped`（`humanoidLike` 保留 M1 口径 =
+  matchedCategories ≥ 4；提示位不驱动工具决策，重定义延后候选）。
 
 ### 7.4 与 M6 的关系
 
@@ -875,7 +880,7 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
 
 - 段：`frame {a}–{b}：{支撑描述}，强度 {level}（均值 {meanE}、峰值 {peakE}），位移 {rootDisp} 身高，方向 {moveDir众数}，guess {guess}`
 - 循环：`循环检测：{verdict}——姿势差 {poseRMS}，位置差 {rootDisp}，朝向差 {headingDiff}°，速度差 {velSeam}；{verdict 释义}`（释义四句固定文案，随 constants 提供）
-- 全片：`总时长 {dur}s（{frameCount} 帧@30fps），平均强度 {level}，主方向 {dir}，循环 {verdict}`
+- 全片：`总时长 {dur}s（{frameCount} 帧@30fps），平均强度 {level}，主方向 {dir}；循环 {verdict}`
 
 依据:自定。
 
@@ -1030,8 +1035,9 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
 
 ### B.6 与 info / analyze / render 集成
 
-- `kinemesh_info`：`bones` 增 `convention`、`mapped: {core: n/15, source: "file"|"dict"|"none"}`；
-  `humanoidLike` 保留（= core ≥ 12/15）。
+- `kinemesh_info`：`bones` 增 `convention`、`mapped: number`（parse 级计数；骨架名校验留给
+  analyze/skeleton 消费点）；`humanoidLike` 保留 M1 口径（matchedCategories ≥ 4；提示位不驱动
+  工具决策，重定义延后候选）。
 - `kinemesh_analyze`：joints 解析顺序 = 映射文件 > 字典（B.1–B.2）> motion-top15
   （回退时 summary 注明并附「AI 补映射」指引）。
 - `kinemesh_skeleton` digest 尾部固定**两级指引 fact**（中文）：

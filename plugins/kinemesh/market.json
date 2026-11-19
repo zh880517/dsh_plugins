@@ -4,8 +4,8 @@
     "zh": "动析"
   },
   "description": {
-    "en": "AI preview and analysis for game 3D model / animation assets: clip lists, skeleton stats, mesh stats and viewpoint screenshots.",
-    "zh": "面向游戏 3D 模型/动画资源的 AI 预览与分析：动画片段清单、骨骼与网格统计、按视角渲染截图。"
+    "en": "AI preview and analysis for game 3D model / animation assets: clip lists, skeleton stats, mesh stats, viewpoint screenshots, motion analysis and skeleton identification.",
+    "zh": "面向游戏 3D 模型/动画资源的 AI 预览与分析：动画片段清单、骨骼与网格统计、按视角渲染截图、动作分析与骨架识别。"
   },
-  "keywords": ["3d", "model", "animation", "fbx", "glb", "gltf", "preview", "skeleton", "dsh"]
+  "keywords": ["3d", "model", "animation", "fbx", "glb", "gltf", "preview", "skeleton", "motion", "dsh"]
 }
