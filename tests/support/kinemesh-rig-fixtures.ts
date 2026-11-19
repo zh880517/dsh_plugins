@@ -298,3 +298,171 @@ export function buildStrafeClip(rig: HumanoidRig, options: { duration?: number; 
   }
   return new THREE.AnimationClip('Strafe', duration, tracks);
 }
+
+// ———————— M6c：循环 / 归位检测的已知答案动画 ————————
+
+/** 采样网格关键帧序列（t = k/fps，k = 0..duration·fps 含端点；网格求值精确命中关键帧） */
+function gridKeys(duration: number, sampleFps = 15): number[] {
+  return Array.from({ length: Math.round(duration * sampleFps) + 1 }, (_, k) => k / sampleFps);
+}
+
+/**
+ * 完美循环：hips 垂直正弦恰好 2 个完整周期（period = duration/2），端点精确回起点。
+ * 正弦的奇对称（sin(−x) = −sin x）使首帧与端点的单侧差分速度相等，且 P(t) 减 hips 位置
+ * 后全身刚体平移被剥离 → seam 的 poseRMS/rootDisp/headingDiff/velSeam 全为 0（1e-14 级
+ * 浮点噪声）→ loop-perfect。bestLoopRange 的最小分被「周期对 (i, i+15)」与「速度 cos
+ * 对称对」簇共享，具体命中由 1e-14 级浮点噪声决定——只断言 score 远小于 1。
+ */
+export function buildLoopPerfectClip(
+  rig: HumanoidRig,
+  options: { duration?: number; amplitude?: number; periods?: number } = {},
+): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const amplitude = options.amplitude ?? 0.15;
+  const periods = options.periods ?? 2;
+  const hipsLocal = rig.bones.Hips.position;
+  const times = gridKeys(duration);
+  const values: number[] = [];
+  for (const t of times) {
+    values.push(
+      hipsLocal.x,
+      hipsLocal.y + amplitude * Math.sin((2 * Math.PI * periods * t) / duration),
+      hipsLocal.z,
+    );
+  }
+  return new THREE.AnimationClip('LoopPerfect', duration, [
+    new THREE.VectorKeyframeTrack('Hips.position', times, values),
+  ]);
+}
+
+/**
+ * root-motion 步伐循环：hips 以 0.5 H/s 线性前移（位置不归位），下腿 / 手臂做分段线性
+ * 周期摆动（周期 15 采样帧 = 1s；梯形波：m = k mod 15，m ≤ 7 上升、其余下降）。
+ * 取分段线性而非正弦：同一 m 的关键帧值逐位相同 → 相位对齐帧对的姿势/速度差严格为 0。
+ * 只动下腿与手臂（LeftLeg/RightLeg/LeftArm/RightArm，随动 Foot/Toe/ForeArm/Hand）——
+ * 上腿枢轴固定 → heading 恒 0，P(t) 旋转恒为恒等。
+ * 已知答案（swing = 0.25）：seam poseRMS = 0、rootDisp = 1.0、headingDiff = 0、
+ * velSeam = 12×(2×(swing/7)×f_s)/17 ≈ 0.756（12 个随动关节、梯形首末斜率反号）
+ * → strict verdict = return-only（¬position 优先，velocityMatch=false 不改判）；
+ * strict bestLoopRange = null（rootDisp/0.05 ≥ (8/15)×0.5/0.05 ≈ 5.3）；
+ * loopMode pose-only 的最小分只在周期帧对（j−i = 15）取到（score ≈ 0）。
+ */
+export function buildLoopPoseOnlyClip(
+  rig: HumanoidRig,
+  options: { duration?: number; speed?: number; swing?: number } = {},
+): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const speed = options.speed ?? 0.5;
+  const swing = options.swing ?? 0.25;
+  const periodSamples = 15; // 1s @15fps
+  const hipsLocal = rig.bones.Hips.position;
+  const swingAt = (k: number): number => {
+    const m = ((k % periodSamples) + periodSamples) % periodSamples;
+    const half = (periodSamples - 1) / 2;
+    return m <= half ? (m * swing) / half : ((periodSamples - m) * swing) / half;
+  };
+  const times = gridKeys(duration);
+  const chains: Array<[string, number]> = [
+    ['LeftLeg', 1],
+    ['RightLeg', -1],
+    ['LeftArm', -1],
+    ['RightArm', 1],
+  ];
+  const tracks = chains.map(([bone, sign]) => {
+    const rest = rig.bones[bone]!.position;
+    const values: number[] = [];
+    for (let k = 0; k < times.length; k += 1) values.push(rest.x, rest.y, rest.z + sign * swingAt(k));
+    return new THREE.VectorKeyframeTrack(`${bone}.position`, times, values);
+  });
+  tracks.push(
+    new THREE.VectorKeyframeTrack('Hips.position', [0, duration], [
+      hipsLocal.x,
+      hipsLocal.y,
+      hipsLocal.z,
+      hipsLocal.x,
+      hipsLocal.y,
+      hipsLocal.z + speed * duration,
+    ]),
+  );
+  return new THREE.AnimationClip('LoopPoseOnly', duration, tracks);
+}
+
+/**
+ * 顿挫循环：hips 垂直正弦 2 个完整周期（同 perfect，姿势/位置端点归零）+ 前向 z 梯形往返
+ * （0 → −depth/2·1.5 → −depth → … → 0，折点 [0, 0.5, 1, 1.5, duration]）。z 端点精确回 0，
+ * 但首末 z 速度反号（±0.75×depth/0.5 = ±0.09 H/s，全身 17 关节刚体随动）→
+ * velSeam = 2×0.09 = 0.18 ≥ 0.10 → loop-pose-only（姿势与位置回起点、速度断裂）。
+ */
+export function buildLoopJerkClip(
+  rig: HumanoidRig,
+  options: { duration?: number; amplitude?: number; periods?: number; depth?: number } = {},
+): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const amplitude = options.amplitude ?? 0.15;
+  const periods = options.periods ?? 2;
+  const depth = options.depth ?? 0.06;
+  const hipsLocal = rig.bones.Hips.position;
+  const zTimes = [0, 0.5, 1, 1.5, duration];
+  const zKeys = [0, (-0.75 * depth), -depth, -0.75 * depth, 0];
+  const zOffsetAt = (t: number): number => {
+    for (let i = 0; i < zTimes.length - 1; i += 1) {
+      const t0 = zTimes[i]!;
+      const t1 = zTimes[i + 1]!;
+      if (t <= t1) {
+        const w = (t - t0) / (t1 - t0);
+        return zKeys[i]! + (zKeys[i + 1]! - zKeys[i]!) * w;
+      }
+    }
+    return zKeys[zKeys.length - 1]!;
+  };
+  const times = gridKeys(duration);
+  const values: number[] = [];
+  for (const t of times) {
+    values.push(
+      hipsLocal.x,
+      hipsLocal.y + amplitude * Math.sin((2 * Math.PI * periods * t) / duration),
+      hipsLocal.z + zOffsetAt(t),
+    );
+  }
+  return new THREE.AnimationClip('LoopJerk', duration, [
+    new THREE.VectorKeyframeTrack('Hips.position', times, values),
+  ]);
+}
+
+/**
+ * 不归位（一次性动作）：hips 前 0.5s 下降 drop 并保持 + Spine 0.5–0.7s 前倾 pitch 弧度
+ * 并保持。注意 P(t) 减 hips 位置——纯刚体下蹲平移对姿势描述子不可见，必须有姿态本体
+ * 变化（躯干前倾带动 head/双臂/双手）；上腿枢轴不动 → heading 恒 0。
+ * 已知答案（pitch = 0.7，‖P 差‖按关节手推）：head √((0.25s)² + 0.25(1−c)²)、
+ * L/R.UpperArm √((0.18s)² + 0.18(1−c)²)、L/R.Hand √((0.15s)² + 0.15(1−c)²)、其余 0
+ * → poseRMS ≈ 0.069 ≥ 0.03 → poseMatch=false → no-return；
+ * 另：首帧单侧速度 = −drop/0.5 = −0.3 H/s（全身刚体）、端点 0 → velSeam = 0.3。
+ */
+export function buildNoReturnClip(
+  rig: HumanoidRig,
+  options: { duration?: number; drop?: number; pitch?: number } = {},
+): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const drop = options.drop ?? 0.15;
+  const pitch = options.pitch ?? 0.7;
+  const hipsLocal = rig.bones.Hips.position;
+  const hipsTrack = new THREE.VectorKeyframeTrack('Hips.position', [0, 0.5, duration], [
+    hipsLocal.x,
+    hipsLocal.y,
+    hipsLocal.z,
+    hipsLocal.x,
+    hipsLocal.y - drop,
+    hipsLocal.z,
+    hipsLocal.x,
+    hipsLocal.y - drop,
+    hipsLocal.z,
+  ]);
+  const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch);
+  const spineTrack = new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, 0.5, 0.7, duration], [
+    0, 0, 0, 1,
+    0, 0, 0, 1,
+    quat.x, quat.y, quat.z, quat.w,
+    quat.x, quat.y, quat.z, quat.w,
+  ]);
+  return new THREE.AnimationClip('NoReturn', duration, [hipsTrack, spineTrack]);
+}

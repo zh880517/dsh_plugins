@@ -84,31 +84,48 @@ export function smoothSeries(values: number[] | Float64Array, m: number): number
 }
 
 /**
- * 每采样帧每关节的线速度模（H/s），N×J——A.2 差分公式的唯一实现，
- * computeChannels 与 describe（peakJoint / 段特征）共用，避免公式分叉。
+ * 每采样帧每关节的速度向量（H/s），N×J×3——A.2 差分公式的唯一实现（中央差分、
+ * 端点单侧）：jointSpeedMatrix（模）与 loop（seam 速度差，M6c）共用，避免公式分叉。
  */
-export function jointSpeedMatrix(sample: SampleResult, scale = 1): Float64Array {
+export function jointVelocityMatrix(sample: SampleResult, scale = 1): Float64Array {
   const n = sample.frameCount;
   const jointCount = sample.joints.length;
   const dt = sample.dt;
   const raw = sample.positions;
   const pos = new Float64Array(raw.length);
   for (let i = 0; i < raw.length; i += 1) pos[i] = raw[i]! / scale;
-  const speeds = new Float64Array(n * jointCount);
+  const vel = new Float64Array(n * jointCount * 3);
   for (let j = 0; j < jointCount; j += 1) {
     for (let axis = 0; axis < 3; axis += 1) {
       const series = new Float64Array(n);
       for (let k = 0; k < n; k += 1) series[k] = pos[(k * jointCount + j) * 3 + axis]!;
-      const d = new Float64Array(n);
       for (let k = 0; k < n; k += 1) {
-        if (k === 0) d[k] = (series[1]! - series[0]!) / dt;
-        else if (k === n - 1) d[k] = (series[n - 1]! - series[n - 2]!) / dt;
-        else d[k] = (series[k + 1]! - series[k - 1]!) / (2 * dt);
+        let d: number;
+        if (k === 0) d = (series[1]! - series[0]!) / dt;
+        else if (k === n - 1) d = (series[n - 1]! - series[n - 2]!) / dt;
+        else d = (series[k + 1]! - series[k - 1]!) / (2 * dt);
+        vel[(k * jointCount + j) * 3 + axis] = d;
       }
-      for (let k = 0; k < n; k += 1) speeds[k * jointCount + j] = speeds[k * jointCount + j]! + d[k]! * d[k]!;
     }
   }
-  for (let i = 0; i < speeds.length; i += 1) speeds[i] = Math.sqrt(speeds[i]!);
+  return vel;
+}
+
+/**
+ * 每采样帧每关节的线速度模（H/s），N×J——jointVelocityMatrix 的模（A.2 差分唯一实现），
+ * computeChannels 与 describe（peakJoint / 段特征）共用。
+ */
+export function jointSpeedMatrix(sample: SampleResult, scale = 1): Float64Array {
+  const vel = jointVelocityMatrix(sample, scale);
+  const jointCount = sample.joints.length;
+  const speeds = new Float64Array(sample.frameCount * jointCount);
+  for (let i = 0; i < speeds.length; i += 1) {
+    const base = i * 3;
+    const x = vel[base]!;
+    const y = vel[base + 1]!;
+    const z = vel[base + 2]!;
+    speeds[i] = Math.sqrt(x * x + y * y + z * z);
+  }
   return speeds;
 }
 

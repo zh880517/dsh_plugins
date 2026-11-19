@@ -34,6 +34,17 @@ export const LOOP_GRID = 300;
 export const LOOP_MIN_SECONDS = 0.5;
 export const LOOP_PASS = 1.5;
 
+/** 循环 / 归位 verdict 四态（§6.5.3 表） */
+export type LoopVerdict = 'loop-perfect' | 'loop-pose-only' | 'return-only' | 'no-return';
+
+/** verdict 释义四句固定文案（A.12 循环 facts 句的 {verdict 释义}；文案随 §6.5.3 表走） */
+export const LOOP_VERDICT_NOTES: Record<LoopVerdict, string> = {
+  'loop-perfect': '可无缝循环（走路循环、待机呼吸）',
+  'loop-pose-only': '姿势回起点但速度断裂——循环会有顿挫（收招后停顿一拍的动作）',
+  'return-only': '姿势归位、位置漂移——root-motion 位移动作，复用要代码处理位移',
+  'no-return': '不归位（一次性动作：死亡、倒地、受击落僵直）',
+};
+
 /** 分段决策表（A.8）：打击峰值/时长、跑/走分界、转身净角、自转累计角 */
 export const STRIKE_PEAK = 2.0;
 export const STRIKE_DUR = 0.8;

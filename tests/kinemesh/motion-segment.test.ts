@@ -150,15 +150,17 @@ describe('M6b · 侧移（strafe-r #4：bodyDir = right）', () => {
 describe('M6b · summary / trajectory / 中间文件集（standard detail）', () => {
   const result = run(buildBackpedalClip(buildHumanoidRig()));
 
-  it('summary.json：calibVersion / 常数回显 / vocab 来源 / loopCheck null / facts 中文', () => {
+  it('summary.json：calibVersion / 常数回显 / vocab 来源 / loopCheck 块 / facts 中文', () => {
     const { summary } = result;
     expect(summary.calibVersion).toBe(CALIB_VERSION);
     expect(summary.constants.RUN_SPEED).toBe(1.2);
     expect(summary.vocab).toEqual({ source: 'builtin', entries: 0 });
-    expect(summary.loopCheck).toBeNull();
-    expect(summary.facts).toHaveLength(2); // 每段一句 + 全片一句
-    expect(summary.facts[1]).toContain('总时长');
-    expect(summary.facts[1]).toContain('帧@30fps');
+    // M6c 起恒有 loopCheck（verdict 细节见 motion-loop.test.ts）
+    expect(summary.loopCheck).not.toBeNull();
+    expect(summary.loopCheck).toHaveProperty('verdict');
+    expect(summary.facts).toHaveLength(3); // 每段一句 + 循环句（M6c）+ 全片一句
+    expect(summary.facts[2]).toContain('总时长');
+    expect(summary.facts[2]).toContain('帧@30fps');
     expect(summary.jointBasis.basis).toBe('humanoid-conventions');
     expect(summary.normalize.mode).toBe('none');
   });

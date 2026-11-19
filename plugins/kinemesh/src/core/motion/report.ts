@@ -15,6 +15,7 @@ import {
   LOOP_GRID,
   LOOP_MIN_SECONDS,
   LOOP_PASS,
+  LOOP_VERDICT_NOTES,
   POSE_MAX_TH,
   POSE_RMS_TH,
   ROOT_DISP_TH,
@@ -39,6 +40,7 @@ import {
 } from './constants.js';
 import { smoothSeries, type FrameChannels } from './channels.js';
 import type { DescribedSegment } from './describe.js';
+import type { LoopCheck } from './loop.js';
 import type { MotionEvent } from './segment.js';
 import { RENDER_FPS } from '../viewstate.js';
 import type { SampleResult } from './sample.js';
@@ -319,6 +321,15 @@ export function trajectorySvg(channels: FrameChannels): string {
 
 // ———————— summary（§6.4 motion-summary.json） ————————
 
+/** A.12 循环 facts 句：数值按 A.14 圆整（长度/速度 3 位、角度 1 位），阈值全精度在 components */
+export function loopFactSentence(check: LoopCheck): string {
+  const c = check.components;
+  return (
+    `循环检测：${check.verdict}——姿势差 ${roundLength(c.poseRMS)}，位置差 ${roundLength(c.rootDisp)}，` +
+    `朝向差 ${roundAngle(c.headingDiff)}°，速度差 ${roundLength(c.velSeam)}；${LOOP_VERDICT_NOTES[check.verdict]}`
+  );
+}
+
 export interface MotionSummary {
   calibVersion: string;
   /** A.15 常数总表回显（可审计） */
@@ -360,7 +371,7 @@ export interface MotionSummary {
     features: DescribedSegment['features'];
   }>;
   keyframes: KeyframeEntry[];
-  loopCheck: unknown;
+  loopCheck: LoopCheck | null;
   vocab: { source: string; entries: number };
   facts: string[];
   warnings: string[];
@@ -378,9 +389,11 @@ export interface SummaryInput {
   normalize: { mode: string; scale: number; warnings: string[] };
   warnings: string[];
   smooth?: number;
-  /** 循环检测句子（M6c 接入后传入；缺省无循环子句） */
+  /** 全片 facts 句的循环子句（M6c 传入 `循环 {verdict}`，缺省无循环子句） */
   loopSentence?: string;
-  loopCheck?: unknown;
+  /** 循环 facts 句（M6c loopFactSentence 的产物，缺省不出该句） */
+  loopFact?: string;
+  loopCheck?: LoopCheck | null;
   vocab?: { source: string; entries: number };
 }
 
@@ -456,6 +469,7 @@ export function buildSummary(input: SummaryInput): MotionSummary {
       `位移 ${roundLength(segment.features.rootDisp)} 身高，方向 ${segment.features.dirMode}，guess ${segment.guess}`
     );
   });
+  if (input.loopFact) facts.push(input.loopFact);
   const frames30 = Math.round(input.duration * RENDER_FPS);
   const clipFact =
     `总时长 ${roundLength(input.duration)}s（${frames30} 帧@30fps），平均强度 ${clipLevel}，主方向 ${mainDir}` +

@@ -3,6 +3,7 @@
 // 落盘、参数投影、vocab 发现由三出口工具层（M6d）完成。
 import type { CanonicalScene } from '../types.js';
 import { computeChannels, type FrameChannels } from './channels.js';
+import { computeLoopCheck, type LoopCheck, type LoopMode } from './loop.js';
 import { segmentClip } from './segment.js';
 import { sampleClip, type SampleOptions } from './sample.js';
 import {
@@ -10,6 +11,7 @@ import {
   framesCsv,
   keyframesFile,
   keyframesJson,
+  loopFactSentence,
   pickKeyframes,
   segmentsJson,
   summaryJson,
@@ -30,6 +32,8 @@ export interface AnalyzeOptions {
   /** 身高归一分母（analyze 入口由 normalize 决定；缺省 1 = raw） */
   scale?: number;
   normalizeMode?: 'height' | 'none';
+  /** 循环区间扫描口径（A.10）：strict（缺省）四分量打分；pose-only 去掉位移/朝向项（root-motion 循环用）。verdict 恒 strict */
+  loopMode?: LoopMode;
   /** summary 只出 summary.json；standard 加 frames/segments/keyframes/trajectory；full 再加关节曲线（M6d） */
   detail?: 'summary' | 'standard' | 'full';
 }
@@ -46,7 +50,7 @@ export interface MotionDigest {
   clip: MotionSummary['clip'];
   clipStats: MotionSummary['clipStats'];
   segments: MotionSummary['segments'];
-  loopCheck: unknown;
+  loopCheck: LoopCheck | null;
   facts: string[];
   keyframeRender: { frames: number[]; views: string[]; mode: string; altModes: string[] };
 }
@@ -68,7 +72,14 @@ export function analyzeClip(scene: CanonicalScene, options: AnalyzeOptions = {})
   const scale = options.scale !== undefined && options.scale > 0 ? options.scale : 1;
   const channels = computeChannels(sample, { scale });
   const { segments, events } = segmentClip(channels, sample, { smooth: options.smooth, scale });
-  const keyframes = pickKeyframes(channels, sample, segments, { smooth: options.smooth });
+  const loopCheck = computeLoopCheck(sample, channels, { scale, loopMode: options.loopMode });
+  const keyframes = pickKeyframes(channels, sample, segments, {
+    smooth: options.smooth,
+    // A.11 优先级 4：bestLoopRange 的 i/j 两帧（loop-seam）
+    loopSeamFrames: loopCheck.bestLoopRange
+      ? [loopCheck.bestLoopRange.frameStart, loopCheck.bestLoopRange.frameEnd]
+      : undefined,
+  });
   const normalize = {
     mode: options.normalizeMode ?? (scale === 1 ? 'none' : 'height'),
     scale,
@@ -86,6 +97,9 @@ export function analyzeClip(scene: CanonicalScene, options: AnalyzeOptions = {})
     normalize,
     warnings: sample.warnings,
     smooth: options.smooth,
+    loopCheck,
+    loopSentence: `循环 ${loopCheck.verdict}`,
+    loopFact: loopFactSentence(loopCheck),
   });
   const recipe = keyframesFile(keyframes).renderRecipe;
   const digest: MotionDigest = {
