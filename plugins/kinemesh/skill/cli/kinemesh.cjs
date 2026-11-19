@@ -778,7 +778,7 @@ var _lut = [
 	"ff"
 ];
 var _seed = 1234567;
-var DEG2RAD = Math.PI / 180;
+var DEG2RAD$1 = Math.PI / 180;
 var RAD2DEG = 180 / Math.PI;
 /**
 * Generate a [UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier)
@@ -961,7 +961,7 @@ function seededRandom(s) {
 * @return {number} The converted value in radians.
 */
 function degToRad(degrees) {
-	return degrees * DEG2RAD;
+	return degrees * DEG2RAD$1;
 }
 /**
 * Converts radians to degrees.
@@ -1096,7 +1096,7 @@ function normalize$1(value, array) {
 * @hideconstructor
 */
 var MathUtils = {
-	DEG2RAD,
+	DEG2RAD: DEG2RAD$1,
 	RAD2DEG,
 	/**
 	* Generate a [UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier)
@@ -21453,7 +21453,7 @@ var PerspectiveCamera = class extends Camera {
 	* @return {number} The computed focal length.
 	*/
 	getFocalLength() {
-		const vExtentSlope = Math.tan(DEG2RAD * .5 * this.fov);
+		const vExtentSlope = Math.tan(DEG2RAD$1 * .5 * this.fov);
 		return .5 * this.getFilmHeight() / vExtentSlope;
 	}
 	/**
@@ -21462,7 +21462,7 @@ var PerspectiveCamera = class extends Camera {
 	* @return {number} The effective FOV.
 	*/
 	getEffectiveFOV() {
-		return RAD2DEG * 2 * Math.atan(Math.tan(DEG2RAD * .5 * this.fov) / this.zoom);
+		return RAD2DEG * 2 * Math.atan(Math.tan(DEG2RAD$1 * .5 * this.fov) / this.zoom);
 	}
 	/**
 	* Returns the width of the image on the film. If {@link PerspectiveCamera#aspect} is greater than or
@@ -21583,7 +21583,7 @@ var PerspectiveCamera = class extends Camera {
 	*/
 	updateProjectionMatrix() {
 		const near = this.near;
-		let top = near * Math.tan(DEG2RAD * .5 * this.fov) / this.zoom;
+		let top = near * Math.tan(DEG2RAD$1 * .5 * this.fov) / this.zoom;
 		let height = 2 * top;
 		let width = this.aspect * height;
 		let left = -.5 * width;
@@ -22965,9 +22965,43 @@ var CATEGORIES = [
 ];
 /** 至少命中这么多身体分类才判定 humanoidLike */
 var MIN_CATEGORIES = 4;
+/**
+* 按命名惯例把一根骨骼分到部件类（附录 A.0）。特异性序：先具体后泛称——
+* ForeArm 要先于 arm、UpLeg 要先于 leg、Toe 要先于 foot，否则会被泛称抢走。
+* 语义上属于中轴的（hips/spine/head）不带左右侧。
+*/
+var JOINT_KIND_PATTERNS = [
+	["toe", /toe|ball_?roll|ball/],
+	["hand", /hand|palm|wrist/],
+	["lower-arm", /lowerarm|forearm|elbow/],
+	["upper-arm", /arm|bicep|tricep/],
+	["foot", /foot|ankle|heel/],
+	["upper-leg", /upleg|upperleg|thigh/],
+	["lower-leg", /lowerleg|calf|shin|knee|leg/],
+	["hips", /hips|pelvis/],
+	["spine", /spine|torso|chest|ribs/],
+	["head", /head|skull|jaw/]
+];
 /** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写 */
 function normalize(name) {
 	return name.toLowerCase().replace(/^.*:/, "").replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, "");
+}
+/** 左右侧识别：Left 前缀、或独立分隔的 l/r（hand_l / L Hand / Bip01-L-Hand）。
+*  独立 l/r 要求两侧都是分隔符或端点，避免 leg/roll/forearm 这类词误判。 */
+function sideOf(name) {
+	if (/left/.test(name) || /(^|[^a-z])l(?![a-z])/.test(name)) return "L";
+	if (/right/.test(name) || /(^|[^a-z])r(?![a-z])/.test(name)) return "R";
+	return null;
+}
+function classifyJointName(rawName) {
+	const name = normalize(rawName);
+	if (name === "") return null;
+	const side = sideOf(name);
+	for (const [kind, pattern] of JOINT_KIND_PATTERNS) if (pattern.test(name)) return {
+		kind,
+		side: kind === "hips" || kind === "spine" || kind === "head" ? null : side
+	};
+	return null;
 }
 function isHumanoidLike(boneNames) {
 	return matchedCategories(boneNames).length >= MIN_CATEGORIES;
@@ -23049,7 +23083,7 @@ function sceneToInfo(scene, source) {
 		duration: clip.duration,
 		fps: scene.meta.fps,
 		channels: clip.tracks.length,
-		rootMotion: hasRootMotion(clip, rootBones, boundsHeight(scene))
+		rootMotion: hasRootMotion(clip, rootBones, sceneBoundsHeight(scene))
 	}));
 	const textures = collectTextures(meshes);
 	const box = new Box3().setFromObject(scene.object, true);
@@ -23081,7 +23115,8 @@ function isAncestorBone(parent) {
 	}
 	return false;
 }
-function boundsHeight(scene) {
+/** 场景包围盒沿上轴高度（模型单位）；analyze 工具层用它做身高归一（M6d，rest 姿态下取值） */
+function sceneBoundsHeight(scene) {
 	const box = new Box3().setFromObject(scene.object, true);
 	if (box.isEmpty()) return null;
 	const up = scene.meta.upAxis ?? "y";
@@ -28828,7 +28863,30 @@ function isGlb(data) {
 	if (data.byteLength < 4) return false;
 	return new TextDecoder("latin1").decode(new Uint8Array(data, 0, 4)) === "glTF";
 }
+/**
+* Node 兼容桩：three 的 FileLoader 在 fetch 流式读取时构造 ProgressEvent（浏览器 API），
+* Node 没有这个全局——GLB/GLTF 的内嵌 data URI buffer 会走这条路，缺它直接崩。
+* 只补一个可构造的最小壳（本工具的 Node 链路没人消费进度回调），幂等、不影响浏览器。
+*/
+function ensureNodeProgressEvent() {
+	if (!inNodeEnvironment()) return;
+	const globals = globalThis;
+	if (globals.ProgressEvent !== void 0) return;
+	globals.ProgressEvent = class {
+		type;
+		lengthComputable;
+		loaded;
+		total;
+		constructor(type, init) {
+			this.type = type;
+			this.lengthComputable = init?.lengthComputable ?? false;
+			this.loaded = init?.loaded ?? 0;
+			this.total = init?.total ?? 0;
+		}
+	};
+}
 function parseGltf(data, ctx) {
+	ensureNodeProgressEvent();
 	const format = isGlb(data) ? "glb" : "gltf";
 	const manager = new LoadingManager();
 	stubNodeTextures(manager);
@@ -29610,12 +29668,29 @@ function extensionOf(fileName) {
 /** 性能预算（设计文档 §10 的默认值）：超过按「文件过大」报错并给减负指引 */
 var MAX_FILE_BYTES = 536870912;
 var DETECT_HEAD_BYTES = 1024;
-async function analyzeModel(data, fileName) {
+async function checkBudget(data, fileName) {
 	if (data.byteLength === 0) throw new KinemeshError(`文件是空的：${fileName}`, "确认路径与文件本身（0 字节的文件没法分析），必要时重新导出。");
 	if (data.byteLength > MAX_FILE_BYTES) throw new KinemeshError(`文件 ${(data.byteLength / 1024 / 1024).toFixed(0)} MiB，超过 ${MAX_FILE_BYTES / 1024 / 1024} MiB 的分析上限。`, "先离线给模型减负（减面 / 清理贴图 / 去掉多余动画 take）再分析，或对导出的 LOD 版本做信息提取。");
+}
+/** info 提取：buffer + 文件名 → InfoReport（glTF 走纯 JSON 快速路径） */
+async function analyzeModel(data, fileName) {
+	await checkBudget(data, fileName);
 	const entry = detectFormat(headBytes(data), fileName);
 	if (entry === null) throw unknownFormatError(fileName);
 	return analyzeWith(entry, data, fileName);
+}
+/**
+* 动作分析（M6d）专用：完整加载路径拿 CanonicalScene（glTF 不走快速路径——快速路径只有 min/max，
+* 无法逐帧采样，见设计文档 §6.2）。空文件 / 超限 / 未知格式的口径与 analyzeModel 一致。
+*/
+async function loadModelScene(data, fileName) {
+	await checkBudget(data, fileName);
+	const entry = detectFormat(headBytes(data), fileName);
+	if (entry === null) throw unknownFormatError(fileName);
+	return {
+		entry,
+		scene: await entry.load(data, { fileName })
+	};
 }
 async function analyzeWith(entry, data, fileName) {
 	if (entry.fastInfo !== void 0) return entry.fastInfo(data, fileName);
@@ -29931,11 +30006,2296 @@ function sanitizeBaseName(fileName) {
 }
 //#endregion
 //#region
+var SAMPLE_COUNT_MAX = 24e3;
+/** 接触检测双阈值（A.6）：脚点高度 < 0.05H 且速度 < 0.30 H/s；状态翻转需连续 2 帧成立 */
+var CONTACT_HEIGHT = .05;
+var CONTACT_VEL = .3;
+/** 分段（A.7）：局部极小显著性 / 最短段长 / 段数上限 */
+var SEG_DELTA = .08;
+var SEG_MIN_SECONDS = .4;
+/** 循环 / 归位阈值（A.10）：姿势 RMS、最差单关节、根位移、朝向差、速度 seam */
+var POSE_RMS_TH = .03;
+var POSE_MAX_TH = .08;
+var ROOT_DISP_TH = .05;
+var VEL_SEAM_TH = .1;
+var LOOP_MIN_SECONDS = .5;
+var LOOP_PASS = 1.5;
+/** verdict 释义四句固定文案（A.12 循环 facts 句的 {verdict 释义}；文案随 §6.5.3 表走） */
+var LOOP_VERDICT_NOTES = {
+	"loop-perfect": "可无缝循环（走路循环、待机呼吸）",
+	"loop-pose-only": "姿势回起点但速度断裂——循环会有顿挫（收招后停顿一拍的动作）",
+	"return-only": "姿势归位、位置漂移——root-motion 位移动作，复用要代码处理位移",
+	"no-return": "不归位（一次性动作：死亡、倒地、受击落僵直）"
+};
+var STRIKE_DUR = .8;
+var RUN_SPEED = 1.2;
+var WALK_SPEED = .3;
+var KEYFRAME_DEDUP = .3;
+/** hipsLow 判据偏移（A.8 #10）：段内 hips 均值 < 全片 P10 − 0.05 */
+var HIPS_LOW_OFFSET = .05;
+/** trajectory SVG 强度五档着色（A.13，按能量着色） */
+var LEVEL_COLORS = {
+	static: "#dddddd",
+	low: "#b3de69",
+	medium: "#fdb462",
+	high: "#fb8072",
+	extreme: "#9e0142"
+};
+/**
+* 强度档位（§6.6.2，A.9）：mean 按「平均能量」列、peak 按「峰值能量」列各判一档，
+* level = 取更高级别（防高爆发短段被均值稀释）。全片与每帧同用本表。
+*/
+var INTENSITY_LEVELS = [
+	{
+		level: "static",
+		meanBelow: .05,
+		peakBelow: .3
+	},
+	{
+		level: "low",
+		meanBelow: .15,
+		peakBelow: .8
+	},
+	{
+		level: "medium",
+		meanBelow: .4,
+		peakBelow: 1.6
+	},
+	{
+		level: "high",
+		meanBelow: .8,
+		peakBelow: 3
+	},
+	{
+		level: "extreme",
+		meanBelow: Number.POSITIVE_INFINITY,
+		peakBelow: Number.POSITIVE_INFINITY
+	}
+];
+var LEVEL_RANK = {
+	static: 0,
+	low: 1,
+	medium: 2,
+	high: 3,
+	extreme: 4
+};
+function tierOf(value, pick) {
+	for (const tier of INTENSITY_LEVELS) if (value < tier[pick]) return tier.level;
+	return "extreme";
+}
+/** level = max(levelMean(meanE), levelPeak(peakE))（A.9）。每帧同用：mean = peak = 该帧能量 */
+function intensityLevel(mean, peak) {
+	const byMean = tierOf(mean, "meanBelow");
+	const byPeak = tierOf(peak, "peakBelow");
+	return LEVEL_RANK[byMean] >= LEVEL_RANK[byPeak] ? byMean : byPeak;
+}
+/**
+* 能量权重表（A.3，J15）：末端关节权重高、躯干低；左右同权。Σw = 11.5。
+* Toe 只作足点/打击肢端候选，不在权重表里（weight = 0，不进能量与 Σw）。
+*/
+var JOINT_WEIGHTS = {
+	hips: .2,
+	spine: .3,
+	head: 1,
+	UpperArm: .7,
+	LowerArm: .9,
+	Hand: 1.2,
+	UpperLeg: .5,
+	LowerLeg: .7,
+	Foot: 1
+};
+Object.values(JOINT_WEIGHTS).reduce((sum, w) => sum + w, 0);
+//#endregion
+//#region
+var DIR_WORDS = [
+	"forward",
+	"forward-right",
+	"right",
+	"back-right",
+	"back",
+	"back-left",
+	"left",
+	"forward-left"
+];
+/** wrap(θ) = ((θ + 180) mod 360) − 180，值域 [−180, 180)（A.4） */
+function wrapDegrees(theta) {
+	return ((theta + 180) % 360 + 360) % 360 - 180;
+}
+function norm3(x, y, z) {
+	return Math.sqrt(x * x + y * y + z * z);
+}
+/** 居中滑动平均（A.2）：窗宽 2m+1，端点用截断窗口 */
+function smoothSeries(values, m) {
+	const out = new Array(values.length);
+	for (let k = 0; k < values.length; k += 1) {
+		const from = Math.max(0, k - m);
+		const to = Math.min(values.length - 1, k + m);
+		let sum = 0;
+		for (let i = from; i <= to; i += 1) sum += values[i];
+		out[k] = sum / (to - from + 1);
+	}
+	return out;
+}
+/**
+* 每采样帧每关节的速度向量（H/s），N×J×3——A.2 差分公式的唯一实现（中央差分、
+* 端点单侧）：jointSpeedMatrix（模）与 loop（seam 速度差，M6c）共用，避免公式分叉。
+*/
+function jointVelocityMatrix(sample, scale = 1) {
+	const n = sample.frameCount;
+	const jointCount = sample.joints.length;
+	const dt = sample.dt;
+	const raw = sample.positions;
+	const pos = new Float64Array(raw.length);
+	for (let i = 0; i < raw.length; i += 1) pos[i] = raw[i] / scale;
+	const vel = new Float64Array(n * jointCount * 3);
+	for (let j = 0; j < jointCount; j += 1) for (let axis = 0; axis < 3; axis += 1) {
+		const series = new Float64Array(n);
+		for (let k = 0; k < n; k += 1) series[k] = pos[(k * jointCount + j) * 3 + axis];
+		for (let k = 0; k < n; k += 1) {
+			let d;
+			if (k === 0) d = (series[1] - series[0]) / dt;
+			else if (k === n - 1) d = (series[n - 1] - series[n - 2]) / dt;
+			else d = (series[k + 1] - series[k - 1]) / (2 * dt);
+			vel[(k * jointCount + j) * 3 + axis] = d;
+		}
+	}
+	return vel;
+}
+/**
+* 每采样帧每关节的线速度模（H/s），N×J——jointVelocityMatrix 的模（A.2 差分唯一实现），
+* computeChannels 与 describe（peakJoint / 段特征）共用。
+*/
+function jointSpeedMatrix(sample, scale = 1) {
+	const vel = jointVelocityMatrix(sample, scale);
+	const jointCount = sample.joints.length;
+	const speeds = new Float64Array(sample.frameCount * jointCount);
+	for (let i = 0; i < speeds.length; i += 1) {
+		const base = i * 3;
+		const x = vel[base];
+		const y = vel[base + 1];
+		const z = vel[base + 2];
+		speeds[i] = Math.sqrt(x * x + y * y + z * z);
+	}
+	return speeds;
+}
+function computeChannels(sample, options = {}) {
+	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
+	const n = sample.frameCount;
+	const jointCount = sample.joints.length;
+	const dt = sample.dt;
+	const { anchors, joints } = sample;
+	const raw = sample.positions;
+	const pos = new Float64Array(raw.length);
+	for (let i = 0; i < raw.length; i += 1) pos[i] = raw[i] / scale;
+	const at = (k, j) => {
+		const base = (k * jointCount + j) * 3;
+		return [
+			pos[base],
+			pos[base + 1],
+			pos[base + 2]
+		];
+	};
+	const speeds = jointSpeedMatrix(sample, scale);
+	const speedAt = (k, j) => speeds[k * jointCount + j];
+	let weightSum = 0;
+	for (const joint of joints) weightSum += joint.weight;
+	const energy = new Array(n).fill(0);
+	if (weightSum > 0) for (let k = 0; k < n; k += 1) {
+		let sum = 0;
+		for (let j = 0; j < jointCount; j += 1) sum += joints[j].weight * speedAt(k, j);
+		energy[k] = sum / weightSum;
+	}
+	const energyLevel = energy.map((value) => intensityLevel(value, value));
+	const amplitude = new Array(n).fill(0);
+	if (anchors.hips >= 0 && anchors.head >= 0 && anchors.endEffectors.length > 0) for (let k = 0; k < n; k += 1) {
+		const [p1x, p1y, p1z] = at(k, anchors.hips);
+		const [p2x, p2y, p2z] = at(k, anchors.head);
+		const ux = p2x - p1x;
+		const uy = p2y - p1y;
+		const uz = p2z - p1z;
+		const len = norm3(ux, uy, uz);
+		if (len < 1e-9) continue;
+		const unitX = ux / len;
+		const unitY = uy / len;
+		const unitZ = uz / len;
+		let sum = 0;
+		for (const eff of anchors.endEffectors) {
+			const [ex, ey, ez] = at(k, eff);
+			const vx = ex - p1x;
+			const vy = ey - p1y;
+			const vz = ez - p1z;
+			const cx = vy * unitZ - vz * unitY;
+			const cy = vz * unitX - vx * unitZ;
+			const cz = vx * unitY - vy * unitX;
+			sum += norm3(cx, cy, cz);
+		}
+		amplitude[k] = sum / anchors.endEffectors.length;
+	}
+	const heading = new Array(n).fill(0);
+	const rootTrack = sample.rootTrack;
+	for (let k = 0; k < n; k += 1) {
+		let fx = 0;
+		let fz = 0;
+		let resolved = false;
+		if (anchors.hips >= 0 && anchors.head >= 0 && anchors.leftUpperLeg >= 0 && anchors.rightUpperLeg >= 0) {
+			const [lux, luy, luz] = at(k, anchors.leftUpperLeg);
+			const [rux, ruy, ruz] = at(k, anchors.rightUpperLeg);
+			const rx = rux - lux;
+			const ry = ruy - luy;
+			const rz = ruz - luz;
+			const [hpx, hpy, hpz] = at(k, anchors.hips);
+			const [hdx, hdy, hdz] = at(k, anchors.head);
+			const ux = hdx - hpx;
+			const uy = hdy - hpy;
+			const uz = hdz - hpz;
+			if (norm3(rx, ry, rz) > 1e-9 && norm3(ux, uy, uz) > 1e-9) {
+				const cx = ry * uz - rz * uy;
+				const cy = rz * ux - rx * uz;
+				const cz = rx * uy - ry * ux;
+				const len = norm3(cx, cy, cz);
+				if (len > 1e-9) {
+					fx = cx / len;
+					fz = cz / len;
+					resolved = true;
+				}
+			}
+		}
+		if (!resolved && rootTrack) {
+			const qx = rootTrack.quaternions[k * 4];
+			const qy = rootTrack.quaternions[k * 4 + 1];
+			const qz = rootTrack.quaternions[k * 4 + 2];
+			const qw = rootTrack.quaternions[k * 4 + 3];
+			const vx = 2 * (qw * qy + qx * qz);
+			2 * (qy * qz - qw * qx);
+			const vz = 1 - 2 * (qx * qx + qy * qy);
+			if (Math.sqrt(vx * vx + vz * vz) > 1e-9) {
+				fx = vx;
+				fz = vz;
+				resolved = true;
+			}
+		}
+		heading[k] = resolved ? Math.atan2(fx, fz) * 180 / Math.PI : 0;
+	}
+	const turnTotal = new Array(n).fill(0);
+	for (let k = 1; k < n; k += 1) turnTotal[k] = turnTotal[k - 1] + Math.abs(wrapDegrees(heading[k] - heading[k - 1]));
+	const rootX = new Array(n).fill(0);
+	const rootY = new Array(n).fill(0);
+	const rootZ = new Array(n).fill(0);
+	let rootVelX = new Array(n).fill(0);
+	let rootVelZ = new Array(n).fill(0);
+	if (rootTrack) {
+		const ref0x = rootTrack.positions[0] / scale;
+		const ref0y = rootTrack.positions[1] / scale;
+		const ref0z = rootTrack.positions[2] / scale;
+		const absX = new Float64Array(n);
+		const absZ = new Float64Array(n);
+		for (let k = 0; k < n; k += 1) {
+			rootX[k] = rootTrack.positions[k * 3] / scale - ref0x;
+			rootY[k] = rootTrack.positions[k * 3 + 1] / scale - ref0y;
+			rootZ[k] = rootTrack.positions[k * 3 + 2] / scale - ref0z;
+			absX[k] = rootTrack.positions[k * 3] / scale;
+			absZ[k] = rootTrack.positions[k * 3 + 2] / scale;
+		}
+		const diff = (series) => {
+			const out = new Array(n).fill(0);
+			for (let k = 0; k < n; k += 1) if (k === 0) out[k] = (series[1] - series[0]) / dt;
+			else if (k === n - 1) out[k] = (series[n - 1] - series[n - 2]) / dt;
+			else out[k] = (series[k + 1] - series[k - 1]) / (2 * dt);
+			return out;
+		};
+		rootVelX = smoothSeries(diff(absX), 1);
+		rootVelZ = smoothSeries(diff(absZ), 1);
+	}
+	const moveSpeed = rootVelX.map((vx, k) => Math.sqrt(vx * vx + rootVelZ[k] * rootVelZ[k]));
+	const moveDir = new Array(n).fill("in-place");
+	const moveDirBody = new Array(n).fill("in-place");
+	const IN_PLACE_SPEED = .05;
+	const sectorOf = (vx, vz, thetaDeg) => {
+		const theta = thetaDeg * Math.PI / 180;
+		const cos = Math.cos(theta);
+		const sin = Math.sin(theta);
+		const rotatedX = vx * cos - vz * sin;
+		const rotatedZ = vx * sin + vz * cos;
+		return DIR_WORDS[(Math.round(Math.atan2(rotatedX, rotatedZ) / (Math.PI / 4)) % 8 + 8) % 8];
+	};
+	for (let k = 0; k < n; k += 1) {
+		if (moveSpeed[k] < IN_PLACE_SPEED) continue;
+		moveDir[k] = sectorOf(rootVelX[k], rootVelZ[k], heading[0]);
+		moveDirBody[k] = sectorOf(rootVelX[k], rootVelZ[k], heading[k]);
+	}
+	const contactL = new Array(n).fill(false);
+	const contactR = new Array(n).fill(false);
+	if (anchors.footPoints.length > 0) {
+		let ground = Number.POSITIVE_INFINITY;
+		for (const point of anchors.footPoints) for (let k = 0; k < n; k += 1) ground = Math.min(ground, raw[(k * jointCount + point.index) * 3 + 1]);
+		const rawContact = (side, k) => {
+			for (const point of anchors.footPoints) {
+				if (point.side !== side) continue;
+				if ((raw[(k * jointCount + point.index) * 3 + 1] - ground) / scale < .05 && speedAt(k, point.index) < .3) return true;
+			}
+			return false;
+		};
+		const debounced = (side) => {
+			const raws = Array.from({ length: n }, (_, k) => rawContact(side, k));
+			const out = raws.slice();
+			let state = raws[0];
+			let runStart = -1;
+			let runValue = false;
+			let runLength = 0;
+			for (let k = 1; k < n; k += 1) if (raws[k] !== state) {
+				if (runStart >= 0 && raws[k] === runValue) runLength += 1;
+				else {
+					runValue = raws[k];
+					runStart = k;
+					runLength = 1;
+				}
+				if (runLength >= 2) {
+					for (let i = runStart; i <= k; i += 1) out[i] = runValue;
+					state = runValue;
+					runStart = -1;
+					runLength = 0;
+				}
+			} else {
+				runStart = -1;
+				runLength = 0;
+			}
+			return out;
+		};
+		const left = debounced("L");
+		const right = debounced("R");
+		for (let k = 0; k < n; k += 1) {
+			contactL[k] = left[k];
+			contactR[k] = right[k];
+		}
+	}
+	const airborne = contactL.map((l, k) => !l && !contactR[k]);
+	const support = airborne.map((air, k) => {
+		if (contactL[k] && contactR[k]) return "double-support";
+		if (contactL[k]) return "single-L";
+		if (contactR[k]) return "single-R";
+		return "air";
+	});
+	const topJoint = new Array(n).fill("");
+	const topJointSpeed = new Array(n).fill(0);
+	for (let k = 0; k < n; k += 1) {
+		let best = -1;
+		let bestSpeed = 0;
+		for (let j = 0; j < jointCount; j += 1) {
+			const speed = speedAt(k, j);
+			if (best < 0 || speed > bestSpeed + 1e-12) {
+				best = j;
+				bestSpeed = speed;
+			} else if (Math.abs(speed - bestSpeed) <= 1e-12 && joints[j].weight > joints[best].weight) {
+				best = j;
+				bestSpeed = speed;
+			}
+		}
+		topJoint[k] = best >= 0 ? joints[best].id : "";
+		topJointSpeed[k] = bestSpeed;
+	}
+	return {
+		frameCount: n,
+		frames: sample.frames,
+		times: sample.times,
+		energy,
+		energyLevel,
+		amplitude,
+		rootX,
+		rootY,
+		rootZ,
+		heading,
+		turnTotal,
+		moveDir,
+		moveDirBody,
+		moveSpeed,
+		contactL,
+		contactR,
+		airborne,
+		support,
+		topJoint,
+		topJointSpeed
+	};
+}
+//#endregion
+//#region
+var DEG2RAD = Math.PI / 180;
+/** 端点朝向（度）：heading 通道只覆盖网格帧，端点用 rootTrack.endpointQuaternion 按 A.4 回退公式 */
+function endpointHeading(sample) {
+	const q = sample.rootTrack?.endpointQuaternion;
+	if (!q) return 0;
+	const qx = q[0];
+	const qy = q[1];
+	const qz = q[2];
+	const vx = 2 * (q[3] * qy + qx * qz);
+	const vz = 1 - 2 * (qx * qx + qy * qy);
+	return Math.sqrt(vx * vx + vz * vz) > 1e-9 ? Math.atan2(vx, vz) * 180 / Math.PI : 0;
+}
+/**
+* P(t) 姿势矩阵（A.10）：(N+1)×J×3，第 N 行是 t=duration 精确端点。每帧
+* 世界关节位置 − pos(hips) → 绕世界 Y 轴旋转 −heading(k)（公式同 A.5）→ /H
+* ——剥离位移与转身，只比姿势本体。无 hips 时参照 rootPos 轨道（A.5 口径），都没有则记 0。
+*/
+function buildPoses(sample, channels, scale) {
+	const n = sample.frameCount;
+	const jointCount = sample.joints.length;
+	const hips = sample.anchors.hips;
+	const rootTrack = sample.rootTrack;
+	const headingEnd = endpointHeading(sample);
+	const poses = new Float64Array((n + 1) * jointCount * 3);
+	for (let k = 0; k <= n; k += 1) {
+		const endpoint = k === n;
+		const src = endpoint ? sample.endpointPositions : sample.positions;
+		let refX = 0;
+		let refY = 0;
+		let refZ = 0;
+		if (hips >= 0) {
+			const base = endpoint ? hips * 3 : (k * jointCount + hips) * 3;
+			refX = src[base];
+			refY = src[base + 1];
+			refZ = src[base + 2];
+		} else if (rootTrack) {
+			const r = endpoint ? rootTrack.endpointPosition : rootTrack.positions;
+			refX = r[k * 3];
+			refY = r[k * 3 + 1];
+			refZ = r[k * 3 + 2];
+		}
+		const theta = -(endpoint ? headingEnd : channels.heading[k] ?? 0) * DEG2RAD;
+		const cos = Math.cos(theta);
+		const sin = Math.sin(theta);
+		for (let j = 0; j < jointCount; j += 1) {
+			const base = endpoint ? j * 3 : (k * jointCount + j) * 3;
+			const dx = src[base] - refX;
+			const dy = src[base + 1] - refY;
+			const dz = src[base + 2] - refZ;
+			const out = (k * jointCount + j) * 3;
+			poses[out] = (dx * cos - dz * sin) / scale;
+			poses[out + 1] = dy / scale;
+			poses[out + 2] = (dx * sin + dz * cos) / scale;
+		}
+	}
+	return poses;
+}
+/**
+* 速度矩阵：(N+1)×J×3，网格帧用 jointVelocityMatrix（A.2 唯一实现）。第 N 行（端点）
+* 用确定性单侧差分 (p_end − p(N−1))/Δt——与首帧 (p(1) − p(0))/Δt 对称：末帧一律以
+* t=duration 精确端点评估（A.10），不用 N−1 处的中央差分口径。
+*/
+function buildVelocities(sample, scale) {
+	const n = sample.frameCount;
+	const jointCount = sample.joints.length;
+	const vel = new Float64Array((n + 1) * jointCount * 3);
+	vel.set(jointVelocityMatrix(sample, scale));
+	const dt = sample.dt;
+	for (let j = 0; j < jointCount; j += 1) {
+		const prevBase = (n - 1) * jointCount * 3 + j * 3;
+		const outBase = (n * jointCount + j) * 3;
+		for (let axis = 0; axis < 3; axis += 1) {
+			const end = sample.endpointPositions[j * 3 + axis] / scale;
+			const prev = sample.positions[prevBase + axis] / scale;
+			vel[outBase + axis] = (end - prev) / dt;
+		}
+	}
+	return vel;
+}
+/** poseDistance（A.10）：poseRMS + maxJoint + top3 最差关节（并列保持关节序，确定性） */
+function poseDistance(poses, rowA, rowB, sample) {
+	const jointCount = sample.joints.length;
+	const baseA = rowA * jointCount * 3;
+	const baseB = rowB * jointCount * 3;
+	let sumSq = 0;
+	let maxJoint = 0;
+	const diffs = new Array(jointCount);
+	for (let j = 0; j < jointCount; j += 1) {
+		const a = baseA + j * 3;
+		const b = baseB + j * 3;
+		const dx = poses[a] - poses[b];
+		const dy = poses[a + 1] - poses[b + 1];
+		const dz = poses[a + 2] - poses[b + 2];
+		const d2 = dx * dx + dy * dy + dz * dz;
+		sumSq += d2;
+		const d = Math.sqrt(d2);
+		diffs[j] = d;
+		if (d > maxJoint) maxJoint = d;
+	}
+	const top3 = diffs.map((diff, j) => ({
+		diff,
+		j
+	})).sort((x, y) => y.diff - x.diff).slice(0, 3);
+	return {
+		rms: Math.sqrt(sumSq / jointCount),
+		maxJoint,
+		worstJoints: top3.map((entry) => ({
+			id: sample.joints[entry.j].id,
+			diff: entry.diff
+		}))
+	};
+}
+/** mean_j |v_j(a) − v_j(b)|（H/s，A.10 velocitySeam：循环有没有顿挫取决于速度连续性） */
+function velocitySeam(vel, rowA, rowB, jointCount) {
+	const baseA = rowA * jointCount * 3;
+	const baseB = rowB * jointCount * 3;
+	let sum = 0;
+	for (let j = 0; j < jointCount; j += 1) {
+		const a = baseA + j * 3;
+		const b = baseB + j * 3;
+		const dx = vel[a] - vel[b];
+		const dy = vel[a + 1] - vel[b + 1];
+		const dz = vel[a + 2] - vel[b + 2];
+		sum += Math.sqrt(dx * dx + dy * dy + dz * dz);
+	}
+	return sum / jointCount;
+}
+/** 根平面位移（H，A.5 rootPos 参照轨道）；rowB = N 表示 t=duration 端点；无轨道记 0 */
+function rootDispBetween(sample, scale, rowA, rowB) {
+	const track = sample.rootTrack;
+	if (!track) return 0;
+	const x = (row) => row === sample.frameCount ? track.endpointPosition[0] : track.positions[row * 3];
+	const z = (row) => row === sample.frameCount ? track.endpointPosition[2] : track.positions[row * 3 + 2];
+	const dx = x(rowA) - x(rowB);
+	const dz = z(rowA) - z(rowB);
+	return Math.sqrt(dx * dx + dz * dz) / scale;
+}
+function componentsOf(pose, rootDisp, headingDiff, velSeam) {
+	return {
+		poseRMS: pose.rms,
+		poseRMSTh: POSE_RMS_TH,
+		maxJoint: pose.maxJoint,
+		maxJointTh: POSE_MAX_TH,
+		rootDisp,
+		rootDispTh: ROOT_DISP_TH,
+		headingDiff,
+		headingDiffTh: 10,
+		velSeam,
+		velSeamTh: VEL_SEAM_TH
+	};
+}
+/** §6.5.3 verdict 四态：¬pose → no-return；pose ∧ ¬position → return-only；velocity 分 perfect/pose-only */
+function verdictOf(poseMatch, positionMatch, velocityMatch) {
+	if (!poseMatch) return "no-return";
+	if (!positionMatch) return "return-only";
+	return velocityMatch ? "loop-perfect" : "loop-pose-only";
+}
+/** 扫描网格（A.10）：N ≤ LOOP_GRID 用全网格，否则等距子网格（含 0 与 N−1） */
+function scanGrid(n) {
+	if (n <= 300) return Array.from({ length: n }, (_, k) => k);
+	return Array.from({ length: 300 }, (_, idx) => Math.round(idx * (n - 1) / 299));
+}
+/** 归一化 max 打分（A.10，不设权重）；pose-only 去掉 rootDisp 与 heading 两项 */
+function loopScore(poseRMS, rootDisp, headingDiffAbs, velSeam, mode) {
+	const poseTerm = poseRMS / POSE_RMS_TH;
+	const velTerm = velSeam / VEL_SEAM_TH;
+	if (mode === "pose-only") return Math.max(poseTerm, velTerm);
+	return Math.max(poseTerm, rootDisp / ROOT_DISP_TH, headingDiffAbs / 10, velTerm);
+}
+function scanBestLoopRange(sample, channels, poses, vel, scale, mode) {
+	const jointCount = sample.joints.length;
+	const grid = scanGrid(sample.frameCount);
+	let best = null;
+	for (let a = 0; a < grid.length; a += 1) for (let b = a + 1; b < grid.length; b += 1) {
+		const rowA = grid[a];
+		const rowB = grid[b];
+		if ((rowB - rowA) * sample.dt < .5) continue;
+		const pose = poseDistance(poses, rowA, rowB, sample);
+		const rootDisp = rootDispBetween(sample, scale, rowA, rowB);
+		const headingDiff = wrapDegrees((channels.heading[rowB] ?? 0) - (channels.heading[rowA] ?? 0));
+		const velSeam = velocitySeam(vel, rowA, rowB, jointCount);
+		const score = loopScore(pose.rms, rootDisp, Math.abs(headingDiff), velSeam, mode);
+		if (best === null || score < best.score) best = {
+			rowA,
+			rowB,
+			score,
+			components: componentsOf(pose, rootDisp, headingDiff, velSeam)
+		};
+	}
+	if (best === null || best.score >= 1.5) return null;
+	return {
+		frameStart: best.rowA,
+		frameEnd: best.rowB,
+		score: best.score,
+		components: best.components
+	};
+}
+/** 循环 / 归位检测主入口（§6.5 / A.10）：seam 四分量 + verdict + bestLoopRange */
+function computeLoopCheck(sample, channels, options = {}) {
+	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
+	const mode = options.loopMode ?? "strict";
+	const n = sample.frameCount;
+	const jointCount = sample.joints.length;
+	const poses = buildPoses(sample, channels, scale);
+	const vel = buildVelocities(sample, scale);
+	const seamPose = poseDistance(poses, 0, n, sample);
+	const rootDisp = rootDispBetween(sample, scale, 0, n);
+	const headingDiff = wrapDegrees(endpointHeading(sample) - (channels.heading[0] ?? 0));
+	const velSeam = velocitySeam(vel, 0, n, jointCount);
+	const poseMatch = seamPose.rms < .03 && seamPose.maxJoint < .08 && Math.abs(headingDiff) < 10;
+	const positionMatch = rootDisp < ROOT_DISP_TH;
+	const velocityMatch = velSeam < VEL_SEAM_TH;
+	return {
+		referenceFrame: 0,
+		poseMatch,
+		positionMatch,
+		velocityMatch,
+		components: componentsOf(seamPose, rootDisp, headingDiff, velSeam),
+		verdict: verdictOf(poseMatch, positionMatch, velocityMatch),
+		worstJoints: seamPose.worstJoints,
+		bestLoopRange: scanBestLoopRange(sample, channels, poses, vel, scale, mode)
+	};
+}
+//#endregion
+//#region
+/** 约定文件名（资产同目录 / cwd 自动发现的文件名，§6.6.3） */
+var VOCAB_FILE_NAME = "kinemesh-vocab.json";
+var NUM_KEYS = /* @__PURE__ */ new Set([
+	"rootSpeedMin",
+	"headingTurnMin",
+	"airRatioMin",
+	"peakEMin",
+	"durMax",
+	"meanEMin",
+	"meanEMax",
+	"turnTotalMin"
+]);
+var STRING_KEYS = /* @__PURE__ */ new Set(["peakJoint", "bodyDir"]);
+var BOOL_KEYS = /* @__PURE__ */ new Set(["airborne", "hipsLow"]);
+var WHEN_KEYS = /* @__PURE__ */ new Set([
+	...NUM_KEYS,
+	...STRING_KEYS,
+	...BOOL_KEYS
+]);
+var ACTIONS = /* @__PURE__ */ new Set([
+	"label",
+	"suppress",
+	"demote"
+]);
+/** 单条 when 是否命中：所有给出的条件都成立才算命中（空条件 = 恒命中） */
+function matchesWhen(features, when) {
+	if (when.airborne !== void 0 && when.airborne !== features.airRatio > .5) return false;
+	if (when.rootSpeedMin !== void 0 && features.rootSpeed < when.rootSpeedMin) return false;
+	if (when.headingTurnMin !== void 0 && features.turnNet < when.headingTurnMin) return false;
+	if (when.airRatioMin !== void 0 && features.airRatio < when.airRatioMin) return false;
+	if (when.peakJoint !== void 0 && features.peakJoint !== when.peakJoint) return false;
+	if (when.peakEMin !== void 0 && features.peakE < when.peakEMin) return false;
+	if (when.durMax !== void 0 && features.dur > when.durMax) return false;
+	if (when.meanEMin !== void 0 && features.meanE < when.meanEMin) return false;
+	if (when.meanEMax !== void 0 && features.meanE > when.meanEMax) return false;
+	if (when.turnTotalMin !== void 0 && features.turnTotal < when.turnTotalMin) return false;
+	if (when.bodyDir !== void 0 && features.bodyDir !== when.bodyDir) return false;
+	if (when.hipsLow !== void 0 && features.hipsLow !== when.hipsLow) return false;
+	return true;
+}
+function matchesCondition(features, condition) {
+	if ("anyOf" in condition) return condition.anyOf.some((sub) => matchesWhen(features, sub));
+	return matchesWhen(features, condition);
+}
+/** 按序首条命中（A.8 first-match 不变）；没命中返回 null，走内置决策表 */
+function matchVocab(features, entries) {
+	for (const entry of entries) if (matchesCondition(features, entry.when)) return {
+		term: entry.term,
+		action: entry.action ?? "label"
+	};
+	return null;
+}
+/** JSON 文本 → 词条数组；结构错误抛 KinemeshError（错在哪 + 正确姿势） */
+function parseVocab(text, sourcePath) {
+	let data;
+	try {
+		data = JSON.parse(text);
+	} catch (error) {
+		throw new KinemeshError(`词表文件 JSON 解析失败：${sourcePath}（${reasonOf(error)}）。`, `${VOCAB_FILE_NAME} 必须是合法 JSON：顶层为词条数组，或 {"entries": [...]}；逐条检查逗号/引号后重跑。`);
+	}
+	const rawEntries = Array.isArray(data) ? data : typeof data === "object" && data !== null && Array.isArray(data.entries) ? data.entries : null;
+	if (rawEntries === null) throw new KinemeshError(`词表文件结构不对：${sourcePath} 的顶层既不是数组也没有 entries 数组。`, `顶层用词条数组或 {"entries": [...]}；每条形如 {"term": "dodge", "when": {...}, "action": "label"}。`);
+	return rawEntries.map((raw, index) => validateEntry(raw, sourcePath, index));
+}
+function validateEntry(raw, sourcePath, index) {
+	const where = `${sourcePath} 第 ${index + 1} 条`;
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new KinemeshError(`词表条目不是对象：${where}。`, "每条词条必须是对象 {\"term\": …, \"when\": {…}, \"action\": …}。");
+	const record = raw;
+	if (typeof record.term !== "string" || record.term.trim() === "") throw new KinemeshError(`词表条目缺 term 或 term 不是非空字符串：${where}。`, "term 是命中后打进 guess 的词条名，例如 \"dodge\"。");
+	if (record.action !== void 0 && (typeof record.action !== "string" || !ACTIONS.has(record.action))) throw new KinemeshError(`词表条目 action 非法（${JSON.stringify(record.action)}）：${where}。`, "action 只允许 \"label\"（缺省，打词条）/ \"suppress\"（guess 置 other）/ \"demote\"（降级 gesture）。");
+	return {
+		term: record.term,
+		when: validateCondition(record.when, sourcePath, index),
+		...record.action === void 0 ? {} : { action: record.action }
+	};
+}
+function validateCondition(raw, sourcePath, index) {
+	const where = `${sourcePath} 第 ${index + 1} 条`;
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new KinemeshError(`词表条目缺 when 或 when 不是对象：${where}。`, `when 用条件对象（如 {"rootSpeedMin": 1.2}）或 {"anyOf": [{…}, …]}；允许的字段：${[...WHEN_KEYS].join(" / ")}。`);
+	const record = raw;
+	if (record.anyOf !== void 0) {
+		if (!Array.isArray(record.anyOf) || record.anyOf.length === 0) throw new KinemeshError(`词表 when.anyOf 必须是非空数组：${where}。`, "anyOf 列出多个条件组，任一命中即可；不需要 anyOf 时直接写条件字段。");
+		const allowed = Object.keys(record).filter((key) => key !== "anyOf");
+		if (allowed.length > 0) throw new KinemeshError(`词表 when 里 anyOf 与其他字段混用（${allowed.join("、")}）：${where}。`, "anyOf 是完整条件组的「或」组合；单组条件直接写在 when 里即可。");
+		return { anyOf: record.anyOf.map((sub, subIndex) => validateWhenObject(sub, sourcePath, index, subIndex + 1)) };
+	}
+	return validateWhenObject(record, sourcePath, index);
+}
+function validateWhenObject(raw, sourcePath, index, subIndex) {
+	const where = `${sourcePath} 第 ${index + 1} 条${subIndex === void 0 ? "" : ` anyOf[${subIndex}]`}`;
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new KinemeshError(`词表 when 条件组不是对象：${where}。`, "条件组是 {\"字段\": 阈值, …} 形式的对象。");
+	const when = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (!WHEN_KEYS.has(key)) throw new KinemeshError(`词表 when 引用了未知字段「${key}」：${where}。`, `when 只允许引用工具已产出的段特征：${[...WHEN_KEYS].join(" / ")}。`);
+		if (NUM_KEYS.has(key)) {
+			if (typeof value !== "number" || !Number.isFinite(value)) throw new KinemeshError(`词表 when 字段「${key}」必须是有限数字：${where}。`, `例如 "${key}": 1.2。`);
+			when[key] = value;
+		} else if (STRING_KEYS.has(key)) {
+			if (typeof value !== "string" || value === "") throw new KinemeshError(`词表 when 字段「${key}」必须是非空字符串：${where}。`, `例如 "${key}": "R.Hand"（用 summary.jointBasis 里的 id/骨骼名）。`);
+			when[key] = value;
+		} else {
+			if (typeof value !== "boolean") throw new KinemeshError(`词表 when 字段「${key}」必须是布尔值：${where}。`, `例如 "${key}": false。`);
+			when[key] = value;
+		}
+	}
+	return when;
+}
+/**
+* 发现顺序（§6.6.3）：explicit > `<assetDir>/kinemesh-vocab.json` > `<cwd>/kinemesh-vocab.json` > builtin。
+* 文件不存在 → 静默降级下一个来源，全部没有 → builtin（entries 空）；
+* 文件存在但 JSON/条目非法 → KinemeshError（自愈指引进 parseVocab）。
+*/
+async function loadVocab(options = {}) {
+	const candidates = [];
+	if (options.explicitPath !== void 0 && options.explicitPath.trim() !== "") candidates.push(options.explicitPath.trim());
+	if (options.assetDir !== void 0 && options.assetDir.trim() !== "") candidates.push(node_path.default.join(options.assetDir, VOCAB_FILE_NAME));
+	if (options.cwd !== void 0 && options.cwd.trim() !== "") candidates.push(node_path.default.join(options.cwd, VOCAB_FILE_NAME));
+	for (const candidate of candidates) {
+		const text = await (0, node_fs_promises.readFile)(candidate, "utf8").catch(() => null);
+		if (text === null) continue;
+		return {
+			source: node_path.default.resolve(candidate),
+			entries: parseVocab(text, candidate)
+		};
+	}
+	return {
+		source: "builtin",
+		entries: []
+	};
+}
+//#endregion
+//#region
+var STRIKE_PUNCH_JOINTS = /* @__PURE__ */ new Set([
+	"L.Hand",
+	"R.Hand",
+	"L.LowerArm",
+	"R.LowerArm"
+]);
+var STRIKE_KICK_JOINTS = /* @__PURE__ */ new Set([
+	"L.Foot",
+	"R.Foot",
+	"L.LowerLeg",
+	"R.LowerLeg",
+	"L.Toe",
+	"R.Toe"
+]);
+var PREV_RECOVER_GUESSES = /* @__PURE__ */ new Set([
+	"strike-punch",
+	"strike-kick",
+	"jump",
+	"spin"
+]);
+/** 线性插值分位数（q ∈ [0,1]；升序输入） */
+function quantile(sorted, q) {
+	if (sorted.length === 0) return 0;
+	const pos = q * (sorted.length - 1);
+	const lo = Math.floor(pos);
+	const hi = Math.ceil(pos);
+	const a = sorted[lo];
+	return a + (sorted[hi] - a) * (pos - lo);
+}
+/** 众数：计数最多者，并列取先达到最大计数的值（按帧序扫描） */
+function modeOf(values, skip) {
+	const counts = /* @__PURE__ */ new Map();
+	let best = "";
+	let bestCount = -1;
+	for (const value of values) {
+		if (skip !== void 0 && value === skip) continue;
+		const count = (counts.get(value) ?? 0) + 1;
+		counts.set(value, count);
+		if (count > bestCount) {
+			best = value;
+			bestCount = count;
+		}
+	}
+	return best;
+}
+function percentileBasis(value) {
+	return value.toFixed(2);
+}
+function describeSegments(channels, sample, ranges, options = {}) {
+	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
+	const m = Math.max(0, Math.floor((options.smooth ?? 5) / 2)) || 2;
+	const eSmoothed = smoothSeries(channels.energy, m);
+	const sorted = [...eSmoothed].sort((a, b) => a - b);
+	const p50 = quantile(sorted, .5);
+	const p90 = quantile(sorted, .9);
+	const speeds = jointSpeedMatrix(sample, scale);
+	const jointCount = sample.joints.length;
+	const dt = sample.dt;
+	const hipsIndex = sample.anchors.hips;
+	const hipsY = hipsIndex >= 0 ? Array.from({ length: sample.frameCount }, (_, k) => sample.positions[(k * jointCount + hipsIndex) * 3 + 1] / scale) : null;
+	const hipsP10 = hipsY ? quantile([...hipsY].sort((a, b) => a - b), .1) : 0;
+	const described = [];
+	let prevGuess = "";
+	let prevMeanE = 0;
+	ranges.forEach((range, index) => {
+		const frames = range.end - range.start + 1;
+		const dur = frames * dt;
+		let meanSum = 0;
+		let peakE = 0;
+		for (let k = range.start; k <= range.end; k += 1) {
+			const value = eSmoothed[k];
+			meanSum += value;
+			peakE = Math.max(peakE, value);
+		}
+		const meanE = meanSum / frames;
+		let peakJointIndex = 0;
+		let peakJointSpeed = -1;
+		for (let k = range.start; k <= range.end; k += 1) for (let j = 0; j < jointCount; j += 1) {
+			const speed = speeds[k * jointCount + j];
+			if (speed > peakJointSpeed + 1e-12) {
+				peakJointSpeed = speed;
+				peakJointIndex = j;
+			} else if (Math.abs(speed - peakJointSpeed) <= 1e-12 && sample.joints[j].weight > sample.joints[peakJointIndex].weight) peakJointIndex = j;
+		}
+		const peakJoint = sample.joints[peakJointIndex];
+		const dx = (channels.rootX[range.end] ?? 0) - (channels.rootX[range.start] ?? 0);
+		const dz = (channels.rootZ[range.end] ?? 0) - (channels.rootZ[range.start] ?? 0);
+		const rootDisp = Math.sqrt(dx * dx + dz * dz);
+		const rootSpeed = dur > 0 ? rootDisp / dur : 0;
+		const h0 = channels.heading[range.start] ?? 0;
+		const h1 = channels.heading[range.end] ?? 0;
+		const turnNet = Math.abs(wrapDegrees(h1 - h0));
+		const turnTotal = (channels.turnTotal[range.end] ?? 0) - (channels.turnTotal[range.start] ?? 0);
+		const bodyDirValues = [];
+		const dirValues = [];
+		const supportValues = [];
+		let airborneFrames = 0;
+		for (let k = range.start; k <= range.end; k += 1) {
+			const body = channels.moveDirBody[k] ?? "in-place";
+			const dir = channels.moveDir[k] ?? "in-place";
+			if (body !== "in-place") bodyDirValues.push(body);
+			if (dir !== "in-place") dirValues.push(dir);
+			supportValues.push(channels.support[k] ?? "air");
+			if (channels.airborne[k]) airborneFrames += 1;
+		}
+		const bodyDir = bodyDirValues.length > 0 ? modeOf(bodyDirValues) : "in-place";
+		const dirMode = dirValues.length > 0 ? modeOf(dirValues) : "in-place";
+		const supportMode = supportValues.length > 0 ? modeOf(supportValues) : "air";
+		const airRatio = frames > 0 ? airborneFrames / frames : 0;
+		const hipsLow = hipsY !== null && Array.from({ length: frames }, (_, i) => hipsY[range.start + i]).reduce((sum, v) => sum + v, 0) / frames < hipsP10 - .05;
+		const hipsRise = hipsY ? Math.max(...Array.from({ length: frames }, (_, i) => hipsY[range.start + i])) - hipsY[range.start] : 0;
+		let label;
+		let guess;
+		let basis;
+		if (airRatio > .5) {
+			label = "airborne";
+			if (hipsRise >= .05) {
+				guess = "jump";
+				basis = `腾空占比 ${percentileBasis(airRatio)}，hips 峰值升高 ${percentileBasis(hipsRise)} 身高`;
+			} else {
+				guess = "fall";
+				basis = `腾空占比 ${percentileBasis(airRatio)}，hips 未显著升高（${percentileBasis(hipsRise)}）`;
+			}
+		} else if (rootSpeed >= 1.2) {
+			label = "contact-move";
+			guess = "run";
+			basis = `根速度 ${percentileBasis(rootSpeed)} H/s ≥ ${RUN_SPEED}`;
+		} else if (rootSpeed >= .3 && bodyDir === "back") {
+			label = "contact-move";
+			guess = "backpedal";
+			basis = `身体相对方向 back 且根速度 ${percentileBasis(rootSpeed)} H/s`;
+		} else if (rootSpeed >= .3 && (bodyDir === "left" || bodyDir === "right")) {
+			label = "contact-move";
+			guess = bodyDir === "left" ? "strafe-l" : "strafe-r";
+			basis = `身体相对方向 ${bodyDir} 且根速度 ${percentileBasis(rootSpeed)} H/s`;
+		} else if (rootSpeed >= .3) {
+			label = "contact-move";
+			guess = "walk";
+			basis = `根速度 ${percentileBasis(rootSpeed)} H/s，世界方向 ${dirMode}`;
+		} else if (turnTotal >= 270) {
+			label = "action";
+			guess = "spin";
+			basis = `累计转角 ${turnTotal.toFixed(1)}° ≥ 270°`;
+		} else if (turnNet >= 45 && rootSpeed < .3) {
+			label = "contact-move";
+			guess = "turn";
+			basis = `净转角 ${turnNet.toFixed(1)}° ≥ 45°`;
+		} else if (peakE >= 2 && dur <= .8 && STRIKE_PUNCH_JOINTS.has(peakJoint.id)) {
+			label = "action";
+			guess = "strike-punch";
+			basis = `峰值速度 ${percentileBasis(peakJointSpeed)} H/s 出现在 ${peakJoint.id}`;
+		} else if (peakE >= 2 && dur <= .8 && STRIKE_KICK_JOINTS.has(peakJoint.id)) {
+			label = "action";
+			guess = "strike-kick";
+			basis = `峰值速度 ${percentileBasis(peakJointSpeed)} H/s 出现在 ${peakJoint.id}`;
+		} else if (hipsLow) {
+			label = "action";
+			guess = "crouch";
+			basis = `hips 均值低于全片 P10 − ${HIPS_LOW_OFFSET} 身高`;
+		} else if (meanE < .05) {
+			label = "idle";
+			guess = "idle";
+			basis = `均值能量 ${percentileBasis(meanE)} < 0.05`;
+		} else if (PREV_RECOVER_GUESSES.has(prevGuess) && meanE < .5 * prevMeanE) {
+			label = "action";
+			guess = "recover";
+			basis = `均值 ${percentileBasis(meanE)} < 前段（${prevGuess}）均值 ${percentileBasis(prevMeanE)} 的一半`;
+		} else {
+			label = "action";
+			guess = "gesture";
+			basis = `无更强特征（均值 ${percentileBasis(meanE)}、峰值 ${percentileBasis(peakE)}）`;
+		}
+		if (options.vocab !== void 0 && options.vocab.length > 0) {
+			const hit = matchVocab({
+				dur,
+				meanE,
+				peakE,
+				peakJoint: peakJoint.id,
+				rootSpeed,
+				turnNet,
+				turnTotal,
+				bodyDir,
+				airRatio,
+				hipsLow
+			}, options.vocab);
+			if (hit !== null) {
+				guess = hit.action === "suppress" ? "other" : hit.action === "demote" ? "gesture" : hit.term;
+				basis = `vocab「${hit.term}」命中（${hit.action}）覆盖 guess；表内原判定：${basis}`;
+			}
+		}
+		const level = intensityLevel(meanE, peakE);
+		const relativeLevel = meanE < p50 ? "rel-low" : meanE < p90 ? "rel-mid" : "rel-high";
+		described.push({
+			index,
+			start: range.start,
+			end: range.end,
+			label,
+			guess,
+			level,
+			relativeLevel,
+			features: {
+				dur,
+				meanE,
+				peakE,
+				peakJoint: peakJoint.id,
+				peakJointSpeed,
+				rootDisp,
+				rootSpeed,
+				turnNet,
+				turnTotal,
+				bodyDir,
+				airRatio,
+				hipsLow,
+				hipsRise,
+				support: supportMode,
+				dirMode,
+				basis
+			}
+		});
+		prevGuess = guess;
+		prevMeanE = meanE;
+	});
+	return described;
+}
+//#endregion
+//#region
+function meanOf(series, start, end) {
+	let sum = 0;
+	for (let k = start; k <= end; k += 1) sum += series[k];
+	return sum / (end - start + 1);
+}
+/** 左侧首个局部极大（向左扫到数值不再增大为止；贴边算极大） */
+function firstLocalMaxLeft(series, i) {
+	let j = i - 1;
+	while (j > 0 && series[j - 1] > series[j]) j -= 1;
+	return j;
+}
+function firstLocalMaxRight(series, i, n) {
+	let j = i + 1;
+	while (j < n - 1 && series[j + 1] > series[j]) j += 1;
+	return j;
+}
+function flipFrames(flags) {
+	const frames = [];
+	for (let k = 1; k < flags.length; k += 1) if (flags[k] !== flags[k - 1]) frames.push(k);
+	return frames;
+}
+/** 第 1–4 步：能量切分 + 硬边界 + 短段并入 */
+function cutSegments(channels, options) {
+	const n = channels.frameCount;
+	const m = options.smooth !== void 0 ? Math.max(0, Math.floor(options.smooth / 2)) : 2;
+	const e = smoothSeries(channels.energy, m);
+	const dt = channels.times.length > 1 ? channels.times[1] - channels.times[0] : 0;
+	const bounds = /* @__PURE__ */ new Set([0, n - 1]);
+	for (let i = 1; i < n - 1; i += 1) {
+		if (!(e[i] < e[i - 1] && e[i] <= e[i + 1])) continue;
+		const left = firstLocalMaxLeft(e, i);
+		const right = firstLocalMaxRight(e, i, n);
+		if (Math.min(e[left], e[right]) - e[i] >= .08) bounds.add(i);
+	}
+	for (const frame of flipFrames(channels.contactL)) bounds.add(frame);
+	for (const frame of flipFrames(channels.contactR)) bounds.add(frame);
+	for (const frame of flipFrames(channels.airborne)) bounds.add(frame);
+	const sorted = [...bounds].sort((a, b) => a - b);
+	let ranges = sorted.slice(0, -1).map((start, i) => ({
+		start,
+		end: sorted[i + 1]
+	}));
+	const isShort = (range) => range.end - range.start + 1 < 3 || (range.end - range.start + 1) * dt < .4;
+	let merged = true;
+	while (merged) {
+		merged = false;
+		for (let i = 0; i < ranges.length; i += 1) {
+			const range = ranges[i];
+			if (!isShort(range)) continue;
+			const mean = meanOf(e, range.start, range.end);
+			const left = i > 0 ? ranges[i - 1] : null;
+			const right = i < ranges.length - 1 ? ranges[i + 1] : null;
+			let target;
+			if (left === null) target = "right";
+			else if (right === null) target = "left";
+			else target = Math.abs(meanOf(e, left.start, left.end) - mean) <= Math.abs(meanOf(e, right.start, right.end) - mean) ? "left" : "right";
+			if (target === "left") {
+				left.end = range.end;
+				ranges.splice(i, 1);
+			} else {
+				right.start = range.start;
+				ranges.splice(i, 1);
+			}
+			merged = true;
+			break;
+		}
+	}
+	return ranges;
+}
+/** 第 5/6 步：相邻同 label+guess 合并、段数上限收敛（合并后按合并区间重算特征与标签） */
+function convergeSegments(channels, sample, ranges, options) {
+	let described = describeSegments(channels, sample, ranges, options);
+	for (;;) {
+		let mergedAt = -1;
+		for (let i = 0; i < described.length - 1; i += 1) {
+			const a = described[i];
+			const b = described[i + 1];
+			if (a.label === b.label && a.guess === b.guess) {
+				mergedAt = i;
+				break;
+			}
+		}
+		if (mergedAt < 0) break;
+		const mergedRange = {
+			start: described[mergedAt].start,
+			end: described[mergedAt + 1].end
+		};
+		ranges = ranges.filter((_, i) => i !== mergedAt && i !== mergedAt + 1).concat([mergedRange]).sort((a, b) => a.start - b.start);
+		described = describeSegments(channels, sample, ranges, options);
+	}
+	while (described.length > 24) {
+		let target = 0;
+		for (let i = 1; i < described.length; i += 1) if (described[i].features.meanE < described[target].features.meanE) target = i;
+		const mergedRange = target === 0 ? {
+			start: described[0].start,
+			end: described[1].end
+		} : target === described.length - 1 ? {
+			start: described[target - 1].start,
+			end: described[target].end
+		} : pickCloserNeighbor(described, target);
+		const drop = target === 0 ? 0 : target - 1;
+		ranges = ranges.filter((_, i) => i !== drop && i !== drop + 1).concat([mergedRange]).sort((a, b) => a.start - b.start);
+		described = describeSegments(channels, sample, ranges, options);
+	}
+	return described;
+}
+function pickCloserNeighbor(described, target) {
+	const seg = described[target];
+	const left = described[target - 1];
+	const right = described[target + 1];
+	return Math.abs(left.features.meanE - seg.features.meanE) <= Math.abs(right.features.meanE - seg.features.meanE) ? {
+		start: left.start,
+		end: seg.end
+	} : {
+		start: seg.start,
+		end: right.end
+	};
+}
+var EVENT_PRIORITY = [
+	"liftoff",
+	"touchdown",
+	"spin",
+	"contact-change",
+	"direction-change",
+	"energy-peak"
+];
+/** 事件时间轴（A.7）：全片 ≤ 32 条、同帧合并（按优先级留一条）、按帧序 */
+function collectEvents(channels, sample, described, options) {
+	const n = channels.frameCount;
+	const m = options.smooth !== void 0 ? Math.max(0, Math.floor(options.smooth / 2)) : 2;
+	const e = smoothSeries(channels.energy, m);
+	const events = [];
+	const push = (k, type, detail) => {
+		events.push({
+			frame: channels.frames[k] ?? k,
+			time: sample.times[k] ?? 0,
+			type,
+			detail
+		});
+	};
+	for (let k = 1; k < n; k += 1) {
+		if (channels.airborne[k] && !channels.airborne[k - 1]) push(k, "liftoff", "airborne 开始");
+		if (!channels.airborne[k] && channels.airborne[k - 1]) push(k, "touchdown", "airborne 结束");
+	}
+	for (const side of ["L", "R"]) {
+		const flags = side === "L" ? channels.contactL : channels.contactR;
+		for (let k = 1; k < n; k += 1) if (flags[k] !== flags[k - 1]) push(k, "contact-change", `side=${side} limb=Foot ${flags[k] ? "接触" : "离地"}`);
+	}
+	for (let k = 1; k < n; k += 1) {
+		const prev = channels.turnTotal[k - 1] ?? 0;
+		const cur = channels.turnTotal[k] ?? 0;
+		if (cur >= 270 && prev < 270) {
+			push(k, "spin", `累计转角 ${cur.toFixed(1)}°`);
+			break;
+		}
+	}
+	for (let k = 1; k < n; k += 1) {
+		const cur = channels.moveDir[k] ?? "in-place";
+		const prev = channels.moveDir[k - 1] ?? "in-place";
+		if (cur === prev) continue;
+		if (k + 3 - 1 > n - 1) break;
+		let stable = true;
+		for (let i = 1; i < 3; i += 1) if ((channels.moveDir[k + i] ?? "in-place") !== cur) {
+			stable = false;
+			break;
+		}
+		if (stable) push(k, "direction-change", `from=${prev} to=${cur}`);
+	}
+	for (const segment of described) {
+		let peakK = segment.start;
+		let peakV = -1;
+		for (let k = segment.start; k <= segment.end; k += 1) if (e[k] > peakV) {
+			peakV = e[k];
+			peakK = k;
+		}
+		push(peakK, "energy-peak", `guess=${segment.guess} energy=${peakV.toFixed(3)}`);
+	}
+	const byFrame = /* @__PURE__ */ new Map();
+	for (const event of events) {
+		const existing = byFrame.get(event.frame);
+		if (!existing) {
+			byFrame.set(event.frame, event);
+			continue;
+		}
+		if (EVENT_PRIORITY.indexOf(event.type) < EVENT_PRIORITY.indexOf(existing.type)) byFrame.set(event.frame, event);
+	}
+	return [...byFrame.values()].sort((a, b) => a.frame - b.frame).slice(0, 32);
+}
+/** A.7 全流程：返回最终分段（含 label/guess/level/features）与事件时间轴 */
+function segmentClip(channels, sample, options = {}) {
+	const segments = convergeSegments(channels, sample, cutSegments(channels, options), options);
+	return {
+		segments,
+		events: collectEvents(channels, sample, segments, options)
+	};
+}
+//#endregion
+//#region
+var J15_PLAN = [
+	{
+		id: "hips",
+		kind: "hips",
+		side: null
+	},
+	{
+		id: "spine",
+		kind: "spine",
+		side: null
+	},
+	{
+		id: "head",
+		kind: "head",
+		side: null
+	},
+	{
+		id: "L.UpperArm",
+		kind: "upper-arm",
+		side: "L"
+	},
+	{
+		id: "R.UpperArm",
+		kind: "upper-arm",
+		side: "R"
+	},
+	{
+		id: "L.LowerArm",
+		kind: "lower-arm",
+		side: "L"
+	},
+	{
+		id: "R.LowerArm",
+		kind: "lower-arm",
+		side: "R"
+	},
+	{
+		id: "L.Hand",
+		kind: "hand",
+		side: "L"
+	},
+	{
+		id: "R.Hand",
+		kind: "hand",
+		side: "R"
+	},
+	{
+		id: "L.UpperLeg",
+		kind: "upper-leg",
+		side: "L"
+	},
+	{
+		id: "R.UpperLeg",
+		kind: "upper-leg",
+		side: "R"
+	},
+	{
+		id: "L.LowerLeg",
+		kind: "lower-leg",
+		side: "L"
+	},
+	{
+		id: "R.LowerLeg",
+		kind: "lower-leg",
+		side: "R"
+	},
+	{
+		id: "L.Foot",
+		kind: "foot",
+		side: "L"
+	},
+	{
+		id: "R.Foot",
+		kind: "foot",
+		side: "R"
+	}
+];
+var TOE_PLAN = [{
+	id: "L.Toe",
+	side: "L"
+}, {
+	id: "R.Toe",
+	side: "R"
+}];
+function snapshotRestPose(root) {
+	const snapshot = /* @__PURE__ */ new Map();
+	root.traverse((obj) => {
+		snapshot.set(obj, {
+			position: obj.position.clone(),
+			quaternion: obj.quaternion.clone(),
+			scale: obj.scale.clone()
+		});
+	});
+	return snapshot;
+}
+function restoreRestPose(root, snapshot) {
+	for (const [obj, rest] of snapshot) {
+		obj.position.copy(rest.position);
+		obj.quaternion.copy(rest.quaternion);
+		obj.scale.copy(rest.scale);
+	}
+	root.updateMatrixWorld(true);
+}
+function pickClip(scene, clipName) {
+	const clips = scene.animations;
+	if (clips.length === 0) throw new KinemeshError("没有动画片段：该资产没有可分析的动画。", "先用 kinemesh_info 确认 clips 列表；静态资产没有动作可分析，改用 kinemesh_info / kinemesh_render。");
+	if (clipName === void 0 || clipName === "") return clips[0];
+	const found = clips.find((clip) => clip.name === clipName);
+	if (found) return found;
+	const names = clips.map((clip) => `「${clip.name}」`).join("、");
+	throw new KinemeshError(`找不到动画片段「${clipName}」。`, `该资产的动画片段：${names}。改用其中之一的名称，或省略 clip 参数取第一个。`);
+}
+/** 轨道准备（附录 A.1 第 2 步 + A.14 morph 口径） */
+function prepareTracks(root, clip) {
+	const morphIgnored = clip.tracks.filter((track) => /\.morphTargetInfluences/.test(track.name)).length;
+	const transformTracks = clip.tracks.filter((track) => !/\.morphTargetInfluences/.test(track.name));
+	if (clip.tracks.length === 0) throw new KinemeshError(`动画片段「${clip.name}」没有任何动画轨道。`, "该 clip 是空片段；先用 kinemesh_info 确认 clips 列表，换一个有轨道的 clip。");
+	if (transformTracks.length === 0) throw new KinemeshError(`形态动画：片段「${clip.name}」只有 ${morphIgnored} 条 morph/blend shape 轨道，无骨骼轨道，骨骼运动分析不适用。`, "这是表情/口型类动画；改用 kinemesh_render 指定帧号逐帧查看，或换有骨骼动画的 clip。");
+	const bindings = [];
+	const unresolved = [];
+	for (const track of transformTracks) {
+		const binding = new PropertyBinding(root, track.name);
+		if (binding.node == null) {
+			unresolved.push(track.name);
+			continue;
+		}
+		bindings.push({
+			binding,
+			interpolant: track.createInterpolant()
+		});
+	}
+	return {
+		bindings,
+		morphIgnored,
+		unresolved
+	};
+}
+function resolveSampleFps(sampleFps) {
+	if (sampleFps === void 0) return 15;
+	if (!Number.isFinite(sampleFps) || sampleFps < 1 || sampleFps > 60) throw new KinemeshError(`sampleFps 超出范围（1–60）：${sampleFps}。`, `把 sampleFps 放回 1–60（缺省 15）。`);
+	return sampleFps;
+}
+function collectCandidates(root) {
+	const bones = [];
+	const named = [];
+	root.traverse((obj) => {
+		if (obj === root) return;
+		let depth = 0;
+		for (let parent = obj.parent; parent !== null && parent !== root; parent = parent.parent) depth += 1;
+		if (obj.isBone) bones.push({
+			object: obj,
+			depth
+		});
+		else if (obj.name !== "") named.push({
+			object: obj,
+			depth
+		});
+	});
+	return bones.length > 0 ? bones : named;
+}
+var EMPTY_ANCHORS = {
+	hips: -1,
+	head: -1,
+	leftUpperLeg: -1,
+	rightUpperLeg: -1,
+	endEffectors: [],
+	footPoints: []
+};
+function slotKey(classification) {
+	return `${classification.side ?? ""}:${classification.kind}`;
+}
+function weightForId(id) {
+	return JOINT_WEIGHTS[id.includes(".") ? id.split(".")[1] ?? "" : id] ?? 0;
+}
+function buildAnchors(joints) {
+	const indexById = /* @__PURE__ */ new Map();
+	joints.forEach((joint, index) => {
+		if (!indexById.has(joint.id)) indexById.set(joint.id, index);
+	});
+	const anchors = {
+		...EMPTY_ANCHORS,
+		endEffectors: [],
+		footPoints: []
+	};
+	anchors.hips = indexById.get("hips") ?? -1;
+	anchors.head = indexById.get("head") ?? -1;
+	anchors.leftUpperLeg = indexById.get("L.UpperLeg") ?? -1;
+	anchors.rightUpperLeg = indexById.get("R.UpperLeg") ?? -1;
+	for (const id of [
+		"L.Hand",
+		"R.Hand",
+		"L.Foot",
+		"R.Foot",
+		"head"
+	]) {
+		const index = indexById.get(id);
+		if (index !== void 0) anchors.endEffectors.push(index);
+	}
+	for (const side of ["L", "R"]) for (const id of [`${side}.Foot`, `${side}.Toe`]) {
+		const index = indexById.get(id);
+		if (index !== void 0) anchors.footPoints.push({
+			side,
+			index
+		});
+	}
+	return anchors;
+}
+function resolveHumanoidJoints(root) {
+	const names = [];
+	root.traverse((obj) => {
+		if (obj !== root && obj.name !== "") names.push(obj.name);
+	});
+	if (!isHumanoidLike(names)) return null;
+	const slots = /* @__PURE__ */ new Map();
+	root.traverse((obj) => {
+		if (obj === root || obj.name === "") return;
+		const classification = classifyJointName(obj.name);
+		if (!classification) return;
+		const key = slotKey(classification);
+		if (!slots.has(key)) slots.set(key, obj);
+	});
+	const hips = slots.get(":hips");
+	if (!hips) return null;
+	const jointObjects = [];
+	const joints = [];
+	const declaredJoints = [];
+	const pushSlot = (plan) => {
+		const object = slots.get(slotKey({
+			kind: plan.kind,
+			side: plan.side
+		}));
+		if (!object) {
+			declaredJoints.push(plan.id);
+			return;
+		}
+		jointObjects.push(object);
+		joints.push({
+			id: plan.id,
+			objectName: object.name,
+			weight: weightForId(plan.id)
+		});
+	};
+	for (const plan of J15_PLAN) pushSlot(plan);
+	for (const toe of TOE_PLAN) {
+		const object = slots.get(`${toe.side}:toe`);
+		if (object) {
+			jointObjects.push(object);
+			joints.push({
+				id: toe.id,
+				objectName: object.name,
+				weight: 0
+			});
+		}
+	}
+	return {
+		basis: "humanoid-conventions",
+		jointObjects,
+		joints,
+		declaredJoints,
+		anchors: buildAnchors(joints),
+		rootJoint: hips
+	};
+}
+function resolveTop15Joints(root, times, evaluateAt) {
+	const candidates = collectCandidates(root);
+	if (candidates.length === 0) throw new KinemeshError("场景中没有可采样的骨骼/命名节点。", "动作分析需要骨骼动画；先用 kinemesh_info 查看 bones 列表，或改用 kinemesh_render 逐帧查看。");
+	const scratch = new Vector3();
+	const sums = candidates.map(() => ({
+		sx: 0,
+		sy: 0,
+		sz: 0,
+		sxx: 0,
+		syy: 0,
+		szz: 0
+	}));
+	for (const time of times) {
+		evaluateAt(time);
+		for (let c = 0; c < candidates.length; c += 1) {
+			candidates[c].object.getWorldPosition(scratch);
+			const sum = sums[c];
+			sum.sx += scratch.x;
+			sum.sy += scratch.y;
+			sum.sz += scratch.z;
+			sum.sxx += scratch.x * scratch.x;
+			sum.syy += scratch.y * scratch.y;
+			sum.szz += scratch.z * scratch.z;
+		}
+	}
+	const n = times.length;
+	const variance = sums.map((sum) => {
+		const mx = sum.sx / n;
+		const my = sum.sy / n;
+		const mz = sum.sz / n;
+		return Math.max(0, sum.sxx / n - mx * mx) + Math.max(0, sum.syy / n - my * my) + Math.max(0, sum.szz / n - mz * mz);
+	});
+	const jointObjects = candidates.map((candidate, index) => ({
+		candidate,
+		variance: variance[index] ?? 0
+	})).sort((a, b) => b.variance - a.variance).slice(0, 15).map((entry) => entry.candidate.object);
+	const joints = jointObjects.map((object) => ({
+		id: object.name,
+		objectName: object.name,
+		weight: 1
+	}));
+	const rootCandidate = candidates.reduce((best, candidate) => candidate.depth < best.depth ? candidate : best);
+	return {
+		basis: "motion-top15",
+		jointObjects,
+		joints,
+		declaredJoints: [],
+		anchors: {
+			...EMPTY_ANCHORS,
+			endEffectors: [],
+			footPoints: []
+		},
+		rootJoint: rootCandidate.object
+	};
+}
+function resolveExplicitJoints(root, requested) {
+	const byCanonicalId = /* @__PURE__ */ new Map();
+	for (const plan of J15_PLAN) byCanonicalId.set(plan.id.toLowerCase(), plan.id);
+	for (const toe of TOE_PLAN) byCanonicalId.set(toe.id.toLowerCase(), toe.id);
+	const byName = /* @__PURE__ */ new Map();
+	root.traverse((obj) => {
+		if (obj !== root && obj.name !== "" && !byName.has(obj.name.toLowerCase())) byName.set(obj.name.toLowerCase(), obj);
+	});
+	const jointObjects = [];
+	const joints = [];
+	const seen = /* @__PURE__ */ new Set();
+	const missing = [];
+	for (const entry of requested) {
+		const key = entry.trim().toLowerCase();
+		const canonical = byCanonicalId.get(key);
+		const object = canonical ? findByCanonicalId(root, canonical) : byName.get(key);
+		if (!object) {
+			missing.push(entry);
+			continue;
+		}
+		if (seen.has(object)) continue;
+		seen.add(object);
+		jointObjects.push(object);
+		joints.push({
+			id: canonical ?? object.name,
+			objectName: object.name,
+			weight: canonical ? weightForId(canonical) : 1
+		});
+	}
+	if (missing.length > 0) throw new KinemeshError(`找不到指定关节：${missing.join("、")}。`, "关节可用 J15 规范名（如 L.Hand、R.Foot、hips）或场景骨骼名；先用 kinemesh_info 查看 bones 列表再指定。");
+	if (joints.length === 0) throw new KinemeshError("场景中没有可采样的骨骼/命名节点。", "动作分析需要骨骼动画；先用 kinemesh_info 查看 bones 列表，或改用 kinemesh_render 逐帧查看。");
+	const classificationById = /* @__PURE__ */ new Map();
+	root.traverse((obj) => {
+		if (obj !== root && obj.name !== "") {
+			const classification = classifyJointName(obj.name);
+			if (classification) classificationById.set(obj.name, classification);
+		}
+	});
+	const hipsObject = jointObjects.find((obj) => classificationById.get(obj.name)?.kind === "hips") ?? null;
+	return {
+		basis: "explicit",
+		jointObjects,
+		joints,
+		declaredJoints: [],
+		anchors: buildAnchors(joints),
+		rootJoint: hipsObject
+	};
+}
+function findByCanonicalId(root, canonicalId) {
+	const plan = J15_PLAN.find((slot) => slot.id === canonicalId) ?? TOE_PLAN.find((toe) => toe.id === canonicalId);
+	if (!plan) return void 0;
+	const kind = "kind" in plan ? plan.kind : "toe";
+	const side = "side" in plan ? plan.side : null;
+	const key = slotKey({
+		kind,
+		side
+	});
+	let found;
+	root.traverse((obj) => {
+		if (found || obj === root || obj.name === "") return;
+		const classification = classifyJointName(obj.name);
+		if (classification && slotKey(classification) === key && (side === null || classification.side === side)) found = obj;
+	});
+	return found;
+}
+function sampleClip(scene, options = {}) {
+	const clip = pickClip(scene, options.clipName);
+	const sampleFps = resolveSampleFps(options.sampleFps);
+	const duration = clip.duration;
+	if (!Number.isFinite(duration) || duration <= 0) throw new KinemeshError(`片段过短：动画片段「${clip.name}」时长为 ${duration}s，无法采样。`, "该 clip 没有有效时长；先用 kinemesh_info 确认 clips[].duration，换一个有时长的 clip。");
+	const frameCount = Math.ceil(duration * sampleFps);
+	if (frameCount < 3) throw new KinemeshError(`片段过短：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`, `提高 sampleFps（1–60）；太短的片段不适合动作分析，换更长的 clip。`);
+	if (duration * sampleFps > 24e3) throw new KinemeshError(`采样点过多：时长 ${duration}s × sampleFps ${sampleFps} = ${Math.ceil(duration * sampleFps)} 超过上限 ${SAMPLE_COUNT_MAX}。`, `降低 sampleFps（当前 ${sampleFps}），或用 range 参数切片后分段分析。`);
+	const root = scene.object;
+	const snapshot = snapshotRestPose(root);
+	try {
+		const prepared = prepareTracks(root, clip);
+		const dt = 1 / sampleFps;
+		const times = Array.from({ length: frameCount }, (_, k) => k * dt);
+		const frames = times.map((time) => Math.round(time * 30));
+		const evaluateAt = (time) => {
+			for (const track of prepared.bindings) {
+				const values = track.interpolant.evaluate(time);
+				track.binding.setValue(values, 0);
+			}
+			root.updateMatrixWorld(true);
+		};
+		const requested = options.joints ?? "auto";
+		const resolution = requested === "auto" ? resolveHumanoidJoints(root) ?? resolveTop15Joints(root, times, evaluateAt) : resolveExplicitJoints(root, requested);
+		const { joints, jointObjects } = resolution;
+		const warnings = [];
+		if (prepared.morphIgnored > 0) warnings.push(`已忽略 ${prepared.morphIgnored} 条 morph/blend shape 轨道（骨骼运动分析不涉及形态动画）。`);
+		if (prepared.unresolved.length > 0) {
+			const names = prepared.unresolved.slice(0, 5).join("、");
+			const more = prepared.unresolved.length > 5 ? ` 等 ${prepared.unresolved.length} 条` : "";
+			warnings.push(`有 ${prepared.unresolved.length} 条轨道未找到目标节点，已跳过：${names}${more}。`);
+		}
+		if (resolution.basis === "motion-top15") warnings.push("非人形骨架：关节集取世界位移方差 Top-15 骨骼（jointBasis=motion-top15），能量权重统一为 1。");
+		const jointCount = joints.length;
+		const positions = new Float64Array(frameCount * jointCount * 3);
+		const scratch = new Vector3();
+		const scratchQ = new Quaternion();
+		const rootJoint = resolution.rootJoint;
+		const rootPositions = rootJoint ? new Float64Array(frameCount * 3) : null;
+		const rootQuaternions = rootJoint ? new Float64Array(frameCount * 4) : null;
+		for (let k = 0; k < frameCount; k += 1) {
+			evaluateAt(times[k]);
+			for (let j = 0; j < jointCount; j += 1) {
+				jointObjects[j].getWorldPosition(scratch);
+				const base = (k * jointCount + j) * 3;
+				positions[base] = scratch.x;
+				positions[base + 1] = scratch.y;
+				positions[base + 2] = scratch.z;
+			}
+			if (rootJoint && rootPositions && rootQuaternions) {
+				rootJoint.getWorldPosition(scratch);
+				rootPositions[k * 3] = scratch.x;
+				rootPositions[k * 3 + 1] = scratch.y;
+				rootPositions[k * 3 + 2] = scratch.z;
+				rootJoint.getWorldQuaternion(scratchQ);
+				rootQuaternions[k * 4] = scratchQ.x;
+				rootQuaternions[k * 4 + 1] = scratchQ.y;
+				rootQuaternions[k * 4 + 2] = scratchQ.z;
+				rootQuaternions[k * 4 + 3] = scratchQ.w;
+			}
+		}
+		evaluateAt(duration);
+		const endpointPositions = new Float64Array(jointCount * 3);
+		for (let j = 0; j < jointCount; j += 1) {
+			jointObjects[j].getWorldPosition(scratch);
+			endpointPositions[j * 3] = scratch.x;
+			endpointPositions[j * 3 + 1] = scratch.y;
+			endpointPositions[j * 3 + 2] = scratch.z;
+		}
+		let endpointPosition = null;
+		let endpointQuaternion = null;
+		if (rootJoint) {
+			rootJoint.getWorldPosition(scratch);
+			endpointPosition = Float64Array.of(scratch.x, scratch.y, scratch.z);
+			rootJoint.getWorldQuaternion(scratchQ);
+			endpointQuaternion = Float64Array.of(scratchQ.x, scratchQ.y, scratchQ.z, scratchQ.w);
+		}
+		return {
+			clipName: clip.name,
+			duration,
+			sampleFps,
+			dt,
+			frameCount,
+			times,
+			frames,
+			endpointTime: duration,
+			positions,
+			endpointPositions,
+			jointBasis: resolution.basis,
+			joints,
+			jointObjects,
+			anchors: resolution.anchors,
+			rootJoint,
+			rootTrack: rootJoint && rootPositions && rootQuaternions && endpointPosition && endpointQuaternion ? {
+				positions: rootPositions,
+				quaternions: rootQuaternions,
+				endpointPosition,
+				endpointQuaternion
+			} : null,
+			declaredJoints: resolution.declaredJoints,
+			warnings
+		};
+	} finally {
+		restoreRestPose(root, snapshot);
+	}
+}
+//#endregion
+//#region
+var FRAMES_CSV_COLUMNS = [
+	"frame",
+	"time",
+	"energy",
+	"energyLevel",
+	"root_x",
+	"root_y",
+	"root_z",
+	"heading",
+	"turnTotal",
+	"moveDir",
+	"moveDirBody",
+	"moveSpeed",
+	"contactL",
+	"contactR",
+	"airborne",
+	"support",
+	"topJoint",
+	"topJointSpeed",
+	"amplitude"
+];
+/** 定长小数；把 "-0.000" 这类负零圆整结果归一成非负（避免 CSV 出现 "-0.0"） */
+function fixed(value, digits) {
+	const text = value.toFixed(digits);
+	return text.startsWith("-") && Number(text) === 0 ? text.slice(1) : text;
+}
+/** 长度/速度：3 位小数（A.14） */
+function roundLength(value) {
+	return fixed(value, 3);
+}
+/** 角度：1 位小数（A.14） */
+function roundAngle(value) {
+	return fixed(value, 1);
+}
+/** 每采样帧一行的通道明细（§6.4 motion-frames.csv） */
+function framesCsv(channels) {
+	const length = (values, k) => values[k] ?? 0;
+	const word = (values, k) => values[k] ?? "";
+	const flag = (values, k) => values[k] ?? false;
+	const lines = [FRAMES_CSV_COLUMNS.join(",")];
+	for (let k = 0; k < channels.frameCount; k += 1) lines.push([
+		String(channels.frames[k] ?? k),
+		roundLength(length(channels.times, k)),
+		roundLength(length(channels.energy, k)),
+		word(channels.energyLevel, k),
+		roundLength(length(channels.rootX, k)),
+		roundLength(length(channels.rootY, k)),
+		roundLength(length(channels.rootZ, k)),
+		roundAngle(length(channels.heading, k)),
+		roundAngle(length(channels.turnTotal, k)),
+		word(channels.moveDir, k),
+		word(channels.moveDirBody, k),
+		roundLength(length(channels.moveSpeed, k)),
+		flag(channels.contactL, k) ? "true" : "false",
+		flag(channels.contactR, k) ? "true" : "false",
+		flag(channels.airborne, k) ? "true" : "false",
+		word(channels.support, k),
+		word(channels.topJoint, k),
+		roundLength(length(channels.topJointSpeed, k)),
+		roundLength(length(channels.amplitude, k))
+	].join(","));
+	return `${lines.join("\n")}\n`;
+}
+/** 单关节通道明细列：位置（H）、速度模与分量（H/s）；数值圆整同 frames.csv（A.14） */
+var JOINT_CURVE_CSV_COLUMNS = [
+	"frame",
+	"time",
+	"pos_x",
+	"pos_y",
+	"pos_z",
+	"speed",
+	"vx",
+	"vy",
+	"vz"
+];
+/**
+* 指定关节的每采样帧曲线（§6.4 motion-curves/<joint>.csv）。
+* @param samplePositions 已缩放（÷scale）后的关节速度向量矩阵（jointVelocityMatrix 的产物，N×J×3）
+*/
+function jointCurveCsv(sample, jointIndex, scale, velocities) {
+	const jointCount = sample.joints.length;
+	const lines = [JOINT_CURVE_CSV_COLUMNS.join(",")];
+	for (let k = 0; k < sample.frameCount; k += 1) {
+		const posBase = (k * jointCount + jointIndex) * 3;
+		const velBase = posBase;
+		const vx = velocities[velBase] ?? 0;
+		const vy = velocities[velBase + 1] ?? 0;
+		const vz = velocities[velBase + 2] ?? 0;
+		lines.push([
+			String(sample.frames[k] ?? k),
+			roundLength(sample.times[k] ?? 0),
+			roundLength((sample.positions[posBase] ?? 0) / scale),
+			roundLength((sample.positions[posBase + 1] ?? 0) / scale),
+			roundLength((sample.positions[posBase + 2] ?? 0) / scale),
+			roundLength(Math.sqrt(vx * vx + vy * vy + vz * vz)),
+			roundLength(vx),
+			roundLength(vy),
+			roundLength(vz)
+		].join(","));
+	}
+	return `${lines.join("\n")}\n`;
+}
+/** 优先级列表（cap KEYFRAME_MAX；帧距 < KEYFRAME_DEDUP×30 视为重复，保留优先级高者） */
+function pickKeyframes(channels, sample, segments, options = {}) {
+	const n = channels.frameCount;
+	const m = options.smooth !== void 0 ? Math.max(0, Math.floor(options.smooth / 2)) : 2;
+	const e = smoothSeries(channels.energy, m);
+	const candidates = [];
+	let globalPeak = 0;
+	for (let k = 1; k < n; k += 1) if (e[k] > e[globalPeak]) globalPeak = k;
+	candidates.push({
+		k: globalPeak,
+		reason: "energy-peak",
+		note: "全片能量峰值"
+	});
+	const topSegments = [...segments].sort((a, b) => b.features.peakE - a.features.peakE).slice(0, 6);
+	for (const segment of topSegments) {
+		let peakK = segment.start;
+		for (let k = segment.start; k <= segment.end; k += 1) if (e[k] > e[peakK]) peakK = k;
+		candidates.push({
+			k: peakK,
+			reason: `segment-peak:${segment.guess}`,
+			note: `段 #${segment.index + 1} 峰值（guess ${segment.guess}）`
+		});
+	}
+	const ampOrder = Array.from({ length: n }, (_, k) => ({
+		k,
+		amp: channels.amplitude[k] ?? 0
+	})).sort((a, b) => b.amp - a.amp).slice(0, 2);
+	for (const entry of ampOrder) candidates.push({
+		k: entry.k,
+		reason: "amplitude-peak",
+		note: "幅度峰值"
+	});
+	for (const k of options.loopSeamFrames ?? []) if (k >= 0 && k < n) candidates.push({
+		k,
+		reason: "loop-seam",
+		note: "循环接缝帧"
+	});
+	candidates.push({
+		k: 0,
+		reason: "endpoints",
+		note: "起点（t=0）"
+	});
+	candidates.push({
+		k: n - 1,
+		reason: "endpoints",
+		note: "终点（动作结束）"
+	});
+	const dedupFrames = KEYFRAME_DEDUP * 30;
+	const kept = [];
+	for (const candidate of candidates) {
+		if (kept.length >= 8) break;
+		if (!kept.some((entry) => Math.abs(entry.k - candidate.k) < dedupFrames)) kept.push(candidate);
+	}
+	return kept.map((entry) => ({
+		frame: channels.frames[entry.k] ?? entry.k * 30,
+		time: (channels.frames[entry.k] ?? entry.k) / 30,
+		reason: entry.reason,
+		note: entry.note
+	}));
+}
+function keyframesFile(keyframes) {
+	return {
+		keyframes,
+		renderRecipe: {
+			frames: keyframes.map((entry) => entry.frame),
+			views: ["front", "side"],
+			mode: "skeleton",
+			altModes: ["bones-overlay"]
+		}
+	};
+}
+function keyframesJson(file) {
+	return `${JSON.stringify(file, null, 2)}\n`;
+}
+function trajectoryFile(channels, sample, events) {
+	const points = [];
+	for (let k = 0; k < channels.frameCount; k += 1) points.push({
+		frame: channels.frames[k] ?? k,
+		x: channels.rootX[k] ?? 0,
+		z: channels.rootZ[k] ?? 0,
+		energy: channels.energy[k] ?? 0
+	});
+	const stepMarks = [];
+	for (const event of events) {
+		if (event.type !== "touchdown") continue;
+		const k = channels.frames.indexOf(event.frame);
+		if (k < 0) continue;
+		stepMarks.push({
+			frame: event.frame,
+			x: channels.rootX[k] ?? 0,
+			z: channels.rootZ[k] ?? 0,
+			side: event.detail.includes("side=L") ? "L" : event.detail.includes("side=R") ? "R" : "both"
+		});
+	}
+	return {
+		units: "身高 H（rootPos − rootPos(0)）",
+		points,
+		stepMarks
+	};
+}
+function trajectoryJson(file) {
+	return `${JSON.stringify(file, null, 2)}\n`;
+}
+/** A.13：俯视图 SVG（手写轻量 SVG，无栅格化依赖；无文本；单文件 ≤ 32KB） */
+function trajectorySvg(channels) {
+	const n = channels.frameCount;
+	const xs = channels.rootX;
+	const zs = channels.rootZ;
+	let minX = Number.POSITIVE_INFINITY;
+	let maxX = Number.NEGATIVE_INFINITY;
+	let minZ = Number.POSITIVE_INFINITY;
+	let maxZ = Number.NEGATIVE_INFINITY;
+	for (let k = 0; k < n; k += 1) {
+		minX = Math.min(minX, xs[k] ?? 0);
+		maxX = Math.max(maxX, xs[k] ?? 0);
+		minZ = Math.min(minZ, zs[k] ?? 0);
+		maxZ = Math.max(maxZ, zs[k] ?? 0);
+	}
+	const scale = 400 / Math.max(maxX - minX, maxZ - minZ, 1e-6);
+	const cx = (k) => 40 + ((xs[k] ?? 0) - minX) * scale;
+	const cy = (k) => 40 + ((zs[k] ?? 0) - minZ) * scale;
+	const f = (value) => value.toFixed(2);
+	const parts = ["<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 480 480\">"];
+	parts.push("<rect x=\"40\" y=\"40\" width=\"400\" height=\"400\" fill=\"none\" stroke=\"#e0e0e0\"/>");
+	parts.push("<line x1=\"240\" y1=\"40\" x2=\"240\" y2=\"440\" stroke=\"#e0e0e0\"/>");
+	parts.push("<line x1=\"40\" y1=\"240\" x2=\"440\" y2=\"240\" stroke=\"#e0e0e0\"/>");
+	const path = Array.from({ length: n }, (_, k) => `${f(cx(k))},${f(cy(k))}`).join(" ");
+	parts.push(`<polyline points="${path}" fill="none" stroke="#4a90d9" stroke-width="2"/>`);
+	const stride = Math.max(1, Math.ceil(n / 600));
+	for (let k = 0; k < n; k += stride) {
+		const level = channels.energyLevel[k] ?? "static";
+		parts.push(`<circle cx="${f(cx(k))}" cy="${f(cy(k))}" r="2" fill="${LEVEL_COLORS[level]}"/>`);
+	}
+	parts.push(`<circle cx="${f(cx(0))}" cy="${f(cy(0))}" r="6" fill="#ffffff" stroke="#333333" stroke-width="2"/>`);
+	parts.push(`<rect x="${f(cx(n - 1) - 4)}" y="${f(cy(n - 1) - 4)}" width="8" height="8" fill="#333333"/>`);
+	const headingRad = (channels.heading[0] ?? 0) * Math.PI / 180;
+	const fx = Math.sin(headingRad);
+	const fz = Math.cos(headingRad);
+	const ax = cx(0);
+	const ay = cy(0);
+	const tipX = ax + 24 * fx;
+	const tipY = ay + 24 * fz;
+	const backX = ax + 17 * fx;
+	const backY = ay + 17 * fz;
+	parts.push(`<line x1="${f(ax)}" y1="${f(ay)}" x2="${f(tipX)}" y2="${f(tipY)}" stroke="#333333" stroke-width="2"/>`);
+	parts.push(`<polygon points="${f(tipX)},${f(tipY)} ${f(backX + 4 * fz)},${f(backY - 4 * fx)} ${f(backX - 4 * fz)},${f(backY + 4 * fx)}" fill="#333333"/>`);
+	parts.push("</svg>");
+	return `${parts.join("\n")}\n`;
+}
+/** A.12 循环 facts 句：数值按 A.14 圆整（长度/速度 3 位、角度 1 位），阈值全精度在 components */
+function loopFactSentence(check) {
+	const c = check.components;
+	return `循环检测：${check.verdict}——姿势差 ${roundLength(c.poseRMS)}，位置差 ${roundLength(c.rootDisp)}，朝向差 ${roundAngle(c.headingDiff)}°，速度差 ${roundLength(c.velSeam)}；${LOOP_VERDICT_NOTES[check.verdict]}`;
+}
+function buildSummary(input) {
+	const { channels, sample, segments } = input;
+	const m = input.smooth !== void 0 ? Math.max(0, Math.floor(input.smooth / 2)) : 2;
+	const e = smoothSeries(channels.energy, m);
+	let meanSum = 0;
+	let maxE = 0;
+	for (const value of e) {
+		meanSum += value;
+		maxE = Math.max(maxE, value);
+	}
+	const meanE = e.length > 0 ? meanSum / e.length : 0;
+	const sorted = [...e].sort((a, b) => a - b);
+	const q = (ratio) => {
+		if (sorted.length === 0) return 0;
+		const pos = ratio * (sorted.length - 1);
+		const lo = Math.floor(pos);
+		const hi = Math.ceil(pos);
+		return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+	};
+	const dirs = [];
+	for (let k = 0; k < channels.frameCount; k += 1) if ((channels.moveSpeed[k] ?? 0) >= .05 && channels.moveDir[k] !== "in-place") dirs.push(channels.moveDir[k] ?? "in-place");
+	const dirCounts = /* @__PURE__ */ new Map();
+	let mainDir = "in-place";
+	let bestCount = 0;
+	for (const dir of dirs) {
+		const count = (dirCounts.get(dir) ?? 0) + 1;
+		dirCounts.set(dir, count);
+		if (count > bestCount) {
+			mainDir = dir;
+			bestCount = count;
+		}
+	}
+	const rootTrack = sample.rootTrack;
+	const rootTotalDisp = rootTrack ? Math.sqrt((rootTrack.endpointPosition[0] - rootTrack.positions[0]) ** 2 + (rootTrack.endpointPosition[2] - rootTrack.positions[2]) ** 2) / input.normalize.scale : 0;
+	const maxRootY = channels.rootY.reduce((max, value, k) => Math.max(max, k === 0 ? 0 : value), 0);
+	const airborneFrames = channels.airborne.filter(Boolean).length;
+	const airTime = airborneFrames * sample.dt;
+	const segmentsOut = segments.map((segment) => ({
+		index: segment.index,
+		frameStart: channels.frames[segment.start] ?? segment.start,
+		frameEnd: channels.frames[segment.end] ?? segment.end,
+		label: segment.label,
+		guess: segment.guess,
+		level: segment.level,
+		relativeLevel: segment.relativeLevel,
+		features: segment.features
+	}));
+	const clipLevel = intensityLevel(meanE, maxE);
+	const facts = segments.map((segment) => {
+		return `frame ${channels.frames[segment.start] ?? segment.start}–${channels.frames[segment.end] ?? segment.end}：${segment.features.support}，强度 ${segment.level}（均值 ${roundLength(segment.features.meanE)}、峰值 ${roundLength(segment.features.peakE)}），位移 ${roundLength(segment.features.rootDisp)} 身高，方向 ${segment.features.dirMode}，guess ${segment.guess}`;
+	});
+	if (input.loopFact) facts.push(input.loopFact);
+	const frames30 = Math.round(input.duration * 30);
+	const clipFact = `总时长 ${roundLength(input.duration)}s（${frames30} 帧@30fps），平均强度 ${clipLevel}，主方向 ${mainDir}` + (input.loopSentence ? `；${input.loopSentence}` : "");
+	facts.push(clipFact);
+	return {
+		calibVersion: "0",
+		constants: {
+			SAMPLE_FPS_DEFAULT: 15,
+			SAMPLE_FPS_MIN: 1,
+			SAMPLE_FPS_MAX: 60,
+			SAMPLE_COUNT_MAX,
+			SMOOTH_M: 2,
+			CONTACT_HEIGHT,
+			CONTACT_VEL,
+			DEBOUNCE_FRAMES: 2,
+			SEG_DELTA,
+			SEG_MIN_SECONDS,
+			SEG_MAX_COUNT: 24,
+			POSE_RMS_TH,
+			POSE_MAX_TH,
+			ROOT_DISP_TH,
+			HEADING_TH: 10,
+			VEL_SEAM_TH,
+			LOOP_GRID: 300,
+			LOOP_MIN_SECONDS,
+			LOOP_PASS,
+			STRIKE_PEAK: 2,
+			STRIKE_DUR,
+			RUN_SPEED,
+			WALK_SPEED,
+			TURN_TH: 45,
+			SPIN_TH: 270,
+			KEYFRAME_MAX: 8,
+			KEYFRAME_DEDUP,
+			EVENTS_MAX: 32,
+			DIRECTION_STABLE_FRAMES: 3
+		},
+		clip: {
+			name: input.clipName,
+			duration: input.duration,
+			sampleFps: sample.sampleFps,
+			fps: input.fps,
+			frameCount: sample.frameCount,
+			frames: frames30
+		},
+		jointBasis: {
+			basis: sample.jointBasis,
+			joints: sample.joints.map((joint) => ({
+				id: joint.id,
+				objectName: joint.objectName,
+				weight: joint.weight
+			})),
+			declaredJoints: sample.declaredJoints
+		},
+		normalize: input.normalize,
+		clipStats: {
+			energy: {
+				mean: meanE,
+				p50: q(.5),
+				p90: q(.9),
+				max: maxE
+			},
+			level: clipLevel,
+			mainDir,
+			rootTotalDisp,
+			maxRootYGain: maxRootY >= .05 ? maxRootY : null,
+			airTime,
+			airborneFrames
+		},
+		events: input.events,
+		segments: segmentsOut,
+		keyframes: input.keyframes,
+		loopCheck: input.loopCheck ?? null,
+		vocab: input.vocab ?? {
+			source: "builtin",
+			entries: 0
+		},
+		facts,
+		warnings: input.warnings
+	};
+}
+function summaryJson(summary) {
+	return `${JSON.stringify(summary, null, 2)}\n`;
+}
+function segmentsJson(segments) {
+	return `${JSON.stringify({ segments }, null, 2)}\n`;
+}
+//#endregion
+//#region
+function analyzeClip(scene, options = {}) {
+	const sample = sampleClip(scene, {
+		clipName: options.clipName,
+		sampleFps: options.sampleFps,
+		joints: options.joints
+	});
+	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
+	const channels = computeChannels(sample, { scale });
+	const { segments, events } = segmentClip(channels, sample, {
+		smooth: options.smooth,
+		scale,
+		vocab: options.vocab?.entries
+	});
+	const loopCheck = computeLoopCheck(sample, channels, {
+		scale,
+		loopMode: options.loopMode
+	});
+	const keyframes = pickKeyframes(channels, sample, segments, {
+		smooth: options.smooth,
+		loopSeamFrames: loopCheck.bestLoopRange ? [loopCheck.bestLoopRange.frameStart, loopCheck.bestLoopRange.frameEnd] : void 0
+	});
+	const normalize = {
+		mode: options.normalizeMode ?? (scale === 1 ? "none" : "height"),
+		scale,
+		warnings: []
+	};
+	const summary = buildSummary({
+		clipName: sample.clipName,
+		duration: sample.duration,
+		fps: scene.meta.fps,
+		sample,
+		channels,
+		segments,
+		events,
+		keyframes,
+		normalize,
+		warnings: sample.warnings,
+		smooth: options.smooth,
+		loopCheck,
+		loopSentence: `循环 ${loopCheck.verdict}`,
+		loopFact: loopFactSentence(loopCheck),
+		vocab: options.vocab && {
+			source: options.vocab.source,
+			entries: options.vocab.entries.length
+		}
+	});
+	const recipe = keyframesFile(keyframes).renderRecipe;
+	const digest = {
+		clip: summary.clip,
+		clipStats: summary.clipStats,
+		segments: summary.segments,
+		loopCheck: summary.loopCheck,
+		facts: summary.facts,
+		keyframeRender: recipe
+	};
+	const detail = options.detail ?? "standard";
+	const files = [artifact("motion-summary.json", summaryJson(summary), "clip 元数据、全片统计、分段清单、关键帧号、facts 中文事实句——第一入口")];
+	if (detail !== "summary") files.push(artifact("motion-frames.csv", framesCsv(channels), "每采样帧一行：查具体帧、趋势叙述"), artifact("motion-segments.json", segmentsJson(summary.segments), "每段 frameStart/frameEnd/label/guess/level/features——「FrameX–FrameY 在干嘛」的直接素材"), artifact("motion-keyframes.json", keyframesJson(keyframesFile(keyframes)), "代表帧 + 中文 notes + renderRecipe（按配方传给 kinemesh_render）"), artifact("motion-trajectory.json", trajectoryJson(trajectoryFile(channels, sample, events)), "归一化平面轨迹点列 + 步点标记"), artifact("motion-trajectory.svg", trajectorySvg(channels), "俯视图 SVG：路径 + 起终点 + 按能量着色；图像工具不支持 SVG 时读 json"));
+	let curveVelocities = null;
+	for (const { index, joint } of resolveCurveJoints(sample, options)) {
+		const velocities = curveVelocities ?? (curveVelocities = jointVelocityMatrix(sample, scale));
+		const fileName = `${sanitizeCurveJoint(joint.id)}.csv`;
+		files.push(artifact(`motion-curves/${fileName}`, jointCurveCsv(sample, index, scale, velocities), `${joint.id}（${joint.objectName}）通道明细：位置/速度逐帧曲线，单关节深挖`));
+	}
+	return {
+		summary,
+		digest,
+		files
+	};
+}
+/** 曲线关节解析（§6.4）：detail=full 出全部关节；curvesFor 指定的按 id/骨骼名解析，找不到给自愈指引 */
+function resolveCurveJoints(sample, options) {
+	const wanted = /* @__PURE__ */ new Map();
+	if (options.detail === "full") sample.joints.forEach((joint, index) => wanted.set(index, {
+		index,
+		joint
+	}));
+	const requested = options.curvesFor ?? [];
+	if (requested.length === 0) return [...wanted.values()];
+	const byKey = /* @__PURE__ */ new Map();
+	sample.joints.forEach((joint, index) => {
+		byKey.set(joint.id.toLowerCase(), index);
+		byKey.set(joint.objectName.toLowerCase(), index);
+	});
+	const missing = [];
+	for (const entry of requested) {
+		const key = entry.trim().toLowerCase();
+		if (key === "") continue;
+		const index = byKey.get(key);
+		if (index === void 0) {
+			missing.push(entry);
+			continue;
+		}
+		const joint = sample.joints[index];
+		wanted.set(index, {
+			index,
+			joint
+		});
+	}
+	if (missing.length > 0) {
+		const available = sample.joints.map((joint) => `${joint.id}（${joint.objectName}）`).join("、");
+		throw new KinemeshError(`找不到曲线关节：${missing.join("、")}。`, `curvesFor 用关节规范 id 或场景骨骼名（先 kinemesh_info 查 bones）；本 clip 可用关节：${available}。`);
+	}
+	return [...wanted.values()];
+}
+/** 曲线文件名安全化（骨骼名可能带路径/非法字符；规范 id 本身合法） */
+function sanitizeCurveJoint(id) {
+	const safe = id.replace(/[^\w.-]+/g, "_");
+	return safe === "" ? "joint" : safe;
+}
+function artifact(name, content, what) {
+	return {
+		name,
+		content,
+		bytes: Buffer.byteLength(content, "utf8"),
+		what
+	};
+}
+//#endregion
+//#region
+function resolveNormalization(requested, height) {
+	if (requested === "none") return {
+		mode: "none",
+		scale: 1,
+		warnings: []
+	};
+	if (height === null || !Number.isFinite(height) || height <= 0) return {
+		mode: "none",
+		scale: 1,
+		warnings: [`身高归一不可用（包围盒高度 ${height === null ? "缺失" : height}）：已降级为原始单位（normalize=none），数值不可跨资产比较。`]
+	};
+	return {
+		mode: "height",
+		scale: height,
+		warnings: []
+	};
+}
+//#endregion
+//#region
+function expandHome$1(input) {
+	if (input === "~") return (0, node_os.homedir)();
+	if (input.startsWith("~/") || input.startsWith("~\\")) return node_path.default.join((0, node_os.homedir)(), input.slice(2));
+	return input;
+}
+/**
+* 三出口共用的 analyze 执行 runner：加载场景 → 身高归一 → vocab 发现 → analyzeClip → 落盘。
+* 抛 KinemeshError（无动画 / clip 缺失 / morph-only / 参数越界 / 词表非法等），由各出口转成
+* 自己的错误口径（tools errorPayload / CLI fail / MCP errorResult）。
+*/
+async function runAnalyze(data, fileName, params, context = {}) {
+	const { scene } = await loadModelScene(data, fileName);
+	const normalization = resolveNormalization(params.normalize ?? "height", sceneBoundsHeight(scene));
+	const vocab = await loadVocab({
+		explicitPath: params.vocab,
+		assetDir: context.assetDir,
+		cwd: process.cwd()
+	});
+	const analysis = analyzeClip(scene, {
+		clipName: params.clip,
+		sampleFps: params.sampleFps,
+		joints: params.joints,
+		smooth: params.smooth,
+		scale: normalization.scale,
+		normalizeMode: params.normalize ?? "height",
+		detail: params.detail,
+		curvesFor: params.curvesFor,
+		loopMode: params.loopMode,
+		vocab
+	});
+	const specified = params.out !== void 0 && params.out.trim() !== "";
+	const dir = specified ? node_path.default.resolve(expandHome$1(params.out.trim())) : node_path.default.join((0, node_os.tmpdir)(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
+	const files = [];
+	for (const artifact of analysis.files) {
+		const target = node_path.default.join(dir, artifact.name);
+		await (0, node_fs_promises.mkdir)(node_path.default.dirname(target), { recursive: true });
+		await (0, node_fs_promises.writeFile)(target, artifact.content, "utf8");
+		files.push({
+			name: artifact.name,
+			bytes: artifact.bytes,
+			what: artifact.what
+		});
+	}
+	const warnings = [.../* @__PURE__ */ new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
+	return {
+		ok: true,
+		dir,
+		files,
+		summaryDigest: analysis.digest,
+		...warnings.length > 0 ? { warnings } : {},
+		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
+	};
+}
+//#endregion
+//#region
 var USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
 用法：
   kinemesh info <file>
       输出模型结构信息 JSON（动画片段/骨骼/网格/贴图/包围盒/单位体检）。
+
+  kinemesh analyze <file> [选项]
+      对动画片段做动作分析，产出中间文件目录；stdout 返回 {ok,dir,files,summaryDigest}。
+      --clip <name>            动画片段名（先 info 查）；缺省第一个 clip
+      --detail <name>          summary / standard / full（缺省 standard；full=+全部关节曲线）
+      --curves-for <joints>    指定关节加出 motion-curves/<joint>.csv（逗号分隔，如 L.Hand,R.Hand）
+      --sample-fps <n>         采样率 1–60（缺省 15）
+      --loop-mode <name>       strict / pose-only（bestLoopRange 口径，缺省 strict）
+      --normalize <name>       height / none（缺省 height，数值单位为身高倍数）
+      --out <dir>              中间文件输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
+      --vocab <file>           kinemesh-vocab.json 词汇表路径（缺省按 资产同目录 > 工作区 > builtin 发现）
 
   kinemesh render <file> [选项]
       按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
@@ -30085,6 +32445,48 @@ async function runRender(fileArg, flags) {
 		return fail(reasonOf(error), "减少帧数/降低分辨率后重试；确认模型能被 info 解析。", `渲染 ${loaded.abs}`);
 	}
 }
+/** 枚举 flag 校验：undefined = 未给；null = 非法值（已输出三段式 stderr，调用方直接返回 1） */
+function enumFlag(flags, name, allowed, guidance) {
+	const raw = flags[name];
+	if (raw === void 0 || raw === "") return void 0;
+	if (!allowed.includes(raw)) {
+		fail(`--${name} 的值「${raw}」不合法。`, guidance, "解析 analyze 参数");
+		return null;
+	}
+	return raw;
+}
+async function runAnalyzeCli(fileArg, flags) {
+	const detail = enumFlag(flags, "detail", [
+		"summary",
+		"standard",
+		"full"
+	], "--detail 取 summary / standard / full（缺省 standard）。");
+	if (detail === null) return 1;
+	const loopMode = enumFlag(flags, "loop-mode", ["strict", "pose-only"], "--loop-mode 取 strict / pose-only（缺省 strict）。");
+	if (loopMode === null) return 1;
+	const normalize = enumFlag(flags, "normalize", ["height", "none"], "--normalize 取 height / none（缺省 height）。");
+	if (normalize === null) return 1;
+	const curvesFor = flags["curves-for"] === void 0 ? void 0 : flags["curves-for"].split(",").map((token) => token.trim()).filter((token) => token !== "");
+	const loaded = await readModel(fileArg);
+	if (loaded === null) return 1;
+	const params = {
+		clip: flags.clip,
+		sampleFps: numberFlag(flags, "sample-fps"),
+		detail,
+		curvesFor: curvesFor === void 0 || curvesFor.length === 0 ? void 0 : curvesFor,
+		loopMode,
+		normalize,
+		out: flags.out,
+		vocab: flags.vocab === void 0 ? void 0 : expandHome(flags.vocab)
+	};
+	try {
+		emit(await runAnalyze(loaded.data, node_path.default.basename(loaded.abs), params, { assetDir: node_path.default.dirname(loaded.abs) }));
+		return 0;
+	} catch (error) {
+		if (error instanceof KinemeshError) return fail(error.message, error.guidance, `分析 ${loaded.abs}`);
+		return fail(reasonOf(error), "确认模型能被 info 解析后重试；必要时缩小参数范围（降低 --sample-fps / 换 --clip）。", `分析 ${loaded.abs}`);
+	}
+}
 async function main(argv) {
 	const { command, positional, flags } = parseArgv(argv);
 	if (flags.help !== void 0 || command === "--help" || command === "-h") {
@@ -30096,11 +32498,12 @@ async function main(argv) {
 		return 2;
 	}
 	if (command === "info") return runInfo(positional[0]);
+	if (command === "analyze") return runAnalyzeCli(positional[0], flags);
 	if (command === "render") return runRender(positional[0], flags);
 	process.stderr.write(`${JSON.stringify({
 		ok: false,
 		what: `未知命令「${command}」。`,
-		guidance: "可用命令：info <file> / render <file> [选项]；--help 看全部。",
+		guidance: "可用命令：info <file> / analyze <file> [选项] / render <file> [选项]；--help 看全部。",
 		step: "解析命令行"
 	})}\n`);
 	return 2;

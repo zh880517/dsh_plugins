@@ -44212,7 +44212,30 @@ void main() {
 		if (data.byteLength < 4) return false;
 		return new TextDecoder("latin1").decode(new Uint8Array(data, 0, 4)) === "glTF";
 	}
+	/**
+	* Node 兼容桩：three 的 FileLoader 在 fetch 流式读取时构造 ProgressEvent（浏览器 API），
+	* Node 没有这个全局——GLB/GLTF 的内嵌 data URI buffer 会走这条路，缺它直接崩。
+	* 只补一个可构造的最小壳（本工具的 Node 链路没人消费进度回调），幂等、不影响浏览器。
+	*/
+	function ensureNodeProgressEvent() {
+		if (!inNodeEnvironment()) return;
+		const globals = globalThis;
+		if (globals.ProgressEvent !== void 0) return;
+		globals.ProgressEvent = class {
+			type;
+			lengthComputable;
+			loaded;
+			total;
+			constructor(type, init) {
+				this.type = type;
+				this.lengthComputable = init?.lengthComputable ?? false;
+				this.loaded = init?.loaded ?? 0;
+				this.total = init?.total ?? 0;
+			}
+		};
+	}
 	function parseGltf(data, ctx) {
+		ensureNodeProgressEvent();
 		const format = isGlb(data) ? "glb" : "gltf";
 		const manager = new LoadingManager();
 		stubNodeTextures(manager);

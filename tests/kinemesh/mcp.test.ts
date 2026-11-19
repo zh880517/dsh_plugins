@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildBinaryFbx } from '../support/kinemesh-fixtures.js';
+import { buildBinaryFbx, buildStaticCubeGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
 
 const mcpFile = path.resolve(import.meta.dirname, '..', '..', 'plugins', 'kinemesh', 'mcp', 'kinemesh-mcp.js');
 
@@ -96,6 +96,7 @@ describe.skipIf(!existsSync(mcpFile))('kinemesh MCP Server（构建产物）', (
       const list = await rpcCall(rpc, 2, 'tools/list', {});
       const names = ((list.result as { tools: Array<{ name: string }> }).tools ?? []).map((tool) => tool.name);
       expect(names).toContain('kinemesh_info');
+      expect(names).toContain('kinemesh_analyze');
       expect(names).toContain('kinemesh_render');
 
       const call = await rpcCall(rpc, 3, 'tools/call', {
@@ -107,6 +108,63 @@ describe.skipIf(!existsSync(mcpFile))('kinemesh MCP Server（构建产物）', (
       expect(parsed.ok).toBe(true);
       expect(parsed.format).toBe('fbx-binary');
       expect(parsed.clips[0]?.name).toBe('Take 001');
+    } finally {
+      rpc.close();
+    }
+  }, 120_000);
+
+  it('tools/call kinemesh_analyze：out 落盘 + summaryDigest 返回', async () => {
+    const rpc = startServer();
+    try {
+      await rpcCall(rpc, 1, 'initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'kinemesh-test', version: '0' },
+      });
+      rpc.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      const outDir = path.join(workDir, 'analysis-mcp');
+      const call = await rpcCall(rpc, 5, 'tools/call', {
+        name: 'kinemesh_analyze',
+        arguments: { path: fbxPath, out: outDir, curvesFor: ['cube'] },
+      });
+      expect((call.result as { isError?: boolean }).isError).toBeUndefined();
+      const text = ((call.result as { content: Array<{ text: string }> }).content[0]?.text) ?? '';
+      const parsed = JSON.parse(text) as {
+        ok: boolean;
+        dir: string;
+        files: Array<{ name: string }>;
+        summaryDigest: { facts: string[] };
+      };
+      expect(parsed.ok).toBe(true);
+      expect(parsed.dir).toBe(outDir);
+      expect(parsed.files.some((file) => file.name === 'motion-curves/cube.csv')).toBe(true);
+      expect(parsed.summaryDigest.facts.length).toBeGreaterThan(0);
+    } finally {
+      rpc.close();
+    }
+  }, 120_000);
+
+  it('tools/call kinemesh_analyze 无动画资产走三段式错误文本（isError 标记）', async () => {
+    const rpc = startServer();
+    try {
+      await rpcCall(rpc, 1, 'initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'kinemesh-test', version: '0' },
+      });
+      rpc.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      const staticGlb = path.join(workDir, 'cube-static.glb');
+      await writeFile(staticGlb, Buffer.from(encodeGlb(buildStaticCubeGltf())));
+      const call = await rpcCall(rpc, 6, 'tools/call', {
+        name: 'kinemesh_analyze',
+        arguments: { path: staticGlb },
+      });
+      expect((call.result as { isError?: boolean }).isError).toBe(true);
+      const text = ((call.result as { content: Array<{ text: string }> }).content[0]?.text) ?? '';
+      const parsed = JSON.parse(text) as { ok: boolean; what: string; guidance: string; step: string };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.what).toContain('没有动画片段');
+      expect(parsed.step).toContain('当前这一步');
     } finally {
       rpc.close();
     }

@@ -119,6 +119,51 @@ export function framesCsv(channels: FrameChannels): string {
   return `${lines.join('\n')}\n`;
 }
 
+// ———————— motion-curves/<joint>.csv（§6.4 单关节深挖；M6d curvesFor / detail=full 触发） ————————
+
+/** 单关节通道明细列：位置（H）、速度模与分量（H/s）；数值圆整同 frames.csv（A.14） */
+export const JOINT_CURVE_CSV_COLUMNS = [
+  'frame',
+  'time',
+  'pos_x',
+  'pos_y',
+  'pos_z',
+  'speed',
+  'vx',
+  'vy',
+  'vz',
+] as const;
+
+/**
+ * 指定关节的每采样帧曲线（§6.4 motion-curves/<joint>.csv）。
+ * @param samplePositions 已缩放（÷scale）后的关节速度向量矩阵（jointVelocityMatrix 的产物，N×J×3）
+ */
+export function jointCurveCsv(sample: SampleResult, jointIndex: number, scale: number, velocities: Float64Array): string {
+  const jointCount = sample.joints.length;
+  const lines: string[] = [JOINT_CURVE_CSV_COLUMNS.join(',')];
+  for (let k = 0; k < sample.frameCount; k += 1) {
+    const posBase = (k * jointCount + jointIndex) * 3;
+    const velBase = posBase;
+    const vx = velocities[velBase] ?? 0;
+    const vy = velocities[velBase + 1] ?? 0;
+    const vz = velocities[velBase + 2] ?? 0;
+    lines.push(
+      [
+        String(sample.frames[k] ?? k),
+        roundLength(sample.times[k] ?? 0),
+        roundLength((sample.positions[posBase] ?? 0) / scale),
+        roundLength((sample.positions[posBase + 1] ?? 0) / scale),
+        roundLength((sample.positions[posBase + 2] ?? 0) / scale),
+        roundLength(Math.sqrt(vx * vx + vy * vy + vz * vz)),
+        roundLength(vx),
+        roundLength(vy),
+        roundLength(vz),
+      ].join(','),
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 // ———————— 关键帧挑选（A.11） ————————
 
 export interface KeyframeEntry {

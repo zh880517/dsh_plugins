@@ -77,7 +77,7 @@ export function sceneToInfo(scene: CanonicalScene, source: SceneInfoSource): Inf
     duration: clip.duration,
     fps: scene.meta.fps,
     channels: clip.tracks.length,
-    rootMotion: hasRootMotion(clip, rootBones, boundsHeight(scene)),
+    rootMotion: hasRootMotion(clip, rootBones, sceneBoundsHeight(scene)),
   }));
 
   // ————— 贴图 —————
@@ -118,7 +118,8 @@ function isAncestorBone(parent: THREE.Object3D | null): boolean {
   return false;
 }
 
-function boundsHeight(scene: CanonicalScene): number | null {
+/** 场景包围盒沿上轴高度（模型单位）；analyze 工具层用它做身高归一（M6d，rest 姿态下取值） */
+export function sceneBoundsHeight(scene: CanonicalScene): number | null {
   const box = new THREE.Box3().setFromObject(scene.object, true);
   if (box.isEmpty()) return null;
   const up = scene.meta.upAxis ?? 'y';

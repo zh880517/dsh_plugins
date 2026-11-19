@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { KinemeshError, reasonOf } from '../errors.js';
 import type { CanonicalScene, LoadContext, SourceFormat } from '../types.js';
-import { stubNodeTextures } from './node-textures.js';
+import { inNodeEnvironment, stubNodeTextures } from './node-textures.js';
 
 /** GLB 容器 magic：'glTF' */
 export function isGlb(data: ArrayBuffer): boolean {
@@ -12,7 +12,31 @@ export function isGlb(data: ArrayBuffer): boolean {
   return new TextDecoder('latin1').decode(new Uint8Array(data, 0, 4)) === 'glTF';
 }
 
+/**
+ * Node 兼容桩：three 的 FileLoader 在 fetch 流式读取时构造 ProgressEvent（浏览器 API），
+ * Node 没有这个全局——GLB/GLTF 的内嵌 data URI buffer 会走这条路，缺它直接崩。
+ * 只补一个可构造的最小壳（本工具的 Node 链路没人消费进度回调），幂等、不影响浏览器。
+ */
+function ensureNodeProgressEvent(): void {
+  if (!inNodeEnvironment()) return;
+  const globals = globalThis as { ProgressEvent?: unknown };
+  if (globals.ProgressEvent !== undefined) return;
+  globals.ProgressEvent = class {
+    readonly type: string;
+    readonly lengthComputable: boolean;
+    readonly loaded: number;
+    readonly total: number;
+    constructor(type: string, init?: { lengthComputable?: boolean; loaded?: number; total?: number }) {
+      this.type = type;
+      this.lengthComputable = init?.lengthComputable ?? false;
+      this.loaded = init?.loaded ?? 0;
+      this.total = init?.total ?? 0;
+    }
+  };
+}
+
 export function parseGltf(data: ArrayBuffer, ctx: LoadContext): Promise<CanonicalScene> {
+  ensureNodeProgressEvent();
   const format: SourceFormat = isGlb(data) ? 'glb' : 'gltf';
   const manager = new THREE.LoadingManager();
   stubNodeTextures(manager);

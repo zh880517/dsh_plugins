@@ -20,6 +20,7 @@ import {
   type FrameChannels,
 } from './channels.js';
 import type { SampleResult } from './sample.js';
+import { matchVocab, type VocabEntry } from './vocab.js';
 
 export interface SegmentRange {
   /** 闭区间：采样帧下标（0..N−1） */
@@ -68,6 +69,8 @@ export interface DescribeOptions {
   smooth?: number;
   /** 身高归一分母（缺省 1） */
   scale?: number;
+  /** vocab 词条（M6d，§6.6.3）：按序插在 A.8 决策表前，首条命中按 action 覆盖 guess（label 不动） */
+  vocab?: VocabEntry[];
 }
 
 const STRIKE_PUNCH_JOINTS = new Set(['L.Hand', 'R.Hand', 'L.LowerArm', 'R.LowerArm']);
@@ -262,6 +265,18 @@ export function describeSegments(
       label = 'action';
       guess = 'gesture';
       basis = `无更强特征（均值 ${percentileBasis(meanE)}、峰值 ${percentileBasis(peakE)}）`;
+    }
+
+    // ———— vocab 词条（§6.6.3）：等效按序插在决策表前，首条命中按 action 覆盖 guess；label 保持表内判定 ————
+    if (options.vocab !== undefined && options.vocab.length > 0) {
+      const hit = matchVocab(
+        { dur, meanE, peakE, peakJoint: peakJoint.id, rootSpeed, turnNet, turnTotal, bodyDir, airRatio, hipsLow },
+        options.vocab,
+      );
+      if (hit !== null) {
+        guess = hit.action === 'suppress' ? 'other' : hit.action === 'demote' ? 'gesture' : hit.term;
+        basis = `vocab「${hit.term}」命中（${hit.action}）覆盖 guess；表内原判定：${basis}`;
+      }
     }
 
     const level = intensityLevel(meanE, peakE);

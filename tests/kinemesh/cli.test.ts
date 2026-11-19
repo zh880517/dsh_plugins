@@ -6,13 +6,17 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildBinaryFbx } from '../support/kinemesh-fixtures.js';
+import { buildAnimatedCubeGltf, buildBinaryFbx, buildStaticCubeGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
 
 const cliFile = path.resolve(import.meta.dirname, '..', '..', 'plugins', 'kinemesh', 'skill', 'cli', 'kinemesh.cjs');
 
 const workDir = await mkdtemp(path.join(tmpdir(), 'kinemesh-cli-'));
 const fbxPath = path.join(workDir, 'cube-anim.fbx');
 await writeFile(fbxPath, Buffer.from(buildBinaryFbx()));
+const glbPath = path.join(workDir, 'cube-anim.glb');
+await writeFile(glbPath, Buffer.from(encodeGlb(buildAnimatedCubeGltf())));
+const staticGlbPath = path.join(workDir, 'cube-static.glb');
+await writeFile(staticGlbPath, Buffer.from(encodeGlb(buildStaticCubeGltf())));
 
 afterAll(async () => {
   await rm(workDir, { recursive: true, force: true });
@@ -38,6 +42,7 @@ describe.skipIf(!existsSync(cliFile))('kinemesh CLI（构建产物）', () => {
     const { status, stdout } = runCli(['--help']);
     expect(status).toBe(0);
     expect(stdout).toContain('kinemesh info <file>');
+    expect(stdout).toContain('analyze');
     expect(stdout).toContain('render');
   });
 
@@ -73,6 +78,75 @@ describe.skipIf(!existsSync(cliFile))('kinemesh CLI（构建产物）', () => {
     expect(status).toBe(1);
     const parsed = JSON.parse(stderr) as { ok: boolean; guidance: string };
     expect(parsed.guidance).toContain('frames');
+  });
+
+  it('analyze：--out 落盘 + stdout 返回 summaryDigest（与工具同构）', () => {
+    const outDir = path.join(workDir, 'analysis-cli');
+    const { status, stdout, stderr } = runCli(['analyze', fbxPath, '--out', outDir]);
+    expect(stderr).toBe('');
+    expect(status).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      ok: boolean;
+      dir: string;
+      files: Array<{ name: string; bytes: number; what: string }>;
+      summaryDigest: { segments: unknown[]; facts: string[]; keyframeRender: unknown };
+      hint?: string;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.dir).toBe(outDir);
+    expect(parsed.files[0]?.name).toBe('motion-summary.json');
+    expect(parsed.summaryDigest.facts.length).toBeGreaterThan(0);
+    expect(parsed.hint).toBeUndefined();
+    expect(existsSync(path.join(outDir, 'motion-summary.json'))).toBe(true);
+  }, 60_000);
+
+  it('analyze：缺省 out 落临时目录并带 hint；--curves-for 加曲线文件', () => {
+    const { status, stdout } = runCli(['analyze', fbxPath, '--curves-for', 'cube']);
+    expect(status).toBe(0);
+    const parsed = JSON.parse(stdout) as { ok: boolean; hint?: string; files: Array<{ name: string }> };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.hint).toContain('out 参数重跑');
+    expect(parsed.files.some((file) => file.name === 'motion-curves/cube.csv')).toBe(true);
+  }, 60_000);
+
+  it('analyze：clip 不存在给三段式', () => {
+    const { status, stderr } = runCli(['analyze', fbxPath, '--clip', 'Nope']);
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr) as { ok: boolean; what: string; guidance: string; step: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.what).toContain('Nope');
+    expect(parsed.step).toContain('当前这一步');
+  });
+
+  it('analyze：无动画资产给三段式', () => {
+    const { status, stderr } = runCli(['analyze', staticGlbPath]);
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr) as { ok: boolean; guidance: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.guidance).toContain('kinemesh_info');
+  });
+
+  it('analyze：词表缺失静默降级 builtin；词表 JSON 非法给三段式', async () => {
+    // 词表文件不存在 → 静默降级 builtin（发现顺序口径），正常成功
+    const missing = runCli(['analyze', fbxPath, '--vocab', path.join(workDir, 'no-such-vocab.json')]);
+    expect(missing.status).toBe(0);
+    const badVocab = path.join(workDir, 'bad-vocab.json');
+    await writeFile(badVocab, '{ nope', 'utf8');
+    const bad = runCli(['analyze', fbxPath, '--vocab', badVocab]);
+    expect(bad.status).toBe(1);
+    const parsed = JSON.parse(bad.stderr) as { ok: boolean; what: string; guidance: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.what).toContain('词表');
+    expect(parsed.guidance).toContain('JSON');
+  }, 60_000);
+
+  it('analyze：枚举 flag 非法给三段式指引', () => {
+    const badDetail = runCli(['analyze', fbxPath, '--detail', 'everything']);
+    expect(badDetail.status).toBe(1);
+    const parsed = JSON.parse(badDetail.stderr) as { ok: boolean; guidance: string; step: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.guidance).toContain('--detail');
+    expect(parsed.step).toContain('当前这一步');
   });
 
   it('render：按视角出 PNG（chromium 可用时）', async () => {

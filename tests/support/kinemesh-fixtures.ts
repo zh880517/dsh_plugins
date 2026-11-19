@@ -96,6 +96,49 @@ export function buildStaticCubeGltf(): Record<string, unknown> {
   return clone;
 }
 
+/** 只有 morph/weights 动画的平面网格（验证「形态动画 → 骨骼分析拒绝」分支，A.14） */
+export function buildMorphOnlyGltf(): Record<string, unknown> {
+  const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]);
+  const targetDelta = new Float32Array([0, 0, 0, 0, 0, 0, 0.2, 0.2, 0, -0.2, 0.2, 0]);
+  const times = new Float32Array([0, 0.5]);
+  const weights = new Float32Array([0, 1]);
+  const layout = packSections([positions, targetDelta, times, weights]);
+  const [pos, tgt, tArr, wArr] = layout.sections;
+  return {
+    asset: { version: '2.0', generator: 'kinemesh-fixtures' },
+    scene: 0,
+    scenes: [{ name: 'Scene', nodes: [0] }],
+    nodes: [{ name: 'face', mesh: 0 }],
+    meshes: [
+      {
+        name: 'Face',
+        primitives: [{ attributes: { POSITION: 0 }, targets: [{ POSITION: 1 }] }],
+        weights: [0],
+      },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 4, type: 'VEC3', min: [-0.5, -0.5, 0], max: [0.5, 0.5, 0] },
+      { bufferView: 1, componentType: 5126, count: 4, type: 'VEC3' },
+      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR', min: [0], max: [0.5] },
+      { bufferView: 3, componentType: 5126, count: 2, type: 'SCALAR' },
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: pos.offset, byteLength: pos.byteLength },
+      { buffer: 0, byteOffset: tgt.offset, byteLength: tgt.byteLength },
+      { buffer: 0, byteOffset: tArr.offset, byteLength: tArr.byteLength },
+      { buffer: 0, byteOffset: wArr.offset, byteLength: wArr.byteLength },
+    ],
+    buffers: [{ byteLength: layout.byteLength, uri: dataUri(layout.bytes) }],
+    animations: [
+      {
+        name: 'Blink',
+        samplers: [{ input: 2, output: 3 }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'weights' } }],
+      },
+    ],
+  };
+}
+
 export function encodeGltfBytes(json: unknown): ArrayBuffer {
   const bytes = new TextEncoder().encode(JSON.stringify(json));
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;

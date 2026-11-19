@@ -1,10 +1,14 @@
-// Host 半工具：kinemesh_info / kinemesh_render。
+// Host 半工具：kinemesh_info / kinemesh_analyze / kinemesh_render。
 // 与 aiworkflow 的 AgentTool 形状一致；报错按仓库约定给
 // 「错在哪 + 正确姿势 + 当前这一步」三段式（执行类工具的自愈文案）。
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
-import { analyzeModel } from './core/analyze-file.js';
+import { analyzeModel, loadModelScene } from './core/analyze-file.js';
+import { sceneBoundsHeight } from './core/analyze/scene-info.js';
+import { analyzeClip, type MotionDigest } from './core/motion/analyze.js';
+import { resolveNormalization } from './core/motion/normalize.js';
+import { loadVocab } from './core/motion/vocab.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
 import type { InfoReport } from './core/types.js';
@@ -38,7 +42,7 @@ function expandHome(input: string): string {
 
 /** 注册 Agent 工具，返回一次性释放句柄 */
 export function registerTools(ctx: any): () => void {
-  const disposers = [ctx.tools.register(infoTool()), ctx.tools.register(renderTool())];
+  const disposers = [ctx.tools.register(infoTool()), ctx.tools.register(analyzeTool()), ctx.tools.register(renderTool())];
   return () => {
     for (const dispose of disposers.reverse()) {
       try {
@@ -72,6 +76,167 @@ async function readModelFile(rawPath: string): Promise<LoadedModel> {
       ),
     };
   }
+}
+
+// ———————— kinemesh_analyze（M6d，设计文档 §6.7 / §6.6.3 / §6.4） ————————
+
+/** 三出口同名同参口径（DSH JSON Schema / CLI flag / MCP zod 各自投影，语义以此接口为准） */
+export interface AnalyzeToolParams {
+  /** 缺省第一个 clip；批量与 range 切片是 M6f 任务，本版不做 */
+  clip?: string;
+  /** 中间文件输出目录；缺省 <系统临时目录>/kinemesh-analysis/run-<时间戳>-<pid>/ */
+  out?: string;
+  /** 1–60，缺省 15（core 采样层校验） */
+  sampleFps?: number;
+  /** 'auto'（缺省）或关节 id / 骨骼名清单 */
+  joints?: 'auto' | string[];
+  /** summary=只出 summary.json；standard=+frames/segments/keyframes/trajectory；full=+全部关节曲线 */
+  detail?: 'summary' | 'standard' | 'full';
+  /** 指定关节加出 motion-curves/<joint>.csv */
+  curvesFor?: string[];
+  /** 能量平滑窗口（采样帧），缺省 5 */
+  smooth?: number;
+  /** bestLoopRange 口径：strict（缺省）| pose-only；verdict 恒 strict */
+  loopMode?: 'strict' | 'pose-only';
+  /** 身高归一，缺省 height（以场景包围盒高度为 1） */
+  normalize?: 'height' | 'none';
+  /** 词汇表文件路径；缺省按 §6.6.3 顺序发现（资产同目录 > cwd > builtin） */
+  vocab?: string;
+  /** 骨架映射文件路径（M7 消费；本版只接受参数，不做行为） */
+  boneMap?: string;
+}
+
+export interface AnalyzeRunResult {
+  ok: true;
+  dir: string;
+  files: Array<{ name: string; bytes: number; what: string }>;
+  summaryDigest: MotionDigest;
+  warnings?: string[];
+  /** 仅当输出落在系统临时目录时给出（读不到文件的自愈指引，§6.4） */
+  hint?: string;
+}
+
+/**
+ * 三出口共用的 analyze 执行 runner：加载场景 → 身高归一 → vocab 发现 → analyzeClip → 落盘。
+ * 抛 KinemeshError（无动画 / clip 缺失 / morph-only / 参数越界 / 词表非法等），由各出口转成
+ * 自己的错误口径（tools errorPayload / CLI fail / MCP errorResult）。
+ */
+export async function runAnalyze(
+  data: ArrayBuffer,
+  fileName: string,
+  params: AnalyzeToolParams,
+  context: { assetDir?: string } = {},
+): Promise<AnalyzeRunResult> {
+  const { scene } = await loadModelScene(data, fileName);
+  const normalization = resolveNormalization(params.normalize ?? 'height', sceneBoundsHeight(scene));
+  const vocab = await loadVocab({
+    explicitPath: params.vocab,
+    assetDir: context.assetDir,
+    cwd: process.cwd(),
+  });
+  const analysis = analyzeClip(scene, {
+    clipName: params.clip,
+    sampleFps: params.sampleFps,
+    joints: params.joints,
+    smooth: params.smooth,
+    scale: normalization.scale,
+    normalizeMode: params.normalize ?? 'height',
+    detail: params.detail,
+    curvesFor: params.curvesFor,
+    loopMode: params.loopMode,
+    vocab,
+  });
+  const specified = params.out !== undefined && params.out.trim() !== '';
+  const dir = specified
+    ? path.resolve(expandHome(params.out!.trim()))
+    : path.join(tmpdir(), 'kinemesh-analysis', `run-${Date.now()}-${process.pid}`);
+  const files: AnalyzeRunResult['files'] = [];
+  for (const artifact of analysis.files) {
+    const target = path.join(dir, artifact.name);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, artifact.content, 'utf8');
+    files.push({ name: artifact.name, bytes: artifact.bytes, what: artifact.what });
+  }
+  const warnings = [...new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
+  return {
+    ok: true,
+    dir,
+    files,
+    summaryDigest: analysis.digest,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(specified ? {} : { hint: '输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
+  };
+}
+
+function analyzeTool(): AgentTool {
+  return {
+    name: 'kinemesh_analyze',
+    description:
+      '对模型文件的动画片段做动作分析（本地只读，不改文件）：headless 采样 + 派生通道，产出中间文件目录' +
+      '（motion-summary.json 分段/facts/loopCheck、motion-frames.csv、motion-segments.json、motion-keyframes.json、' +
+      'trajectory、指定关节曲线），并返回内联 summaryDigest（分段表 + 全片统计 + loopCheck + keyframeRender 配方）。' +
+      '数据层工具：一切数值/label/guess/verdict 由它产出，AI 只引用数值做语义推测；' +
+      '语义存疑时把 summaryDigest.keyframeRender 配方原样传给 kinemesh_render 出识别用图。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）' },
+        clip: { type: 'string', description: '动画片段名（先 kinemesh_info 查）；缺省第一个 clip' },
+        out: { type: 'string', description: '中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/' },
+        sampleFps: { type: 'integer', description: '采样率 1–60，缺省 15' },
+        joints: {
+          anyOf: [{ type: 'string', enum: ['auto'] }, { type: 'array', items: { type: 'string' } }],
+          description: '"auto"（缺省：人形惯例集 / 非人形 Top-15）或关节 id / 骨骼名清单',
+        },
+        detail: {
+          type: 'string',
+          enum: ['summary', 'standard', 'full'],
+          description: 'summary=只出 summary.json；standard=+frames/segments/keyframes/trajectory；full=+全部关节曲线；缺省 standard',
+        },
+        curvesFor: { type: 'array', items: { type: 'string' }, description: '指定关节加出 motion-curves/<joint>.csv（规范 id 或骨骼名）' },
+        smooth: { type: 'integer', description: '能量平滑窗口（采样帧），缺省 5' },
+        loopMode: { type: 'string', enum: ['strict', 'pose-only'], description: 'bestLoopRange 口径：strict（缺省）四分量；pose-only 去掉位移/朝向（root-motion 循环用）' },
+        normalize: { type: 'string', enum: ['height', 'none'], description: '身高归一，缺省 height（数值单位为身高倍数）；拿不到身高自动降级 none' },
+        vocab: { type: 'string', description: '词汇表文件路径（kinemesh-vocab.json）；缺省按 资产同目录 > 工作区 > builtin 发现' },
+        boneMap: { type: 'string', description: '骨架映射文件路径（M7 消费；当前仅接受参数）' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => textResult(value) },
+    timeoutMs: 120_000,
+    async execute(args) {
+      const given = typeof args?.path === 'string' ? args.path : '';
+      const loaded = await readModelFile(given);
+      if (!loaded.ok) return loaded.payload;
+      const params: AnalyzeToolParams = {
+        clip: typeof args?.clip === 'string' && args.clip.trim() !== '' ? args.clip : undefined,
+        out: typeof args?.out === 'string' ? args.out : undefined,
+        sampleFps: typeof args?.sampleFps === 'number' ? args.sampleFps : undefined,
+        joints:
+          args?.joints === 'auto'
+            ? 'auto'
+            : Array.isArray(args?.joints)
+              ? args.joints.filter((item: unknown) => typeof item === 'string')
+              : undefined,
+        detail: typeof args?.detail === 'string' ? (args.detail as AnalyzeToolParams['detail']) : undefined,
+        curvesFor: Array.isArray(args?.curvesFor) ? args.curvesFor.filter((item: unknown) => typeof item === 'string') : undefined,
+        smooth: typeof args?.smooth === 'number' ? args.smooth : undefined,
+        loopMode: args?.loopMode === 'strict' || args?.loopMode === 'pose-only' ? args.loopMode : undefined,
+        normalize: args?.normalize === 'height' || args?.normalize === 'none' ? args.normalize : undefined,
+        vocab: typeof args?.vocab === 'string' && args.vocab.trim() !== '' ? expandHome(args.vocab.trim()) : undefined,
+        boneMap: typeof args?.boneMap === 'string' && args.boneMap.trim() !== '' ? expandHome(args.boneMap.trim()) : undefined,
+      };
+      try {
+        return await runAnalyze(loaded.data, path.basename(loaded.abs), params, { assetDir: path.dirname(loaded.abs) });
+      } catch (error) {
+        if (error instanceof KinemeshError) {
+          return errorPayload(error.message, error.guidance, `分析 ${loaded.abs}`);
+        }
+        return errorPayload(reasonOf(error), '确认模型能被 kinemesh_info 解析后重试；必要时缩小参数范围（降低 sampleFps / 换 clip）。', `分析 ${loaded.abs}`);
+      }
+    },
+  };
 }
 
 function infoTool(): AgentTool {

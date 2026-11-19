@@ -1,4 +1,4 @@
-// CLI 入口（M4）：`node kinemesh.js info <file>` / `render <file> --frames 0,15,30 …`。
+// CLI 入口（M4）：`node kinemesh.js info <file>` / `render <file> …` / `analyze <file> …`（M6d）。
 // 契约（设计文档 §5.2）：stdout 出 JSON、图片落盘、非零退出码 + stderr 报错（Agent 解析友好）。
 // 构建成单文件 CJS（skill/cli/kinemesh.js，three.js 全内联；playwright 保持外部依赖）。
 import { readFile } from 'node:fs/promises';
@@ -7,6 +7,7 @@ import path from 'node:path';
 import { analyzeModel } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
+import { runAnalyze, type AnalyzeToolParams } from './tools.js';
 import type { ViewMode } from './core/viewstate.js';
 
 const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
@@ -14,6 +15,17 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 用法：
   kinemesh info <file>
       输出模型结构信息 JSON（动画片段/骨骼/网格/贴图/包围盒/单位体检）。
+
+  kinemesh analyze <file> [选项]
+      对动画片段做动作分析，产出中间文件目录；stdout 返回 {ok,dir,files,summaryDigest}。
+      --clip <name>            动画片段名（先 info 查）；缺省第一个 clip
+      --detail <name>          summary / standard / full（缺省 standard；full=+全部关节曲线）
+      --curves-for <joints>    指定关节加出 motion-curves/<joint>.csv（逗号分隔，如 L.Hand,R.Hand）
+      --sample-fps <n>         采样率 1–60（缺省 15）
+      --loop-mode <name>       strict / pose-only（bestLoopRange 口径，缺省 strict）
+      --normalize <name>       height / none（缺省 height，数值单位为身高倍数）
+      --out <dir>              中间文件输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
+      --vocab <file>           kinemesh-vocab.json 词汇表路径（缺省按 资产同目录 > 工作区 > builtin 发现）
 
   kinemesh render <file> [选项]
       按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
@@ -179,6 +191,49 @@ async function runRender(fileArg: string | undefined, flags: Record<string, stri
   }
 }
 
+/** 枚举 flag 校验：undefined = 未给；null = 非法值（已输出三段式 stderr，调用方直接返回 1） */
+function enumFlag(flags: Record<string, string>, name: string, allowed: string[], guidance: string): string | null | undefined {
+  const raw = flags[name];
+  if (raw === undefined || raw === '') return undefined;
+  if (!allowed.includes(raw)) {
+    fail(`--${name} 的值「${raw}」不合法。`, guidance, '解析 analyze 参数');
+    return null;
+  }
+  return raw;
+}
+
+async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, string>): Promise<number> {
+  const detail = enumFlag(flags, 'detail', ['summary', 'standard', 'full'], '--detail 取 summary / standard / full（缺省 standard）。');
+  if (detail === null) return 1;
+  const loopMode = enumFlag(flags, 'loop-mode', ['strict', 'pose-only'], '--loop-mode 取 strict / pose-only（缺省 strict）。');
+  if (loopMode === null) return 1;
+  const normalize = enumFlag(flags, 'normalize', ['height', 'none'], '--normalize 取 height / none（缺省 height）。');
+  if (normalize === null) return 1;
+  const curvesFor = flags['curves-for'] === undefined
+    ? undefined
+    : flags['curves-for'].split(',').map((token) => token.trim()).filter((token) => token !== '');
+  const loaded = await readModel(fileArg);
+  if (loaded === null) return 1;
+  const params: AnalyzeToolParams = {
+    clip: flags.clip,
+    sampleFps: numberFlag(flags, 'sample-fps'),
+    detail: detail as AnalyzeToolParams['detail'],
+    curvesFor: curvesFor === undefined || curvesFor.length === 0 ? undefined : curvesFor,
+    loopMode: loopMode as AnalyzeToolParams['loopMode'],
+    normalize: normalize as AnalyzeToolParams['normalize'],
+    out: flags.out,
+    vocab: flags.vocab === undefined ? undefined : expandHome(flags.vocab),
+  };
+  try {
+    const result = await runAnalyze(loaded.data, path.basename(loaded.abs), params, { assetDir: path.dirname(loaded.abs) });
+    emit(result);
+    return 0;
+  } catch (error) {
+    if (error instanceof KinemeshError) return fail(error.message, error.guidance, `分析 ${loaded.abs}`);
+    return fail(reasonOf(error), '确认模型能被 info 解析后重试；必要时缩小参数范围（降低 --sample-fps / 换 --clip）。', `分析 ${loaded.abs}`);
+  }
+}
+
 export async function main(argv: string[]): Promise<number> {
   const { command, positional, flags } = parseArgv(argv);
   const wantsHelp = flags.help !== undefined || command === '--help' || command === '-h';
@@ -191,12 +246,13 @@ export async function main(argv: string[]): Promise<number> {
     return 2;
   }
   if (command === 'info') return runInfo(positional[0]);
+  if (command === 'analyze') return runAnalyzeCli(positional[0], flags);
   if (command === 'render') return runRender(positional[0], flags);
   process.stderr.write(
     `${JSON.stringify({
       ok: false,
       what: `未知命令「${command}」。`,
-      guidance: '可用命令：info <file> / render <file> [选项]；--help 看全部。',
+      guidance: '可用命令：info <file> / analyze <file> [选项] / render <file> [选项]；--help 看全部。',
       step: '解析命令行',
     })}\n`,
   );

@@ -13,6 +13,7 @@ import {
 import { smoothSeries, type FrameChannels } from './channels.js';
 import { describeSegments, type DescribedSegment, type SegmentRange } from './describe.js';
 import type { SampleResult } from './sample.js';
+import type { VocabEntry } from './vocab.js';
 
 export type MotionEventType =
   | 'liftoff'
@@ -42,6 +43,8 @@ export interface SegmentOptions {
   smooth?: number;
   /** 身高归一分母（透传给 describe） */
   scale?: number;
+  /** vocab 词条（M6d，§6.6.3）：透传给 describe，决策表前优先匹配 */
+  vocab?: VocabEntry[];
 }
 
 function meanOf(series: number[], start: number, end: number): number {

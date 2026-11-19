@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { analyzeModel } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
+import { runAnalyze } from './tools.js';
 import type { InfoReport } from './core/types.js';
 
 const SERVER_VERSION = '0.4.0';
@@ -67,6 +68,54 @@ server.tool(
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...report }, null, 2) }] };
     } catch (error) {
       return errorResult(error, `读取 ${rawPath} 的模型信息`);
+    }
+  },
+);
+
+server.tool(
+  'kinemesh_analyze',
+  '对模型文件的动画片段做动作分析（本地只读）：产出中间文件目录（summary/frames/segments/keyframes/trajectory/关节曲线），' +
+    '并返回内联 summaryDigest（分段表 + 全片统计 + loopCheck + keyframeRender 配方）。' +
+    '数据层工具：数值/label/guess/verdict 都由它产出，AI 只引用数值做语义推测；' +
+    '语义存疑时把 summaryDigest.keyframeRender 配方原样传给 kinemesh_render 出识别用图。',
+  {
+    path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
+    clip: z.string().optional().describe('动画片段名（先 kinemesh_info 查）；缺省第一个 clip'),
+    out: z.string().optional().describe('中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/'),
+    sampleFps: z.number().int().optional().describe('采样率 1–60，缺省 15（越界由分析层给三段式自愈指引）'),
+    joints: z.union([z.literal('auto'), z.array(z.string())]).optional().describe('"auto"（缺省）或关节 id / 骨骼名清单'),
+    detail: z.enum(['summary', 'standard', 'full']).optional().describe('summary=只出 summary.json；standard=+frames/segments/keyframes/trajectory；full=+全部关节曲线；缺省 standard'),
+    curvesFor: z.array(z.string()).optional().describe('指定关节加出 motion-curves/<joint>.csv（规范 id 或骨骼名）'),
+    smooth: z.number().int().optional().describe('能量平滑窗口（采样帧），缺省 5'),
+    loopMode: z.enum(['strict', 'pose-only']).optional().describe('bestLoopRange 口径：strict（缺省）四分量；pose-only 去掉位移/朝向（root-motion 循环用）'),
+    normalize: z.enum(['height', 'none']).optional().describe('身高归一，缺省 height（数值单位为身高倍数）'),
+    vocab: z.string().optional().describe('词汇表文件路径（kinemesh-vocab.json）；缺省按 资产同目录 > 工作区 > builtin 发现'),
+    boneMap: z.string().optional().describe('骨架映射文件路径（M7 消费；当前仅接受参数）'),
+  },
+  async ({ path: rawPath, clip, out, sampleFps, joints, detail, curvesFor, smooth, loopMode, normalize, vocab, boneMap }) => {
+    try {
+      const loaded = await readModelFile(rawPath);
+      const result = await runAnalyze(
+        loaded.data,
+        path.basename(loaded.abs),
+        {
+          clip,
+          out: out === undefined ? undefined : expandHome(out),
+          sampleFps,
+          joints,
+          detail,
+          curvesFor,
+          smooth,
+          loopMode,
+          normalize,
+          vocab: vocab === undefined ? undefined : expandHome(vocab),
+          boneMap: boneMap === undefined ? undefined : expandHome(boneMap),
+        },
+        { assetDir: path.dirname(loaded.abs) },
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return errorResult(error, `分析 ${rawPath}`);
     }
   },
 );
