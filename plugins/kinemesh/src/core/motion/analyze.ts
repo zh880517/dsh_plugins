@@ -208,12 +208,14 @@ function analyzeAllClips(scene: CanonicalScene, options: AnalyzeOptions): Motion
   return { summary: batchSummary, digest: batchDigest, files, batch: true };
 }
 
-/** clip 子目录名（§6.7 `<dir>/<clip>/`）：安全化 + 重名去重（追加 -2/-3…），空名回退序号 */
+/** clip 子目录名（§6.7 `<dir>/<clip>/`）：安全化 + 重名去重（追加 -2/-3…），空名/点名回退序号 */
 function uniqueClipDir(name: string, used: Set<string>): string {
   const safe = name.replace(/[^\w.-]+/g, '_');
-  let candidate = safe === '' ? 'clip' : safe;
+  // 点名防守（#10）：'.' / '..' 是合法 sanitize 产物，但 '..' 会把固定文件名写到 out 上一级——命中即回退 'clip'
+  const base = safe === '' || /^\.{1,2}$/.test(safe) ? 'clip' : safe;
+  let candidate = base;
   let suffix = 2;
-  while (used.has(candidate)) candidate = `${safe === '' ? 'clip' : safe}-${suffix}`;
+  while (used.has(candidate)) candidate = `${base}-${suffix}`;
   used.add(candidate);
   return candidate;
 }

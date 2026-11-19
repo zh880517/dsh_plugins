@@ -30367,7 +30367,7 @@ var DIR_WORDS = [
 function wrapDegrees(theta) {
 	return ((theta + 180) % 360 + 360) % 360 - 180;
 }
-function norm3(x, y, z) {
+function norm3$1(x, y, z) {
 	return Math.sqrt(x * x + y * y + z * z);
 }
 /** 居中滑动平均（A.2）：窗宽 2m+1，端点用截断窗口 */
@@ -30459,7 +30459,7 @@ function computeChannels(sample, options = {}) {
 		const ux = p2x - p1x;
 		const uy = p2y - p1y;
 		const uz = p2z - p1z;
-		const len = norm3(ux, uy, uz);
+		const len = norm3$1(ux, uy, uz);
 		if (len < 1e-9) continue;
 		const unitX = ux / len;
 		const unitY = uy / len;
@@ -30473,7 +30473,7 @@ function computeChannels(sample, options = {}) {
 			const cx = vy * unitZ - vz * unitY;
 			const cy = vz * unitX - vx * unitZ;
 			const cz = vx * unitY - vy * unitX;
-			sum += norm3(cx, cy, cz);
+			sum += norm3$1(cx, cy, cz);
 		}
 		amplitude[k] = sum / anchors.endEffectors.length;
 	}
@@ -30494,11 +30494,11 @@ function computeChannels(sample, options = {}) {
 			const ux = hdx - hpx;
 			const uy = hdy - hpy;
 			const uz = hdz - hpz;
-			if (norm3(rx, ry, rz) > 1e-9 && norm3(ux, uy, uz) > 1e-9) {
+			if (norm3$1(rx, ry, rz) > 1e-9 && norm3$1(ux, uy, uz) > 1e-9) {
 				const cx = ry * uz - rz * uy;
 				const cy = rz * ux - rx * uz;
 				const cz = rx * uy - ry * ux;
-				const len = norm3(cx, cy, cz);
+				const len = norm3$1(cx, cy, cz);
 				if (len > 1e-9) {
 					fx = cx / len;
 					fz = cz / len;
@@ -30665,8 +30665,46 @@ function computeChannels(sample, options = {}) {
 //#endregion
 //#region
 var DEG2RAD = Math.PI / 180;
-/** 端点朝向（度）：heading 通道只覆盖网格帧，端点用 rootTrack.endpointQuaternion 按 A.4 回退公式 */
+/** 向量模（endpointHeading 的 A.4 退化判定用；channels.ts 同名局部助手同式） */
+function norm3(x, y, z) {
+	return Math.sqrt(x * x + y * y + z * z);
+}
+/**
+* 端点朝向（度）：heading 通道只覆盖网格帧；端点与 0 帧同源走 A.4 全式——
+* endpointPositions + anchors（right = RUpperLeg − LUpperLeg、up = head − hips、
+* forward = right × up，公式同 channels.ts A.4 主路径）；缺锚/退化时与网格帧
+* 同口径回退 rootTrack.endpointQuaternion 投影（A.4 非人形/缺腿式）。世界速度/位移不受影响。
+*/
 function endpointHeading(sample) {
+	const anchors = sample.anchors;
+	const src = sample.endpointPositions;
+	const at = (j) => {
+		const base = j * 3;
+		return [
+			src[base],
+			src[base + 1],
+			src[base + 2]
+		];
+	};
+	if (anchors.hips >= 0 && anchors.head >= 0 && anchors.leftUpperLeg >= 0 && anchors.rightUpperLeg >= 0) {
+		const [lux, luy, luz] = at(anchors.leftUpperLeg);
+		const [rux, ruy, ruz] = at(anchors.rightUpperLeg);
+		const rx = rux - lux;
+		const ry = ruy - luy;
+		const rz = ruz - luz;
+		const [hpx, hpy, hpz] = at(anchors.hips);
+		const [hdx, hdy, hdz] = at(anchors.head);
+		const ux = hdx - hpx;
+		const uy = hdy - hpy;
+		const uz = hdz - hpz;
+		if (norm3(rx, ry, rz) > 1e-9 && norm3(ux, uy, uz) > 1e-9) {
+			const cx = ry * uz - rz * uy;
+			const cy = rz * ux - rx * uz;
+			const cz = rx * uy - ry * ux;
+			const len = norm3(cx, cy, cz);
+			if (len > 1e-9) return Math.atan2(cx / len, cz / len) * 180 / Math.PI;
+		}
+	}
 	const q = sample.rootTrack?.endpointQuaternion;
 	if (!q) return 0;
 	const qx = q[0];
@@ -31071,7 +31109,7 @@ function percentileBasis(value) {
 }
 function describeSegments(channels, sample, ranges, options = {}) {
 	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
-	const m = Math.max(0, Math.floor((options.smooth ?? 5) / 2)) || 2;
+	const m = options.smooth !== void 0 ? Math.max(0, Math.floor(options.smooth / 2)) : 2;
 	const eSmoothed = smoothSeries(channels.energy, m);
 	const sorted = [...eSmoothed].sort((a, b) => a - b);
 	const p50 = quantile(sorted, .5);
@@ -32733,12 +32771,13 @@ function analyzeAllClips(scene, options) {
 		batch: true
 	};
 }
-/** clip 子目录名（§6.7 `<dir>/<clip>/`）：安全化 + 重名去重（追加 -2/-3…），空名回退序号 */
+/** clip 子目录名（§6.7 `<dir>/<clip>/`）：安全化 + 重名去重（追加 -2/-3…），空名/点名回退序号 */
 function uniqueClipDir(name, used) {
 	const safe = name.replace(/[^\w.-]+/g, "_");
-	let candidate = safe === "" ? "clip" : safe;
+	const base = safe === "" || /^\.{1,2}$/.test(safe) ? "clip" : safe;
+	let candidate = base;
 	let suffix = 2;
-	while (used.has(candidate)) candidate = `${safe === "" ? "clip" : safe}-${suffix}`;
+	while (used.has(candidate)) candidate = `${base}-${suffix}`;
 	used.add(candidate);
 	return candidate;
 }

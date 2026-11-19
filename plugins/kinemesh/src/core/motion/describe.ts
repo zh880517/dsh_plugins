@@ -123,7 +123,9 @@ export function describeSegments(
   options: DescribeOptions = {},
 ): DescribedSegment[] {
   const scale = options.scale !== undefined && options.scale > 0 ? options.scale : 1;
-  const m = Math.max(0, Math.floor((options.smooth ?? 5) / 2)) || SMOOTH_M;
+  // 半窗 m 与 segment.ts/report.ts 同式（总审 #2）：只有 smooth 未传时落 SMOOTH_M——
+  // smooth:1 → m=0（原始能量口径），不再被 `|| SMOOTH_M` 分叉成 m=2
+  const m = options.smooth !== undefined ? Math.max(0, Math.floor(options.smooth / 2)) : SMOOTH_M;
   const eSmoothed = smoothSeries(channels.energy, m);
   const sorted = [...eSmoothed].sort((a, b) => a - b);
   const p50 = quantile(sorted, 0.5);

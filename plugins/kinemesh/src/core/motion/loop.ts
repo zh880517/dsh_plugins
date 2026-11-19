@@ -2,7 +2,8 @@
 // verdict 四态（§6.5.3）与 bestLoopRange 扫描（归一化 max 打分，不设权重）。
 // 采样对齐：seam 末帧一律用 t=duration 精确端点评估（sample.endpointPositions /
 // rootTrack.endpoint*，A.0 虚拟点 k=N），不吃采样网格的量化误差；heading 通道只覆盖
-// 网格帧，端点朝向用 rootTrack.endpointQuaternion 按 A.4 回退公式求。
+// 网格帧，端点朝向与 0 帧同源——endpointPositions + anchors 走 A.4 全式（right × up），
+// 缺锚/退化时才回退 rootTrack.endpointQuaternion 投影（总审 #3 同源化）。
 // loopMode 只影响 bestLoopRange 打分（pose-only 去掉位移与朝向两项，root-motion 循环用），
 // verdict 恒为 strict 口径（A.10）。
 import {
@@ -76,8 +77,43 @@ export interface LoopCheckOptions {
 
 const DEG2RAD = Math.PI / 180;
 
-/** 端点朝向（度）：heading 通道只覆盖网格帧，端点用 rootTrack.endpointQuaternion 按 A.4 回退公式 */
+/** 向量模（endpointHeading 的 A.4 退化判定用；channels.ts 同名局部助手同式） */
+function norm3(x: number, y: number, z: number): number {
+  return Math.sqrt(x * x + y * y + z * z);
+}
+
+/**
+ * 端点朝向（度）：heading 通道只覆盖网格帧；端点与 0 帧同源走 A.4 全式——
+ * endpointPositions + anchors（right = RUpperLeg − LUpperLeg、up = head − hips、
+ * forward = right × up，公式同 channels.ts A.4 主路径）；缺锚/退化时与网格帧
+ * 同口径回退 rootTrack.endpointQuaternion 投影（A.4 非人形/缺腿式）。世界速度/位移不受影响。
+ */
 function endpointHeading(sample: SampleResult): number {
+  const anchors = sample.anchors;
+  const src = sample.endpointPositions;
+  const at = (j: number): [number, number, number] => {
+    const base = j * 3;
+    return [src[base]!, src[base + 1]!, src[base + 2]!];
+  };
+  if (anchors.hips >= 0 && anchors.head >= 0 && anchors.leftUpperLeg >= 0 && anchors.rightUpperLeg >= 0) {
+    const [lux, luy, luz] = at(anchors.leftUpperLeg);
+    const [rux, ruy, ruz] = at(anchors.rightUpperLeg);
+    const rx = rux - lux;
+    const ry = ruy - luy;
+    const rz = ruz - luz;
+    const [hpx, hpy, hpz] = at(anchors.hips);
+    const [hdx, hdy, hdz] = at(anchors.head);
+    const ux = hdx - hpx;
+    const uy = hdy - hpy;
+    const uz = hdz - hpz;
+    if (norm3(rx, ry, rz) > 1e-9 && norm3(ux, uy, uz) > 1e-9) {
+      const cx = ry * uz - rz * uy;
+      const cy = rz * ux - rx * uz;
+      const cz = rx * uy - ry * ux;
+      const len = norm3(cx, cy, cz);
+      if (len > 1e-9) return (Math.atan2(cx / len, cz / len) * 180) / Math.PI;
+    }
+  }
   const q = sample.rootTrack?.endpointQuaternion;
   if (!q) return 0;
   const qx = q[0]!;

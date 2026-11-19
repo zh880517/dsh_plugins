@@ -4,7 +4,9 @@
 import { describe, expect, it } from 'vitest';
 import type * as THREE from 'three';
 import { analyzeClip } from '../../plugins/kinemesh/src/core/motion/analyze.js';
-import { CALIB_VERSION } from '../../plugins/kinemesh/src/core/motion/constants.js';
+import { CALIB_VERSION, SMOOTH_M } from '../../plugins/kinemesh/src/core/motion/constants.js';
+import { computeChannels, smoothSeries } from '../../plugins/kinemesh/src/core/motion/channels.js';
+import { sampleClip } from '../../plugins/kinemesh/src/core/motion/sample.js';
 import {
   buildBackpedalClip,
   buildHumanoidRig,
@@ -199,5 +201,30 @@ describe('M6b · summary / trajectory / 中间文件集（standard detail）', (
     expect(digest.keyframeRender.views).toEqual(['front', 'side']);
     expect(digest.keyframeRender.mode).toBe('skeleton');
     expect(digest.keyframeRender.frames.length).toBeGreaterThan(0);
+  });
+});
+
+describe('总审修复 #2 · describe 的 smooth 半窗与 segment/report 同式（smooth:1 = 原始能量口径）', () => {
+  const rig = buildHumanoidRig();
+  const scene = buildRigScene(rig.root, [buildPunchClip(rig)]);
+  const raw = computeChannels(sampleClip(scene)).energy; // 未平滑能量（A.3 原式）
+  const result = analyzeClip(scene, { smooth: 1 });
+
+  it('smooth:1 → m=0：时段 meanE = 段内原始能量均值（旧代码 || SMOOTH_M 会回落 m=2 吃平滑值）', () => {
+    const segment = result.summary.segments[1]!;
+    // 帧号口径：30fps 显示帧 = 2×采样下标（15fps 采样网格 t=k/15）
+    const start = segment.frameStart / 2;
+    const end = segment.frameEnd / 2;
+    let rawSum = 0;
+    let smoothedSum = 0;
+    const smoothedM2 = smoothSeries(raw, SMOOTH_M); // 旧代码 smooth:1 实际落到的 m=2 口径（分叉对照）
+    for (let k = start; k <= end; k += 1) {
+      rawSum += raw[k]!;
+      smoothedSum += smoothedM2[k]!;
+    }
+    const frames = end - start + 1;
+    expect(segment.features.meanE).toBeCloseTo(rawSum / frames, 9);
+    // 对照：出拳是快瞬态，m=2 平滑显著改变段均值——旧代码在此断言必红
+    expect(segment.features.meanE).not.toBeCloseTo(smoothedSum / frames, 3);
   });
 });

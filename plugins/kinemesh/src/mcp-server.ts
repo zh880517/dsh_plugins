@@ -13,7 +13,7 @@ import { renderScreenshots } from './core/render/screenshot.js';
 import { runAnalyze, runSkeleton } from './tools.js';
 import type { InfoReport } from './core/types.js';
 
-const SERVER_VERSION = '0.4.0';
+const SERVER_VERSION = '0.5.0';
 const MAX_MODEL_BYTES = 512 * 1024 * 1024;
 
 function expandHome(input: string): string {

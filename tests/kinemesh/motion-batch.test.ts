@@ -136,6 +136,23 @@ describe('M6f · clip:"*" 批量（core 层）', () => {
     expect(digests[1]!.digest.clipStats.rootTotalDisp).toBeCloseTo(1, 2);
   });
 
+  it('点名单防（总审 #10 回归）：clip 名 ".." 的子目录回退 "clip"，文件名不越出 out 目录', () => {
+    const dotRig = buildHumanoidRig();
+    const clip = buildLinearWalkClip(dotRig);
+    clip.name = '..';
+    const dot = analyzeClip(buildRigScene(dotRig.root, [clip]), { clipName: '*' });
+    expect(dot.files.map((file) => file.name)).toEqual([
+      'clip/motion-summary.json',
+      'clip/motion-frames.csv',
+      'clip/motion-segments.json',
+      'clip/motion-keyframes.json',
+      'clip/motion-trajectory.json',
+      'clip/motion-trajectory.svg',
+    ]);
+    expect(dot.files.every((file) => !file.name.startsWith('..'))).toBe(true);
+    expect(dot.summary.clips?.[0]?.name).toBe('..'); // summary 里的 clip 名保持原样，只防守目录名
+  });
+
   it('无动画资产批量走三段式拒绝（与单 clip 口径一致）', () => {
     const staticRig = buildHumanoidRig();
     expect(() => analyzeClip(buildRigScene(staticRig.root, []), { clipName: '*' })).toThrow(KinemeshError);
@@ -338,6 +355,22 @@ describe('M6f · 工具层：clip:"*" 批量落盘 <clip>/ 分桶 + digest.clips
     expect(digest.clips[0]?.digest.segments.length).toBeGreaterThan(0);
     expect(existsSync(path.join(outDir, 'Walk', 'motion-summary.json'))).toBe(true);
     expect(existsSync(path.join(outDir, 'Jump', 'motion-summary.json'))).toBe(true);
+  });
+
+  it('clip 名 ".."（总审 #10 回归）：工具层落盘不越出 out 目录（子目录回退 clip/）', async () => {
+    const doc = buildTwoClipCubeGltf();
+    (doc.animations as Array<{ name: string }>)[0]!.name = '..';
+    const dotGlb = path.join(workDir, 'tool-dotdot.glb');
+    await writeFile(dotGlb, Buffer.from(encodeGlb(doc)));
+    const execute = toolExecute('kinemesh_analyze');
+    const outDir = path.join(workDir, 'tool-dotdot-out');
+    const result = await execute({ path: dotGlb, clip: '*', out: outDir });
+    expect(result.ok).toBe(true);
+    const names = (result.files as Array<{ name: string }>).map((file) => file.name);
+    expect(names.filter((name) => name.startsWith('clip/'))).toHaveLength(6);
+    expect(names.every((name) => !name.startsWith('..'))).toBe(true);
+    expect(existsSync(path.join(outDir, 'clip', 'motion-summary.json'))).toBe(true);
+    expect(existsSync(path.join(outDir, '..', 'motion-summary.json'))).toBe(false);
   });
 
   it('morph-only 资产 clip:"*"：三段式拒绝（批量路径的自愈口径）', async () => {

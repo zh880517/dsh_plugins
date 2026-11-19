@@ -219,7 +219,7 @@ heightMeters）/ warnings[]`。
 
 M6/M7 的 14 条拍板决策见 §8。
 
-## 6. M6 动作分析（设计定稿，未实施）
+## 6. M6 动作分析（已实施）
 
 ### 6.0 调研结论（为什么自建）
 
@@ -522,8 +522,11 @@ kinemesh_analyze(path, {
 - 槽位 **`conversation.view`**：aiworkflow 已用它注册「运行图」会话页签（条件注册、随会话
   出现/消失），模式在本仓库内已验证，不新造机制；
 - 注册条目 `{name:'conversation.view', id:'kinemesh-preview', order:20, label:「模型预览」}`；
-- **出现条件**：本会话「用过 kinemesh」= 任一 kinemesh 工具（info/render/analyze）以某路径
-  执行过，或在预览（浮层/页面）里加载过模型；
+- **出现条件（实际口径回写）**：本会话「用过 kinemesh」= 会话模型表非空——只有 HTTP 路由
+  写这张表：预览加载（`GET /kinemesh/model`）、面板信息（`GET /kinemesh/info`）与「发送给
+  AI 分析」（`POST /kinemesh/analysis`）处理成功即 record；**Agent 工具直调（DSH 工具 /
+  MCP / CLI）不经路由、不进会话表**——页签数据口径限于 HTTP 路由 + 预览加载，为已知口径
+  （拉平需把 `exec.agent.id` 接进会话表，见总审遗留项）；
 - 会话身份与数据：header utilities 槽捕获 sessionId（`dsh:<sessionId>`，aiworkflow 同款口径）；
   Host 维护 `sessionId → 有序去重路径表`（内存，按首次出现顺序，不持久化——会话级功能，
   Host 重启即清空、重新使用即恢复）；客户端在 sessionId 变化时同步注册/注销页签
@@ -558,7 +561,7 @@ kinemesh_analyze(path, {
 - 页签文案与页面文本走 locale 服务（zh/en locale 文件已有）；
 - 不做跨会话历史列表（会话日志才是事实源；要做也是后续从会话日志回放，非 v1）。
 
-## 7. M7 骨架识别与映射（设计定稿，未实施）
+## 7. M7 骨架识别与映射（已实施）
 
 需求（用户拍板）：AI 要能识别骨架类型（约定）与身体部件（头/胳膊/手/腿/脚）；命名不标准的 rig，
 用「**截图带骨骼名字让 AI 识别**」定案。
@@ -625,7 +628,7 @@ kinemesh_analyze(path, {
 - 映射文件是会话外可复用的**工程资产**（放资产同目录），与 vocab 文件同一「AI 维护数据、
   工具确定性消费」模式。
 
-### 7.5 里程碑 M7（版本 0.6.0）
+### 7.5 里程碑 M7（版本 0.5.0（与 M6 同版发布））
 
 | 子阶段 | 内容 | 验收 |
 |---|---|---|
@@ -633,6 +636,13 @@ kinemesh_analyze(path, {
 | M7b | 标注截图渲染（B.4，按需出图）+ `kinemesh_skeleton` 三出口 | 60 骨 rig 标签不互叠（stride 批次生效）；`shots:"auto"` 有缺口才出图 |
 | M7c | `kinemesh-bones.json` 消费（B.5）+ analyze joints 走映射链 + SKILL 两级兜底工作流段 | 乱命名合成 rig（Bone01…）→ AI 读 report+图写映射 → analyze 全通道产出（无 top15 回退） |
 | M7d | 非人形通道泛化（B.7）+ archetype 映射消费 | 四足合成 rig：4 肢 tip 接触/腾空判定正确、heading=root→head、链位权重生效；蛇形 rig contact=null+warning |
+
+> 实际落地注记（M7 随 0.5.0 与 M6 同版发布；M7a–M7c 已交付，实现细节以 `core/analyze/bone-map.ts`、
+> `core/analyze/skeleton-report.ts` 与 `tests/kinemesh/` 为准）。两处设计未实装：
+> **B.4 文字精灵标注**未实装（renderer 无文字精灵机制，`--bone-labels` 不存在——skeleton-report 以
+> `renderRecipe.boneLabels` 指引替代：按批次清单用 `--mode skeleton` 出图、对照 report 坐标读图对位）；
+> **B.7 泛化通道**未实装（M7d 不在本版：映射文件的 archetype 字段校验与泛化说明已交付，
+> 通道切换留候选——非 humanoid 映射当前按常规链解析并附 warning）。
 
 ## 8. M6/M7 拍板决策记录（2026-11-18 用户拍板，14 条）
 
@@ -961,7 +971,7 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
 （synonym-and-prefix-tolerant）、[mixamo_converter](https://deepwiki.com/enziop/mixamo_converter/3.3-bone-renaming-options)
 （namespace 剥离）、[Biped 骨骼参考](https://docs.otakusolutions.com/guide/biped-plus/ep21-biped-bones-reference?lang=en)。
 
-### B.2 同义词表（L1；对主体 token **按表序精确匹配**，再对全名子串兜底）
+### B.2 同义词表（L1；对主体 token **按表序精确匹配**，再对全名子串兜底；实现枚举序 = token 序 → 连接串最长 → 表序）
 
 | canonical | 精确 token | 子串兜底 |
 |---|---|---|

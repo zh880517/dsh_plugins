@@ -40,6 +40,8 @@ node <本目录>/cli/kinemesh.js render <file> [选项]
 | 选项 | 说明 |
 |---|---|
 | `--clip <name>` | 动画片段名（先 info 查）；缺省第一个 clip |
+| `--clip *` | 批量分析全部 clips（返回 clips[]，中间文件按 &lt;clip&gt;/ 子目录分桶；与 `--range` 互斥） |
+| `--range <t0,t1>` | 秒切片 [t0,t1]（0 ≤ t0 &lt; t1 ≤ 片段时长，先 info 查）；帧号仍按全片口径，结果可直接喂 render |
 | `--detail <name>` | summary / standard / full（缺省 standard；full=+全部关节曲线） |
 | `--curves-for <joints>` | 指定关节加出 motion-curves/&lt;joint&gt;.csv（逗号分隔） |
 | `--sample-fps <n>` | 采样率 1–60（缺省 15） |
