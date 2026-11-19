@@ -126,6 +126,9 @@ describe('buildSkeletonReport · 字典全命中与 B.4 批次', () => {
     const digest = buildSkeletonDigest(report);
     expect(digest.facts.some((fact) => fact.includes('CORE15 缺口 0 个'))).toBe(true);
     expect(digest.facts.some((fact) => fact.includes('kinemesh-bones.json'))).toBe(true);
+    // B.4 标注协作口径：renderer 无文字叠加参数，--bone-labels 留后续里程碑（read 图靠 restWorldPos 对位）
+    expect(digest.renderRecipe.boneLabels.renderParam).toBe(false);
+    expect(digest.renderRecipe.boneLabels.guidance).toContain('restWorldPos');
   });
 
   it('非标命名 rig：字典缺口 → AI 兜底指引 + 批次清单（≤12 单批全量）', () => {

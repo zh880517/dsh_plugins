@@ -1,5 +1,7 @@
 // 顶层入口：buffer + 文件名 → InfoReport / CanonicalScene。DSH 工具 / CLI / MCP 三出口共用这一份。
+import path from 'node:path';
 import { sceneToInfo } from './analyze/scene-info.js';
+import { loadBonesFile, mappedCountOf, type BonesFileData } from './analyze/bone-map.js';
 import { KinemeshError } from './errors.js';
 import { detectFormat, unknownFormatError } from './registry.js';
 import { getCachedScene } from './scene-cache.js';
@@ -30,21 +32,39 @@ export async function analyzeModel(data: ArrayBuffer, fileName: string): Promise
 }
 
 /**
+ * info 侧的映射文件发现（B.6，parse 级）：资产同目录 kinemesh-bones.json > cwd；无则 null。
+ * fs 由 bone-map 的读写函数承担（本模块不加 fs）；发现路径不存在静默跳过、读到但 JSON/schema
+ * 非法 → 三段式 KinemeshError（与 vocab 同口径）；骨架名校验是 analyze/skeleton 消费点的职责，
+ * info 只做计数。
+ */
+async function discoverBonesFile(absPath: string): Promise<BonesFileData | null> {
+  const loaded = await loadBonesFile({ assetDir: path.dirname(absPath), cwd: process.cwd() });
+  return loaded === null ? null : loaded.data;
+}
+
+/**
  * info 提取的缓存变体（M6f review 补接线，§6.2）：glTF 有 fastInfo → 纯 JSON 快速路径
  * （不构造场景、不进缓存）；无 fastInfo 的格式（FBX / OBJ，registry 里只有 glTF 有 fastInfo）
  * 的 entry.load 是 Node 端构造场景的最贵路径 → 走 path+mtime 进程内缓存。
  * sceneToInfo 只读（traverse + Box3，不改节点变换），复用缓存实例安全。
+ * B.6：资产旁有映射文件时，fastInfo 产物与 sceneToInfo 的 bones.mapped 都取映射计数。
  */
 export async function analyzeModelCached(absPath: string, data: ArrayBuffer, fileName: string): Promise<InfoReport> {
   await checkBudget(data, fileName);
   const entry = detectFormat(headBytes(data), fileName);
   if (entry === null) throw unknownFormatError(fileName);
-  if (entry.fastInfo !== undefined) return entry.fastInfo(data, fileName);
+  const bonesFileData = await discoverBonesFile(absPath);
+  if (entry.fastInfo !== undefined) {
+    const report = entry.fastInfo(data, fileName);
+    if (bonesFileData !== null) report.bones.mapped = mappedCountOf(bonesFileData);
+    return report;
+  }
   const scene = await getCachedScene(absPath, () => entry.load(data, { fileName }));
   return sceneToInfo(scene, {
     fileName,
     fileSize: data.byteLength,
     expectsAnimation: entry.hasAnimation,
+    bonesFileData,
   });
 }
 

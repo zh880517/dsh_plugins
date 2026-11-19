@@ -28,8 +28,8 @@ describe('gltfJsonInfo（.gltf 文本）', () => {
     expect(clip?.rootMotion).toBe(true); // rig 是根节点，translation 净位移 2
   });
 
-  it('骨骼：数量/深度/非人形命名', () => {
-    expect(report.bones).toEqual({ count: 2, maxDepth: 1, humanoidLike: false });
+  it('骨骼：数量/深度/非人形命名 + B.6 convention/mapped（bone_a/bone_b 无字典命中）', () => {
+    expect(report.bones).toEqual({ count: 2, maxDepth: 1, humanoidLike: false, convention: 'custom', mapped: 0 });
   });
 
   it('网格：三角面/顶点/蒙皮比例/材质', () => {

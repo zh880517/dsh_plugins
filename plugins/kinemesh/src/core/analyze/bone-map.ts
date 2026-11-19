@@ -540,6 +540,29 @@ export function checkBonesAgainstSkeleton(data: BonesFileData, sourcePath: strin
   };
 }
 
+// ———————— B.6 info 集成的纯统计（scene-info / gltf-json 共用） ————————
+
+/** info 的 bones 摘要（B.6）：convention = detectConvention 结果（无骨骼 null）；mapped = 字典自动命中骨数 */
+export function summarizeBones(boneNames: string[]): { convention: string | null; mapped: number } {
+  if (boneNames.length === 0) return { convention: null, mapped: 0 };
+  let mapped = 0;
+  for (const name of boneNames) {
+    if (matchCanonical(name) !== null) mapped += 1;
+  }
+  return { convention: detectConvention(boneNames).convention, mapped };
+}
+
+/** info 的映射计数（B.6）：有映射文件时覆盖字典计数；parse 级（不做骨架名校验——那是 analyze/skeleton 的职责） */
+export function mappedCountOf(data: BonesFileData): number {
+  if (data.meta.archetype === 'humanoid') return data.bones.size;
+  const names = new Set<string>();
+  if (data.root !== null) names.add(data.root);
+  if (data.head !== null) names.add(data.head);
+  for (const name of data.spine) names.add(name);
+  for (const limb of data.limbs) for (const name of limb.bones) names.add(name);
+  return names.size;
+}
+
 // ———————— 文件发现与读取（唯一 fs 入口，仅工具层调用） ————————
 
 export interface LoadBonesOptions {

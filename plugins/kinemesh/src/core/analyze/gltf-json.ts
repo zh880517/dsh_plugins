@@ -2,6 +2,7 @@
 // accessors 的 count/min/max、nodes/skins/children 全是纯 JSON，
 // 不碰二进制 buffer 就能得出片段/骨骼/网格/包围盒 —— Node 端 info 的主路径。
 import { KinemeshError, reasonOf } from '../errors.js';
+import { summarizeBones } from './bone-map.js';
 import { isHumanoidLike } from './humanoid.js';
 import { unitWarnings } from './units.js';
 import type { BoundsInfo, ClipInfo, InfoReport, MeshInfo, SourceFormat, TextureInfo } from '../types.js';
@@ -139,6 +140,8 @@ export function gltfJsonInfo(data: ArrayBuffer, fileName: string): InfoReport {
     maxDepth = jointIndices.reduce((max, joint) => Math.max(max, depthOf(joint)), 0);
     humanoidLike = isHumanoidLike(jointIndices.map((joint) => nodes[joint]?.name ?? ''));
   }
+  // B.6：convention 判定 + 字典自动命中数（映射文件覆盖由 analyze-file 在 fastInfo 之后叠加）
+  const bonesSummary = summarizeBones(jointIndices.map((joint) => nodes[joint]?.name ?? ''));
 
   // ————— 动画 —————
   const childSet = new Set<number>();
@@ -197,7 +200,7 @@ export function gltfJsonInfo(data: ArrayBuffer, fileName: string): InfoReport {
     fileName,
     fileSize: data.byteLength,
     clips,
-    bones: { count: jointIndices.length, maxDepth, humanoidLike },
+    bones: { count: jointIndices.length, maxDepth, humanoidLike, convention: bonesSummary.convention, mapped: bonesSummary.mapped },
     meshes,
     textures,
     bounds,

@@ -63,6 +63,10 @@ export interface BonesInfo {
   maxDepth: number | null;
   /** 骨骼命名/层级匹配常见 Humanoid 惯例（hips/spine/head…），提示可重定向 */
   humanoidLike: boolean;
+  /** B.6：约定识别结果（mixamo/biped/ue/vrm/rigify/custom）；无骨骼为 null */
+  convention: string | null;
+  /** B.6：映射计数——资产旁有 kinemesh-bones.json 时取映射骨骼数，否则字典自动命中数 */
+  mapped: number;
 }
 
 export interface MeshInfo {

@@ -2,6 +2,7 @@
 // FBX / OBJ 走这条路（three.js 已把结构统一成 Object3D + AnimationClip）；
 // glTF 走 gltf-json.ts 的纯 JSON 快速路径，两边产出同一份 InfoReport。
 import * as THREE from 'three';
+import { summarizeBones, mappedCountOf, type BonesFileData } from './bone-map.js';
 import { matchedCategories } from './humanoid.js';
 import { unitWarnings } from './units.js';
 import type { BoundsInfo, CanonicalScene, ClipInfo, InfoReport, MeshInfo, TextureInfo } from '../types.js';
@@ -27,6 +28,8 @@ export interface SceneInfoSource {
   fileSize: number;
   /** 格式声明支持动画（如 FBX）但没解析到 clip 时，给一条非致命提示 */
   expectsAnimation: boolean;
+  /** B.6：资产旁发现的映射文件（parse 级）；有它时 bones.mapped 取映射计数，否则字典自动命中数 */
+  bonesFileData?: BonesFileData | null;
 }
 
 export function sceneToInfo(scene: CanonicalScene, source: SceneInfoSource): InfoReport {
@@ -53,6 +56,11 @@ export function sceneToInfo(scene: CanonicalScene, source: SceneInfoSource): Inf
     maxDepth = bones.reduce((max, bone) => Math.max(max, depthOf(bone)), 0);
   }
   const humanoidLike = matchedCategories(bones.map((bone) => bone.name)).length >= 4;
+  // B.6：convention 判定 + 映射计数（映射文件优先，无映射文件给字典自动命中数）
+  const bonesSummary = summarizeBones(bones.map((bone) => bone.name));
+  const mapped = source.bonesFileData !== undefined && source.bonesFileData !== null
+    ? mappedCountOf(source.bonesFileData)
+    : bonesSummary.mapped;
 
   // ————— 网格 —————
   const meshInfos: MeshInfo[] = meshes.map((mesh) => {
@@ -101,7 +109,7 @@ export function sceneToInfo(scene: CanonicalScene, source: SceneInfoSource): Inf
     fileName: source.fileName,
     fileSize: source.fileSize,
     clips,
-    bones: { count: bones.length, maxDepth, humanoidLike },
+    bones: { count: bones.length, maxDepth, humanoidLike, convention: bonesSummary.convention, mapped },
     meshes: meshInfos,
     textures,
     bounds,

@@ -1,4 +1,6 @@
 (function() {
+	var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod), cb = null), mod.exports);
+	//#endregion
 	//#region plugins/kinemesh/src/core/errors.ts
 	var KinemeshError = class extends Error {
 		guidance;
@@ -44763,6 +44765,21 @@ void main() {
 		const ascii = new TextDecoder("utf-8", { fatal: false }).decode(head.subarray(0, Math.min(head.byteLength, 1024)));
 		return /^(v|vn|vt|f|o|g|s|mtllib|usemtl|p|l)\s/m.test(ascii);
 	}
+	(/* @__PURE__ */ __commonJSMin(((exports, module) => {
+		module.exports = {};
+	})))();
+	Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY;
+	Object.values({
+		hips: .2,
+		spine: .3,
+		head: 1,
+		UpperArm: .7,
+		LowerArm: .9,
+		Hand: 1.2,
+		UpperLeg: .5,
+		LowerLeg: .7,
+		Foot: 1
+	}).reduce((sum, w) => sum + w, 0);
 	//#endregion
 	//#region plugins/kinemesh/src/core/analyze/humanoid.ts
 	var CATEGORIES = [
@@ -44784,6 +44801,18 @@ void main() {
 	function normalize(name) {
 		return name.toLowerCase().replace(/^.*:/, "").replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, "");
 	}
+	/** 左右侧识别：Left 前缀、或独立分隔的 l/r（hand_l / L Hand / Bip01-L-Hand）。
+	*  独立 l/r 要求两侧都是分隔符或端点，避免 leg/roll/forearm 这类词误判。
+	*  左右同时出现（L_R_Arm）→ side=null（B.1 口径：都有或都无 → 未知，缺口交映射文件补）。
+	*  M7 起由 bone-map.ts 复用（B.1 side 识别同口径）。 */
+	function sideOf(name) {
+		const hasL = /left/.test(name) || /(^|[^a-z])l(?![a-z])/.test(name);
+		const hasR = /right/.test(name) || /(^|[^a-z])r(?![a-z])/.test(name);
+		if (hasL && hasR) return null;
+		if (hasL) return "L";
+		if (hasR) return "R";
+		return null;
+	}
 	function isHumanoidLike(boneNames) {
 		return matchedCategories(boneNames).length >= MIN_CATEGORIES;
 	}
@@ -44795,6 +44824,282 @@ void main() {
 			for (const [category, pattern] of CATEGORIES) if (!hit.has(category) && pattern.test(name)) hit.add(category);
 		}
 		return [...hit];
+	}
+	//#endregion
+	//#region plugins/kinemesh/src/core/analyze/bone-map.ts
+	/** CORE15（= J15，一律小写、side 显式） */
+	var CORE15_IDS = [
+		"hips",
+		"spine",
+		"head",
+		"upperarm-l",
+		"upperarm-r",
+		"lowerarm-l",
+		"lowerarm-r",
+		"hand-l",
+		"hand-r",
+		"upperleg-l",
+		"upperleg-r",
+		"lowerleg-l",
+		"lowerleg-r",
+		"foot-l",
+		"foot-r"
+	];
+	/** EXTRA（可选，接触检测用） */
+	var EXTRA_IDS = [
+		"toe-l",
+		"toe-r",
+		"neck",
+		"chest"
+	];
+	/**
+	* 前缀表（B.1，循环剥到不再匹配；开放于 vocab 同款扩展文件的机制留后续）。
+	* 剥除条件：前缀后紧跟分隔符/结尾，或前缀自带分隔符结尾（armature|）——防止 blockhead 这类词误剥。
+	*/
+	var PREFIXES = [
+		"mixamorig",
+		"bip001",
+		"bip01",
+		"bip",
+		"j_bip_c",
+		"j_sec_c",
+		"def_c",
+		"armature|",
+		"block"
+	];
+	var SEPARATOR_SPLIT = /[_:.\- ]+/;
+	var SIDE_TOKENS = /* @__PURE__ */ new Set([
+		"l",
+		"left",
+		"r",
+		"right"
+	]);
+	/** 分词：分隔符切分 + CamelCase 边界 + 字母/数字边界（bip01 → bip/01、spine01 → spine/01） */
+	function tokenize(lower) {
+		return lower.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(SEPARATOR_SPLIT).flatMap((token) => token === "" ? [] : token.split(/(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])/)).filter((token) => token !== "");
+	}
+	/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀 → 去 side/纯数字 token */
+	function normalizeBoneName(rawName) {
+		const lower = rawName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+		const side = sideOf(lower);
+		let stripped = lower;
+		let looped = true;
+		while (looped) {
+			looped = false;
+			for (const prefix of PREFIXES) {
+				if (!stripped.startsWith(prefix)) continue;
+				const rest = stripped.slice(prefix.length);
+				if (!(rest === "" || /[a-z0-9]/.test(prefix.slice(-1)) === false || SEPARATOR_SPLIT.test(rest[0] ?? ""))) continue;
+				stripped = rest;
+				looped = true;
+				break;
+			}
+		}
+		const tokens = tokenize(stripped).filter((token) => !SIDE_TOKENS.has(token) && !/^\d+$/.test(token));
+		const strippedLower = stripped.replace(/^[_:.\- ]+/, "");
+		return {
+			raw: lower,
+			lower: strippedLower === "" ? lower : strippedLower,
+			side,
+			tokens
+		};
+	}
+	/** 表序即优先级：forearm 行在 arm（upperarm）行上、upleg 行在 leg（lowerleg）行上 */
+	var SYNONYMS = [
+		{
+			canonical: "toe",
+			exact: [
+				"toe",
+				"toes",
+				"ball",
+				"toebase"
+			],
+			substring: ["thumb"]
+		},
+		{
+			canonical: "foot",
+			exact: [
+				"foot",
+				"feet",
+				"ankle"
+			],
+			substring: ["jiao"]
+		},
+		{
+			canonical: "lowerleg",
+			exact: [
+				"leg",
+				"calf",
+				"shin",
+				"knee",
+				"lowerleg"
+			],
+			substring: ["xiaotui"]
+		},
+		{
+			canonical: "upperleg",
+			exact: [
+				"thigh",
+				"upleg",
+				"upperleg"
+			],
+			substring: ["datui"]
+		},
+		{
+			canonical: "hand",
+			exact: [
+				"hand",
+				"palm",
+				"wrist"
+			],
+			substring: ["shou"]
+		},
+		{
+			canonical: "lowerarm",
+			exact: [
+				"forearm",
+				"lowerarm",
+				"elbow"
+			],
+			substring: ["xiaobi"]
+		},
+		{
+			canonical: "upperarm",
+			exact: [
+				"upperarm",
+				"arm",
+				"clavicle",
+				"collar",
+				"shoulder"
+			],
+			substring: ["gebo"]
+		},
+		{
+			canonical: "head",
+			exact: ["head"],
+			substring: ["tou"]
+		},
+		{
+			canonical: "neck",
+			exact: ["neck"],
+			substring: ["bozi"]
+		},
+		{
+			canonical: "spine",
+			exact: [
+				"spine",
+				...Array.from({ length: 10 }, (_, i) => `spine${i}`),
+				"chest",
+				"torso"
+			],
+			substring: []
+		},
+		{
+			canonical: "hips",
+			exact: [
+				"hips",
+				"hip",
+				"pelvis"
+			],
+			substring: ["ku"]
+		}
+	];
+	/**
+	* L1 字典查表（纯数据，无启发式）：先对主体 token 按「token 序 → 连接串最长优先 → 表序」精确匹配，
+	* 再按表序对全名做子串兜底；两轮都落空返回 null（缺口回退 AI，红线不做模糊匹配）。
+	* 表序保证 Mixamo ForeArm→lowerarm 先于 Arm→upperarm、UpLeg→upperleg 先于 Leg→lowerleg 语义。
+	*/
+	function matchCanonical(rawName) {
+		const normalized = normalizeBoneName(rawName);
+		const tokens = normalized.tokens;
+		for (let start = 0; start < tokens.length; start += 1) for (let end = tokens.length; end > start; end -= 1) {
+			const run = tokens.slice(start, end).join("");
+			for (const row of SYNONYMS) if (row.exact.includes(run)) return {
+				canonical: row.canonical,
+				side: normalized.side,
+				how: "exact"
+			};
+		}
+		for (const row of SYNONYMS) for (const sub of row.substring) if (normalized.lower.includes(sub)) return {
+			canonical: row.canonical,
+			side: normalized.side,
+			how: "substring"
+		};
+		return null;
+	}
+	/** 家族指纹（B.3）：mixamo/biped/vrm 看原始名前缀，ue 看原始名后缀+主体 token，rigify 看点分后缀。
+	*  指纹一律吃 raw（原名小写、未剥前缀），否则 mixamorig:/bip01/j_bip 这类前缀自身会被 B.1 剥掉。 */
+	var FINGERPRINTS = [
+		{
+			id: "mixamo",
+			hit: (raw) => raw.startsWith("mixamorig:")
+		},
+		{
+			id: "biped",
+			hit: (raw) => /^bip0\d+[_ ]/.test(raw)
+		},
+		{
+			id: "ue",
+			hit: (raw, tokens) => /_(l|r)$/.test(raw) && tokens.some((token) => [
+				"thigh",
+				"calf",
+				"upperarm",
+				"lowerarm"
+			].includes(token))
+		},
+		{
+			id: "vrm",
+			hit: (raw) => raw.startsWith("j_bip")
+		},
+		{
+			id: "rigify",
+			hit: (raw) => /(upper_arm|forearm|hand)\.[lr]$/.test(raw)
+		}
+	];
+	/** score = 指纹命中骨数 / 总骨数；convention = argmax 且 ≥ CONVENTION_MIN，否则 custom（B.3） */
+	function detectConvention(boneNames) {
+		const counts = /* @__PURE__ */ new Map();
+		for (const name of boneNames) {
+			const normalized = normalizeBoneName(name);
+			for (const fingerprint of FINGERPRINTS) if (fingerprint.hit(normalized.raw, normalized.tokens)) {
+				counts.set(fingerprint.id, (counts.get(fingerprint.id) ?? 0) + 1);
+				break;
+			}
+		}
+		const total = boneNames.length;
+		let best = "custom";
+		let bestCount = 0;
+		for (const [id, count] of counts) if (count > bestCount) {
+			best = id;
+			bestCount = count;
+		}
+		const score = total > 0 ? bestCount / total : 0;
+		if (bestCount === 0 || score < .5) return {
+			convention: "custom",
+			matched: bestCount,
+			total,
+			score
+		};
+		return {
+			convention: best,
+			matched: bestCount,
+			total,
+			score
+		};
+	}
+	`${[...CORE15_IDS, ...EXTRA_IDS].join(" / ")}`;
+	/** info 的 bones 摘要（B.6）：convention = detectConvention 结果（无骨骼 null）；mapped = 字典自动命中骨数 */
+	function summarizeBones(boneNames) {
+		if (boneNames.length === 0) return {
+			convention: null,
+			mapped: 0
+		};
+		let mapped = 0;
+		for (const name of boneNames) if (matchCanonical(name) !== null) mapped += 1;
+		return {
+			convention: detectConvention(boneNames).convention,
+			mapped
+		};
 	}
 	//#endregion
 	//#region plugins/kinemesh/src/core/analyze/units.ts
@@ -44872,6 +45177,7 @@ void main() {
 			maxDepth = jointIndices.reduce((max, joint) => Math.max(max, depthOf(joint)), 0);
 			humanoidLike = isHumanoidLike(jointIndices.map((joint) => nodes[joint]?.name ?? ""));
 		}
+		const bonesSummary = summarizeBones(jointIndices.map((joint) => nodes[joint]?.name ?? ""));
 		const childSet = /* @__PURE__ */ new Set();
 		for (const node of nodes) for (const child of node.children ?? []) childSet.add(child);
 		const clips = [];
@@ -44914,7 +45220,9 @@ void main() {
 			bones: {
 				count: jointIndices.length,
 				maxDepth,
-				humanoidLike
+				humanoidLike,
+				convention: bonesSummary.convention,
+				mapped: bonesSummary.mapped
 			},
 			meshes,
 			textures,

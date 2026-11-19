@@ -15,7 +15,7 @@ describe('analyzeModel × FBX（合成）', () => {
     expect(report.clips).toHaveLength(1);
     expect(report.clips[0]).toMatchObject({ name: 'Take 001', channels: 1, rootMotion: false });
     expect(report.clips[0]?.duration).toBeCloseTo(2, 3);
-    expect(report.bones).toEqual({ count: 0, maxDepth: null, humanoidLike: false });
+    expect(report.bones).toEqual({ count: 0, maxDepth: null, humanoidLike: false, convention: null, mapped: 0 });
     expect(report.meshes).toHaveLength(1);
     // FBXLoader 无法去重时按「多边形角点」生成顶点：4 片三角面 = 12 个角点
     expect(report.meshes[0]).toMatchObject({ name: 'cube', triangles: 4, vertices: 12, materials: 1 });

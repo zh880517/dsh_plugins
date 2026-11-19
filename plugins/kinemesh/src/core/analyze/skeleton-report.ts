@@ -134,6 +134,8 @@ export interface SkeletonReport {
     views: ['front', 'side'];
     mode: 'skeleton';
     shots: 'auto' | 'none' | 'all';
+    /** B.4 标注叠加的现状与协作口径：renderer 无文字精灵机制，--bone-labels 留后续里程碑 */
+    boneLabels: { renderParam: false; guidance: string };
     note: string;
   };
   /** 映射文件 schema 尾注（B.5，AI 写文件的唯一模板来源） */
@@ -331,6 +333,13 @@ export function buildSkeletonReport(scene: CanonicalScene, options: BuildSkeleto
       views: ['front', 'side'],
       mode: 'skeleton',
       shots,
+      boneLabels: {
+        renderParam: false,
+        guidance:
+          'kinemesh_render 尚无 --bone-labels 文字叠加参数（renderer 无文字精灵机制，留后续里程碑）：' +
+          '按本配方用 skeleton（或 bones-overlay）模式出图，AI 读图时对照本报告的 restWorldPos/层级 ' +
+          '把图中关节与骨骼名一一对应后定案。',
+      },
       note:
         '标注截图由既有 kinemesh_render 执行：frames [0]（rest 姿态）、viewPreset front/side、mode skeleton、' +
         '相机拉远（distance ×2.2 近似正交）；PNG 命名 labels-<view>-<batch 两位>.png。' +

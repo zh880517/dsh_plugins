@@ -8,7 +8,7 @@ describe('analyzeModel × OBJ', () => {
     const report = await analyzeModel(encodeText(buildCubeObj()), 'cube.obj');
     expect(report.format).toBe('obj');
     expect(report.clips).toHaveLength(0);
-    expect(report.bones).toEqual({ count: 0, maxDepth: null, humanoidLike: false });
+    expect(report.bones).toEqual({ count: 0, maxDepth: null, humanoidLike: false, convention: null, mapped: 0 });
     expect(report.meshes).toHaveLength(1);
     // OBJLoader 生成非索引几何：每个角点一个顶点（12 面 × 3）
     expect(report.meshes[0]).toMatchObject({ name: 'cube', triangles: 12, vertices: 36, materials: 1 });

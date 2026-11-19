@@ -28,6 +28,7 @@ npm i playwright && npx playwright install chromium
 ```bash
 node <本目录>/cli/kinemesh.js info <file>
 node <本目录>/cli/kinemesh.js analyze <file> [选项]
+node <本目录>/cli/kinemesh.js skeleton <file> [选项]
 node <本目录>/cli/kinemesh.js render <file> [选项]
 ```
 
@@ -123,6 +124,39 @@ node <本目录>/cli/kinemesh.js render <file> [选项]
   `bodyDir` / `hipsLow`；`{"anyOf": [{…}, …]}` 任一子条件组命中即可，不与其他字段混用。
 - `action`：`label`（缺省，命中打 term）/ `suppress`（命中 guess 置 other，压误报）/ `demote`（降级 gesture）。
 - 词条按序插在内置决策表前，首条命中生效（first-match）；命中只覆盖 guess，label（确定性层）不动。
+
+### 骨架识别两级兜底（kinemesh_skeleton）
+
+骨架识别与映射的分工（拍板 #12）：**工具只做字典查表（Mixamo/Biped/UE/VRM/Rigify/常见英文/少量拼音）
+与约定识别**——不做模糊匹配、不做几何启发；识别缺口一律回退 AI（你）定案，结论由工具确定性消费。
+
+标准命名 rig（字典全覆盖）调 `skeleton` 直达全映射，不出截图、不用你介入；非标命名（Bone01… /
+四足 / 带翼 / 链形）走两级兜底：
+
+1. **第一级（读数据）**：`skeleton <file>` 产出 `skeleton-report.json` + digest——每骨
+   名称/层级/rest 世界坐标/partGuess/置信、convention 约定、映射覆盖（CORE15 n/15）、未映射清单、
+   结构统计（limbChains/groundTips/symmetryPairs/maxChainDepth）。你先读 report **判 archetype**
+   （humanoid/quadruped/winged/multiped/chain/custom），人形按名称/层级/rest 坐标对应部位；
+   非人形给 root/head/脊柱/肢链（role: leg|arm|wing|tail）。
+2. **第二级（读图，命名不透明才用）**：按 digest 批次清单（LABELS_PER_SHOT=12，stride 分批防叠）
+   用 `render` 的 `--mode skeleton`（或 bones-overlay）+ `--view-preset front/side --frames 0` 出图，
+   逐张对照 report 的 restWorldPos/层级把图中关节对上骨骼名，再定案。
+   （`--bone-labels` 文字叠加参数未实装——renderer 无文字精灵机制，读图靠 report 坐标对位。）
+3. **定案落盘**：把结论写 `<资产同目录>/kinemesh-bones.json`（schema 见 report 尾注；最小示例：）
+
+```json
+{
+  "_meta": { "archetype": "humanoid", "by": "ai" },
+  "bones": { "Hips": "hips", "Spine": "spine", "Head_01": "head", "Hand_L": "hand-l" }
+}
+```
+
+   值只允许白名单 id：hips / spine / head / upperarm-l|r / lowerarm-l|r / hand-l|r /
+   upperleg-l|r / lowerleg-l|r / foot-l|r / toe-l|r / neck / chest（side 必须显式，一个 id 一根骨骼）；
+   非 humanoid 改给 root（必填）/head/spine/limbs，bones 字段忽略。
+4. **确定性消费**：文件放资产同目录后，`skeleton` / `analyze` 重跑自动发现（`--bone-map` 可显式指定，
+   路径不存在直接报错）——映射优先于字典，J15 解析按映射走、不再回退 Top-15，info 的 `bones.mapped`
+   计数取映射。analyze/joints 的解析顺序：映射文件 > 字典查表 > Top-15 回退（回退时 warnings 附补映射指引）。
 
 ## 转换指引（明确不支持的格式）
 
