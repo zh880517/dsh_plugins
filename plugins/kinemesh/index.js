@@ -29681,234 +29681,6 @@ function headBytes(data) {
 }
 //#endregion
 //#region
-var VIEW_PRESETS = {
-	front: {
-		azimuth: 0,
-		elevation: 0
-	},
-	side: {
-		azimuth: 90,
-		elevation: 0
-	},
-	back: {
-		azimuth: 180,
-		elevation: 0
-	},
-	"three-quarter": {
-		azimuth: 45,
-		elevation: 20
-	}
-};
-/** orbit8 = 八方位连拍：每 45° 一个方位 */
-var ORBIT8_AZIMUTHS = [
-	0,
-	45,
-	90,
-	135,
-	180,
-	225,
-	270,
-	315
-];
-var DEFAULT_DISTANCE_FACTOR = 2.2;
-/**
-* 把工具/CLI 入参（view 或 viewPreset 二选一 + mode/clip/frame）解析成规范 ViewState。
-* 场景信息（bounds/clips）由调用方提供，用于缺省 target/distance 与 clip 校验。
-* 参数不合法时抛 KinemeshError（自愈文案）。
-*/
-function resolveView(input, scene) {
-	const warnings = [];
-	const mode = parseMode(input.mode);
-	const clip = parseClip(input.clip, scene.clips);
-	const frame = parseFrame(input.frame, clip);
-	let azimuth = null;
-	let elevation = null;
-	let orbit8 = false;
-	const hasView = input.view !== void 0 && input.view !== null;
-	const hasPreset = input.viewPreset !== void 0 && input.viewPreset !== null;
-	if (hasView && hasPreset) throw new KinemeshError("view 与 viewPreset 同时给出了，二选一。", "要么给完整 view 对象（azimuth/elevation/distance/target/fov），要么只给 viewPreset 名称。");
-	if (hasView) {
-		const camera = parseViewCamera(input.view, scene);
-		azimuth = camera.azimuth;
-		elevation = camera.elevation;
-		return {
-			view: withDefaults({
-				camera: {
-					...camera,
-					target: camera.target,
-					fov: camera.fov
-				},
-				clip,
-				frame,
-				mode
-			}, scene),
-			orbit8: false,
-			warnings
-		};
-	}
-	if (hasPreset) {
-		const preset = String(input.viewPreset);
-		if (preset === "orbit8") {
-			orbit8 = true;
-			elevation = 20;
-		} else {
-			const definition = VIEW_PRESETS[preset];
-			if (definition === void 0) throw new KinemeshError(`未知 viewPreset「${preset}」。`, `可选值：${Object.keys(VIEW_PRESETS).join(" / ")} / orbit8（八方位连拍）。`);
-			azimuth = definition.azimuth;
-			elevation = definition.elevation;
-		}
-	}
-	const view = {
-		camera: {
-			azimuth: azimuth ?? VIEW_PRESETS["three-quarter"].azimuth,
-			elevation: elevation ?? VIEW_PRESETS["three-quarter"].elevation,
-			distance: scene.radius * DEFAULT_DISTANCE_FACTOR,
-			target: [...scene.center],
-			fov: 40
-		},
-		clip,
-		frame,
-		mode
-	};
-	if (input.viewPreset === void 0 && input.view === void 0) warnings.push("未指定视角，按 three-quarter 缺省视角渲染。");
-	if (frame !== null && clip === null) warnings.push("指定了 frame 但没指定 clip：按静态姿态渲染，frame 被忽略。");
-	return {
-		view: withDefaults(view, scene),
-		orbit8,
-		warnings
-	};
-}
-function withDefaults(view, scene) {
-	const camera = view.camera;
-	return {
-		camera: {
-			azimuth: normalizeDegrees(camera.azimuth),
-			elevation: clamp(camera.elevation, -89, 89),
-			distance: camera.distance > 0 ? camera.distance : scene.radius * DEFAULT_DISTANCE_FACTOR,
-			target: camera.target,
-			fov: clamp(camera.fov, 5, 120)
-		},
-		clip: view.clip,
-		frame: view.frame,
-		mode: view.mode
-	};
-}
-/** orbit8 展开：返回逐方位的方位角表 */
-function orbit8Azimuths() {
-	return [...ORBIT8_AZIMUTHS];
-}
-function normalizeDegrees(degrees) {
-	const wrapped = degrees % 360;
-	return wrapped < 0 ? wrapped + 360 : wrapped;
-}
-function clamp(value, low, high) {
-	return Math.min(high, Math.max(low, value));
-}
-function parseMode(input) {
-	if (input === void 0 || input === null) return "default";
-	const value = String(input);
-	if (value === "default" || value === "wireframe" || value === "skeleton" || value === "bones-overlay") return value;
-	throw new KinemeshError(`未知渲染模式「${value}」。`, "可选值：default / wireframe / skeleton / bones-overlay。");
-}
-function parseClip(input, clips) {
-	if (input === void 0 || input === null || input === "") return null;
-	const value = String(input);
-	if (!clips.includes(value)) throw new KinemeshError(`场景里没有动画片段「${value}」。`, clips.length === 0 ? "这个模型没有动画片段，去掉 clip 参数按静态渲染。" : `可用片段：${clips.join(" / ")}（先调 kinemesh_info 确认）。`);
-	return value;
-}
-function parseFrame(input, clip) {
-	if (input === void 0 || input === null) return clip === null ? null : 0;
-	const value = Number(input);
-	if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) throw new KinemeshError(`frame 必须是非负整数帧号，收到「${String(input)}」。`, "frame 是帧号（整数），按 30fps 换算成秒：time = frame / 30。");
-	return value;
-}
-function parseViewCamera(input, scene) {
-	if (typeof input !== "object" || input === null) throw new KinemeshError("view 必须是对象（camera: {azimuth,elevation,distance,target,fov}）。", "view 形如 {\"camera\":{\"azimuth\":45,\"elevation\":15,\"distance\":3.2,\"target\":[0,1,0],\"fov\":40}}；省略字段按场景包围盒缺省。");
-	const raw = input;
-	const rawCamera = typeof raw.camera === "object" && raw.camera !== null ? raw.camera : raw;
-	const numberAt = (name, fallback) => {
-		const value = rawCamera[name];
-		if (value === void 0 || value === null) {
-			if (fallback !== void 0) return fallback;
-			throw new KinemeshError(`view.camera.${name} 缺失。`, `补上 ${name}（数字）；或直接用 viewPreset 简化。`);
-		}
-		const parsed = Number(value);
-		if (!Number.isFinite(parsed)) throw new KinemeshError(`view.camera.${name} 不是数字：${String(value)}。`, `补上合法数字；或直接用 viewPreset 简化。`);
-		return parsed;
-	};
-	const rawTarget = Array.isArray(rawCamera.target) ? rawCamera.target : scene.center;
-	const target = [
-		Number(rawTarget[0] ?? scene.center[0]),
-		Number(rawTarget[1] ?? scene.center[1]),
-		Number(rawTarget[2] ?? scene.center[2])
-	];
-	if (target.some((axis) => !Number.isFinite(axis))) throw new KinemeshError("view.camera.target 必须是 [x, y, z] 数字数组。", "例如 \"target\": [0, 1, 0]。");
-	return {
-		azimuth: numberAt("azimuth", 0),
-		elevation: numberAt("elevation", 0),
-		distance: numberAt("distance", scene.radius * DEFAULT_DISTANCE_FACTOR),
-		target,
-		fov: numberAt("fov", 40)
-	};
-}
-//#endregion
-//#region
-function parseAnalyzeRequest(body) {
-	if (typeof body !== "object" || body === null) return {
-		ok: false,
-		message: "请求体必须是 JSON 对象。"
-	};
-	const raw = body;
-	const path = typeof raw.path === "string" ? raw.path.trim() : "";
-	if (path === "") return {
-		ok: false,
-		message: "缺少 path（模型文件路径）。"
-	};
-	const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
-	if (sessionId === "") return {
-		ok: false,
-		message: "缺少 sessionId（当前会话 id）。"
-	};
-	const clip = typeof raw.clip === "string" && raw.clip.trim() !== "" ? raw.clip.trim() : null;
-	const frameRaw = raw.frame;
-	return {
-		ok: true,
-		request: {
-			path,
-			sessionId,
-			clip,
-			frame: typeof frameRaw === "number" && Number.isFinite(frameRaw) && frameRaw >= 0 && Number.isInteger(frameRaw) ? frameRaw : clip === null ? null : 0,
-			view: isViewStateLike(raw.view) ? raw.view : null,
-			note: typeof raw.note === "string" && raw.note.trim() !== "" ? raw.note.trim() : null
-		}
-	};
-}
-function isViewStateLike(value) {
-	if (typeof value !== "object" || value === null) return false;
-	const camera = value.camera;
-	return typeof camera === "object" && camera !== null;
-}
-/** 组装投递给 Agent 的用户态消息（followup）：视角描述 + 明确的工具调用指令 */
-function composeAnalyzeMessage(request) {
-	const view = request.view;
-	const viewText = view === null ? "缺省视角（three-quarter：azimuth 45° / elevation 20°，距离按模型包围球自适应）" : `azimuth ${round(view.camera.azimuth)}°，elevation ${round(view.camera.elevation)}°，distance ${round(view.camera.distance)}，target [${view.camera.target.map((axis) => round(axis)).join(", ")}]，fov ${round(view.camera.fov)}，渲染模式 ${view.mode}`;
-	const clipText = request.clip === null ? "（无动画/静态）" : `「${request.clip}」`;
-	const frameText = request.frame === null ? "0" : String(request.frame);
-	const lines = [
-		"【动析 kinemesh】用户在 3D 预览面板里请求对模型做视觉分析。",
-		`模型文件：${request.path}`,
-		`动画片段：${clipText}；帧号：${frameText}（换算 time = frame / 30）`,
-		`视角：${viewText}`
-	];
-	if (request.note !== null) lines.push("用户附言：", "\"\"\"", request.note, "\"\"\"");
-	lines.push("请调用 kinemesh_render 渲染上面这个视角的截图（clip/frames/view 按上面取值；view 直接传完整对象），然后用读图工具查看 PNG，给出视觉分析（结构、动作质量、穿模/悬空、比例等，按用户附言侧重）。");
-	return lines.join("\n");
-}
-function round(value) {
-	return Number.isInteger(value) ? value : Number(value.toFixed(2));
-}
-//#endregion
-//#region
 var SAMPLE_COUNT_MAX = 24e3;
 /** 接触检测双阈值（A.6）：脚点高度 < 0.05H 且速度 < 0.30 H/s；状态翻转需连续 2 帧成立 */
 var CONTACT_HEIGHT = .05;
@@ -31102,6 +30874,178 @@ function segmentClip(channels, sample, options = {}) {
 }
 //#endregion
 //#region
+var VIEW_PRESETS = {
+	front: {
+		azimuth: 0,
+		elevation: 0
+	},
+	side: {
+		azimuth: 90,
+		elevation: 0
+	},
+	back: {
+		azimuth: 180,
+		elevation: 0
+	},
+	"three-quarter": {
+		azimuth: 45,
+		elevation: 20
+	}
+};
+/** orbit8 = 八方位连拍：每 45° 一个方位 */
+var ORBIT8_AZIMUTHS = [
+	0,
+	45,
+	90,
+	135,
+	180,
+	225,
+	270,
+	315
+];
+var DEFAULT_DISTANCE_FACTOR = 2.2;
+/**
+* 把工具/CLI 入参（view 或 viewPreset 二选一 + mode/clip/frame）解析成规范 ViewState。
+* 场景信息（bounds/clips）由调用方提供，用于缺省 target/distance 与 clip 校验。
+* 参数不合法时抛 KinemeshError（自愈文案）。
+*/
+function resolveView(input, scene) {
+	const warnings = [];
+	const mode = parseMode(input.mode);
+	const clip = parseClip(input.clip, scene.clips);
+	const frame = parseFrame(input.frame, clip);
+	let azimuth = null;
+	let elevation = null;
+	let orbit8 = false;
+	const hasView = input.view !== void 0 && input.view !== null;
+	const hasPreset = input.viewPreset !== void 0 && input.viewPreset !== null;
+	if (hasView && hasPreset) throw new KinemeshError("view 与 viewPreset 同时给出了，二选一。", "要么给完整 view 对象（azimuth/elevation/distance/target/fov），要么只给 viewPreset 名称。");
+	if (hasView) {
+		const camera = parseViewCamera(input.view, scene);
+		azimuth = camera.azimuth;
+		elevation = camera.elevation;
+		return {
+			view: withDefaults({
+				camera: {
+					...camera,
+					target: camera.target,
+					fov: camera.fov
+				},
+				clip,
+				frame,
+				mode
+			}, scene),
+			orbit8: false,
+			warnings
+		};
+	}
+	if (hasPreset) {
+		const preset = String(input.viewPreset);
+		if (preset === "orbit8") {
+			orbit8 = true;
+			elevation = 20;
+		} else {
+			const definition = VIEW_PRESETS[preset];
+			if (definition === void 0) throw new KinemeshError(`未知 viewPreset「${preset}」。`, `可选值：${Object.keys(VIEW_PRESETS).join(" / ")} / orbit8（八方位连拍）。`);
+			azimuth = definition.azimuth;
+			elevation = definition.elevation;
+		}
+	}
+	const view = {
+		camera: {
+			azimuth: azimuth ?? VIEW_PRESETS["three-quarter"].azimuth,
+			elevation: elevation ?? VIEW_PRESETS["three-quarter"].elevation,
+			distance: scene.radius * DEFAULT_DISTANCE_FACTOR,
+			target: [...scene.center],
+			fov: 40
+		},
+		clip,
+		frame,
+		mode
+	};
+	if (input.viewPreset === void 0 && input.view === void 0) warnings.push("未指定视角，按 three-quarter 缺省视角渲染。");
+	if (frame !== null && clip === null) warnings.push("指定了 frame 但没指定 clip：按静态姿态渲染，frame 被忽略。");
+	return {
+		view: withDefaults(view, scene),
+		orbit8,
+		warnings
+	};
+}
+function withDefaults(view, scene) {
+	const camera = view.camera;
+	return {
+		camera: {
+			azimuth: normalizeDegrees(camera.azimuth),
+			elevation: clamp(camera.elevation, -89, 89),
+			distance: camera.distance > 0 ? camera.distance : scene.radius * DEFAULT_DISTANCE_FACTOR,
+			target: camera.target,
+			fov: clamp(camera.fov, 5, 120)
+		},
+		clip: view.clip,
+		frame: view.frame,
+		mode: view.mode
+	};
+}
+/** orbit8 展开：返回逐方位的方位角表 */
+function orbit8Azimuths() {
+	return [...ORBIT8_AZIMUTHS];
+}
+function normalizeDegrees(degrees) {
+	const wrapped = degrees % 360;
+	return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+function clamp(value, low, high) {
+	return Math.min(high, Math.max(low, value));
+}
+function parseMode(input) {
+	if (input === void 0 || input === null) return "default";
+	const value = String(input);
+	if (value === "default" || value === "wireframe" || value === "skeleton" || value === "bones-overlay") return value;
+	throw new KinemeshError(`未知渲染模式「${value}」。`, "可选值：default / wireframe / skeleton / bones-overlay。");
+}
+function parseClip(input, clips) {
+	if (input === void 0 || input === null || input === "") return null;
+	const value = String(input);
+	if (!clips.includes(value)) throw new KinemeshError(`场景里没有动画片段「${value}」。`, clips.length === 0 ? "这个模型没有动画片段，去掉 clip 参数按静态渲染。" : `可用片段：${clips.join(" / ")}（先调 kinemesh_info 确认）。`);
+	return value;
+}
+function parseFrame(input, clip) {
+	if (input === void 0 || input === null) return clip === null ? null : 0;
+	const value = Number(input);
+	if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) throw new KinemeshError(`frame 必须是非负整数帧号，收到「${String(input)}」。`, "frame 是帧号（整数），按 30fps 换算成秒：time = frame / 30。");
+	return value;
+}
+function parseViewCamera(input, scene) {
+	if (typeof input !== "object" || input === null) throw new KinemeshError("view 必须是对象（camera: {azimuth,elevation,distance,target,fov}）。", "view 形如 {\"camera\":{\"azimuth\":45,\"elevation\":15,\"distance\":3.2,\"target\":[0,1,0],\"fov\":40}}；省略字段按场景包围盒缺省。");
+	const raw = input;
+	const rawCamera = typeof raw.camera === "object" && raw.camera !== null ? raw.camera : raw;
+	const numberAt = (name, fallback) => {
+		const value = rawCamera[name];
+		if (value === void 0 || value === null) {
+			if (fallback !== void 0) return fallback;
+			throw new KinemeshError(`view.camera.${name} 缺失。`, `补上 ${name}（数字）；或直接用 viewPreset 简化。`);
+		}
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) throw new KinemeshError(`view.camera.${name} 不是数字：${String(value)}。`, `补上合法数字；或直接用 viewPreset 简化。`);
+		return parsed;
+	};
+	const rawTarget = Array.isArray(rawCamera.target) ? rawCamera.target : scene.center;
+	const target = [
+		Number(rawTarget[0] ?? scene.center[0]),
+		Number(rawTarget[1] ?? scene.center[1]),
+		Number(rawTarget[2] ?? scene.center[2])
+	];
+	if (target.some((axis) => !Number.isFinite(axis))) throw new KinemeshError("view.camera.target 必须是 [x, y, z] 数字数组。", "例如 \"target\": [0, 1, 0]。");
+	return {
+		azimuth: numberAt("azimuth", 0),
+		elevation: numberAt("elevation", 0),
+		distance: numberAt("distance", scene.radius * DEFAULT_DISTANCE_FACTOR),
+		target,
+		fov: numberAt("fov", 40)
+	};
+}
+//#endregion
+//#region
 var J15_PLAN = [
 	{
 		id: "hips",
@@ -31243,6 +31187,19 @@ function resolveSampleFps(sampleFps) {
 	if (sampleFps === void 0) return 15;
 	if (!Number.isFinite(sampleFps) || sampleFps < 1 || sampleFps > 60) throw new KinemeshError(`sampleFps 超出范围（1–60）：${sampleFps}。`, `把 sampleFps 放回 1–60（缺省 15）。`);
 	return sampleFps;
+}
+/** 采样网格对齐容差：t0·f_s / t1·f_s 落在整数码头上时不受浮点噪声影响 */
+var RANGE_GRID_EPS = 1e-9;
+/**
+* range 切片校验（M6f §6.7）：0 ≤ t0 < t1 ≤ duration；t1 越界的容差 = 网格容差。
+* 校验不通过给三段式（口径同 A.14 拒绝路径）；通过时返回夹好的 [t0, t1]。
+*/
+function resolveRange(range, clipName, duration) {
+	if (range === void 0) return null;
+	const [t0, t1] = range;
+	if (!Number.isFinite(t0) || !Number.isFinite(t1) || t0 < 0 || t0 >= t1) throw new KinemeshError(`range 参数不合法：[${t0}, ${t1}]。`, `range 是 [t0, t1] 秒数组，要求 0 ≤ t0 < t1 ≤ 片段时长；先用 kinemesh_info 查 clips[].duration 再给 range。`);
+	if (t1 > duration + RANGE_GRID_EPS) throw new KinemeshError(`range 越界：t1 = ${t1}s 超过片段「${clipName}」时长 ${duration}s。`, `把 t1 放回 0–${duration}s 且保持 t0 < t1；先用 kinemesh_info 查 clips[].duration。`);
+	return [t0, Math.min(t1, duration)];
 }
 function collectCandidates(root) {
 	const bones = [];
@@ -31490,15 +31447,18 @@ function sampleClip(scene, options = {}) {
 	const sampleFps = resolveSampleFps(options.sampleFps);
 	const duration = clip.duration;
 	if (!Number.isFinite(duration) || duration <= 0) throw new KinemeshError(`片段过短：动画片段「${clip.name}」时长为 ${duration}s，无法采样。`, "该 clip 没有有效时长；先用 kinemesh_info 确认 clips[].duration，换一个有时长的 clip。");
-	const frameCount = Math.ceil(duration * sampleFps);
-	if (frameCount < 3) throw new KinemeshError(`片段过短：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`, `提高 sampleFps（1–60）；太短的片段不适合动作分析，换更长的 clip。`);
-	if (duration * sampleFps > 24e3) throw new KinemeshError(`采样点过多：时长 ${duration}s × sampleFps ${sampleFps} = ${Math.ceil(duration * sampleFps)} 超过上限 ${SAMPLE_COUNT_MAX}。`, `降低 sampleFps（当前 ${sampleFps}），或用 range 参数切片后分段分析。`);
+	const range = resolveRange(options.range, clip.name, duration);
+	const rangeEnd = range ? range[1] : duration;
+	const kStart = range ? Math.ceil(range[0] * sampleFps - RANGE_GRID_EPS) : 0;
+	const frameCount = range ? Math.floor(rangeEnd * sampleFps + RANGE_GRID_EPS) - kStart + 1 : Math.ceil(duration * sampleFps);
+	if (frameCount < 3) throw new KinemeshError(range ? `片段过短：range [${range[0]}, ${range[1]}]s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。` : `片段过短：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`, `提高 sampleFps（1–60）${range ? "或加大 range 跨度" : ""}；太短的片段不适合动作分析，换更长的 clip。`);
+	if (frameCount > 24e3) throw new KinemeshError(range ? `采样点过多：range [${range[0]}, ${range[1]}]s × sampleFps ${sampleFps} = ${frameCount} 超过上限 ${SAMPLE_COUNT_MAX}。` : `采样点过多：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 超过上限 ${SAMPLE_COUNT_MAX}。`, `降低 sampleFps（当前 ${sampleFps}），或用 range 参数切片后分段分析。`);
 	const root = scene.object;
 	const snapshot = snapshotRestPose(root);
 	try {
 		const prepared = prepareTracks(root, clip);
 		const dt = 1 / sampleFps;
-		const times = Array.from({ length: frameCount }, (_, k) => k * dt);
+		const times = Array.from({ length: frameCount }, (_, k) => (kStart + k) * dt);
 		const frames = times.map((time) => Math.round(time * 30));
 		const evaluateAt = (time) => {
 			for (const track of prepared.bindings) {
@@ -31546,7 +31506,7 @@ function sampleClip(scene, options = {}) {
 				rootQuaternions[k * 4 + 3] = scratchQ.w;
 			}
 		}
-		evaluateAt(duration);
+		evaluateAt(rangeEnd);
 		const endpointPositions = new Float64Array(jointCount * 3);
 		for (let j = 0; j < jointCount; j += 1) {
 			jointObjects[j].getWorldPosition(scratch);
@@ -31570,7 +31530,7 @@ function sampleClip(scene, options = {}) {
 			frameCount,
 			times,
 			frames,
-			endpointTime: duration,
+			endpointTime: rangeEnd,
 			positions,
 			endpointPositions,
 			jointBasis: resolution.basis,
@@ -31585,7 +31545,8 @@ function sampleClip(scene, options = {}) {
 				endpointQuaternion
 			} : null,
 			declaredJoints: resolution.declaredJoints,
-			warnings
+			warnings,
+			...range ? { range } : {}
 		};
 	} finally {
 		restoreRestPose(root, snapshot);
@@ -31943,7 +31904,8 @@ function buildSummary(input) {
 			sampleFps: sample.sampleFps,
 			fps: input.fps,
 			frameCount: sample.frameCount,
-			frames: frames30
+			frames: frames30,
+			...input.range ? { range: input.range } : {}
 		},
 		jointBasis: {
 			basis: sample.jointBasis,
@@ -31990,10 +31952,16 @@ function segmentsJson(segments) {
 //#endregion
 //#region
 function analyzeClip(scene, options = {}) {
+	if (options.clipName === "*") return analyzeAllClips(scene, options);
+	return analyzeOneClip(scene, options);
+}
+/** 单 clip 分析（M6d 原路径，结构不变）：sample → channels → segment → describe → report */
+function analyzeOneClip(scene, options) {
 	const sample = sampleClip(scene, {
 		clipName: options.clipName,
 		sampleFps: options.sampleFps,
-		joints: options.joints
+		joints: options.joints,
+		range: options.range
 	});
 	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
 	const channels = computeChannels(sample, { scale });
@@ -32026,6 +31994,7 @@ function analyzeClip(scene, options = {}) {
 		keyframes,
 		normalize,
 		warnings: sample.warnings,
+		range: sample.range,
 		smooth: options.smooth,
 		loopCheck,
 		loopSentence: `循环 ${loopCheck.verdict}`,
@@ -32058,6 +32027,70 @@ function analyzeClip(scene, options = {}) {
 		digest,
 		files
 	};
+}
+/**
+* '*' 批量分析（M6f §6.7）：每个 clip 一份完整 summary + digest 内联，中间文件名加
+* `<clip>/` 前缀（工具层按 files[].name 分桶落 `<dir>/<clip>/` 子目录）。
+* 单 clip 的返回结构不变（向后兼容红线）：批量口径只体现在 batch 标记与 clips[] 字段。
+* 实现：把场景视图收窄成单 clip 再走 analyzeOneClip——未命名 clip / 重名 clip 都按
+* animations 数组序号精确定位，不靠 pickClip 的按名匹配。
+*/
+function analyzeAllClips(scene, options) {
+	if (options.range !== void 0) throw new KinemeshError("range 切片与 clip:\"*\" 批量不能同用：批量按各 clip 全片分析。", "切片分析请指定单一 clip（clip 名 + range）；批量分析去掉 range 参数。");
+	if (scene.animations.length === 0) analyzeOneClip({
+		...scene,
+		animations: []
+	}, {
+		...options,
+		clipName: void 0
+	});
+	const usedDirs = /* @__PURE__ */ new Set();
+	const perClip = scene.animations.map((clip) => {
+		const one = analyzeOneClip({
+			...scene,
+			animations: [clip]
+		}, {
+			...options,
+			clipName: void 0
+		});
+		return {
+			name: clip.name,
+			dir: uniqueClipDir(clip.name, usedDirs),
+			analysis: one
+		};
+	});
+	const files = perClip.flatMap(({ dir, analysis }) => analysis.files.map((file) => ({
+		...file,
+		name: `${dir}/${file.name}`
+	})));
+	return {
+		summary: {
+			batch: true,
+			clips: perClip.map(({ name, analysis }) => ({
+				name,
+				summary: analysis.summary,
+				digest: analysis.digest
+			}))
+		},
+		digest: {
+			batch: true,
+			clips: perClip.map(({ name, analysis }) => ({
+				name,
+				digest: analysis.digest
+			}))
+		},
+		files,
+		batch: true
+	};
+}
+/** clip 子目录名（§6.7 `<dir>/<clip>/`）：安全化 + 重名去重（追加 -2/-3…），空名回退序号 */
+function uniqueClipDir(name, used) {
+	const safe = name.replace(/[^\w.-]+/g, "_");
+	let candidate = safe === "" ? "clip" : safe;
+	let suffix = 2;
+	while (used.has(candidate)) candidate = `${safe === "" ? "clip" : safe}-${suffix}`;
+	used.add(candidate);
+	return candidate;
 }
 /** 曲线关节解析（§6.4）：detail=full 出全部关节；curvesFor 指定的按 id/骨骼名解析，找不到给自愈指引 */
 function resolveCurveJoints(sample, options) {
@@ -32125,6 +32158,85 @@ function resolveNormalization(requested, height) {
 		scale: height,
 		warnings: []
 	};
+}
+//#endregion
+//#region
+function parseAnalyzeRequest(body) {
+	if (typeof body !== "object" || body === null) return {
+		ok: false,
+		message: "请求体必须是 JSON 对象。"
+	};
+	const raw = body;
+	const path = typeof raw.path === "string" ? raw.path.trim() : "";
+	if (path === "") return {
+		ok: false,
+		message: "缺少 path（模型文件路径）。"
+	};
+	const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
+	if (sessionId === "") return {
+		ok: false,
+		message: "缺少 sessionId（当前会话 id）。"
+	};
+	const clip = typeof raw.clip === "string" && raw.clip.trim() !== "" ? raw.clip.trim() : null;
+	const frameRaw = raw.frame;
+	return {
+		ok: true,
+		request: {
+			path,
+			sessionId,
+			clip,
+			frame: typeof frameRaw === "number" && Number.isFinite(frameRaw) && frameRaw >= 0 && Number.isInteger(frameRaw) ? frameRaw : clip === null ? null : 0,
+			view: isViewStateLike(raw.view) ? raw.view : null,
+			note: typeof raw.note === "string" && raw.note.trim() !== "" ? raw.note.trim() : null
+		}
+	};
+}
+function isViewStateLike(value) {
+	if (typeof value !== "object" || value === null) return false;
+	const camera = value.camera;
+	return typeof camera === "object" && camera !== null;
+}
+/** 组装投递给 Agent 的用户态消息（followup）：视角描述 + 明确的工具调用指令 */
+function composeAnalyzeMessage(request) {
+	const view = request.view;
+	const viewText = view === null ? "缺省视角（three-quarter：azimuth 45° / elevation 20°，距离按模型包围球自适应）" : `azimuth ${round(view.camera.azimuth)}°，elevation ${round(view.camera.elevation)}°，distance ${round(view.camera.distance)}，target [${view.camera.target.map((axis) => round(axis)).join(", ")}]，fov ${round(view.camera.fov)}，渲染模式 ${view.mode}`;
+	const clipText = request.clip === null ? "（无动画/静态）" : `「${request.clip}」`;
+	const frameText = request.frame === null ? "0" : String(request.frame);
+	const lines = [
+		"【动析 kinemesh】用户在 3D 预览面板里请求对模型做视觉分析。",
+		`模型文件：${request.path}`,
+		`动画片段：${clipText}；帧号：${frameText}（换算 time = frame / 30）`,
+		`视角：${viewText}`
+	];
+	if (request.note !== null) lines.push("用户附言：", "\"\"\"", request.note, "\"\"\"");
+	lines.push("请调用 kinemesh_render 渲染上面这个视角的截图（clip/frames/view 按上面取值；view 直接传完整对象），然后用读图工具查看 PNG，给出视觉分析（结构、动作质量、穿模/悬空、比例等，按用户附言侧重）。");
+	return lines.join("\n");
+}
+function round(value) {
+	return Number.isInteger(value) ? value : Number(value.toFixed(2));
+}
+//#endregion
+//#region
+var cache = /* @__PURE__ */ new Map();
+/** stat 不可用时（文件在读后被删等竞态）退化为「永不命中」的键，不吞掉 load 本身的报错 */
+async function mtimeOf(path) {
+	try {
+		return (await stat(path)).mtimeMs;
+	} catch {
+		return -1;
+	}
+}
+/**
+* 取缓存场景：命中（同路径同 mtime）直接返回同一实例，未命中才调 load 并入缓存。
+* load 抛错不进缓存；文件变化（mtime 变）自然产生新键、旧实例被替换。
+*/
+async function getCachedScene(path, load) {
+	const key = `${path}\u0000${await mtimeOf(path)}`;
+	const hit = cache.get(key);
+	if (hit !== void 0) return hit;
+	const scene = await load();
+	cache.set(key, scene);
+	return scene;
 }
 //#endregion
 //#region
@@ -32311,12 +32423,13 @@ async function readModelFile(rawPath) {
 	}
 }
 /**
-* 三出口共用的 analyze 执行 runner：加载场景 → 身高归一 → vocab 发现 → analyzeClip → 落盘。
-* 抛 KinemeshError（无动画 / clip 缺失 / morph-only / 参数越界 / 词表非法等），由各出口转成
-* 自己的错误口径（tools errorPayload / CLI fail / MCP errorResult）。
+* 三出口共用的 analyze 执行 runner：加载场景（M6f 起走 path+mtime 进程内缓存）→ 身高归一 →
+* vocab 发现 → analyzeClip（单 clip 或 '*' 批量）→ 落盘。抛 KinemeshError（无动画 / clip 缺失 /
+* morph-only / 参数越界 / 词表非法等），由各出口转成自己的错误口径（tools errorPayload / CLI fail /
+* MCP errorResult）。
 */
 async function runAnalyze(data, fileName, params, context = {}) {
-	const { scene } = await loadModelScene(data, fileName);
+	const { scene } = context.absPath ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) } : await loadModelScene(data, fileName);
 	const normalization = resolveNormalization(params.normalize ?? "height", sceneBoundsHeight(scene));
 	const vocab = await loadVocab({
 		explicitPath: params.vocab,
@@ -32325,6 +32438,7 @@ async function runAnalyze(data, fileName, params, context = {}) {
 	});
 	const analysis = analyzeClip(scene, {
 		clipName: params.clip,
+		range: params.range,
 		sampleFps: params.sampleFps,
 		joints: params.joints,
 		smooth: params.smooth,
@@ -32348,20 +32462,30 @@ async function runAnalyze(data, fileName, params, context = {}) {
 			what: artifact.what
 		});
 	}
-	const warnings = [.../* @__PURE__ */ new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
+	const batch = analysis.batch === true;
+	const warnings = batch ? [...new Set((analysis.summary.clips ?? []).flatMap((entry) => [...entry.summary.warnings, ...entry.summary.normalize.warnings]))] : [.../* @__PURE__ */ new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
 	return {
 		ok: true,
 		dir,
 		files,
-		summaryDigest: analysis.digest,
+		summaryDigest: batch ? analysis.digest : analysis.digest,
 		...warnings.length > 0 ? { warnings } : {},
 		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
 	};
 }
+/** range 参数投影（M6f）：undefined = 未给；null = 形状/顺序不合法（调用方给三段式）；数组 = 通过 */
+function parseRangeArg(value) {
+	if (value === void 0 || value === null) return void 0;
+	if (!Array.isArray(value) || value.length !== 2) return null;
+	const t0 = value[0];
+	const t1 = value[1];
+	if (typeof t0 !== "number" || typeof t1 !== "number" || !Number.isFinite(t0) || !Number.isFinite(t1) || t0 >= t1) return null;
+	return [t0, t1];
+}
 function analyzeTool() {
 	return {
 		name: "kinemesh_analyze",
-		description: "对模型文件的动画片段做动作分析（本地只读，不改文件）：headless 采样 + 派生通道，产出中间文件目录（motion-summary.json 分段/facts/loopCheck、motion-frames.csv、motion-segments.json、motion-keyframes.json、trajectory、指定关节曲线），并返回内联 summaryDigest（分段表 + 全片统计 + loopCheck + keyframeRender 配方）。数据层工具：一切数值/label/guess/verdict 由它产出，AI 只引用数值做语义推测；语义存疑时把 summaryDigest.keyframeRender 配方原样传给 kinemesh_render 出识别用图。",
+		description: "对模型文件的动画片段做动作分析（本地只读，不改文件）：headless 采样 + 派生通道，产出中间文件目录（motion-summary.json 分段/facts/loopCheck、motion-frames.csv、motion-segments.json、motion-keyframes.json、trajectory、指定关节曲线），并返回内联 summaryDigest（分段表 + 全片统计 + loopCheck + keyframeRender 配方）。clip=\"*\" 批量分析全部片段（返回 clips[]、中间文件按 <clip>/ 分子目录）；range=[t0,t1] 秒切片（帧号仍按全片口径）。数据层工具：一切数值/label/guess/verdict 由它产出，AI 只引用数值做语义推测；语义存疑时把 summaryDigest.keyframeRender 配方原样传给 kinemesh_render 出识别用图。",
 		parameters: {
 			type: "object",
 			properties: {
@@ -32371,11 +32495,18 @@ function analyzeTool() {
 				},
 				clip: {
 					type: "string",
-					description: "动画片段名（先 kinemesh_info 查）；缺省第一个 clip"
+					description: "动画片段名或 \"*\"（批量分析全部 clips，先 kinemesh_info 查）；缺省第一个 clip"
 				},
 				out: {
 					type: "string",
 					description: "中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/"
+				},
+				range: {
+					type: "array",
+					items: { type: "number" },
+					minItems: 2,
+					maxItems: 2,
+					description: "[t0, t1] 秒切片（0 ≤ t0 < t1 ≤ 片段时长）；帧号仍按全片口径，结果可直接喂 kinemesh_render"
 				},
 				sampleFps: {
 					type: "integer",
@@ -32440,11 +32571,14 @@ function analyzeTool() {
 		},
 		timeoutMs: 12e4,
 		async execute(args) {
+			const range = parseRangeArg(args?.range);
+			if (range === null) return errorPayload("range 参数不合法：需要 [t0, t1] 秒数字数组且 t0 < t1。", "例如 \"range\": [0.5, 2]；t1 不超过片段时长（先用 kinemesh_info 查 clips[].duration）。", "解析 range 参数");
 			const loaded = await readModelFile(typeof args?.path === "string" ? args.path : "");
 			if (!loaded.ok) return loaded.payload;
 			const params = {
 				clip: typeof args?.clip === "string" && args.clip.trim() !== "" ? args.clip : void 0,
 				out: typeof args?.out === "string" ? args.out : void 0,
+				range,
 				sampleFps: typeof args?.sampleFps === "number" ? args.sampleFps : void 0,
 				joints: args?.joints === "auto" ? "auto" : Array.isArray(args?.joints) ? args.joints.filter((item) => typeof item === "string") : void 0,
 				detail: typeof args?.detail === "string" ? args.detail : void 0,
@@ -32456,7 +32590,10 @@ function analyzeTool() {
 				boneMap: typeof args?.boneMap === "string" && args.boneMap.trim() !== "" ? expandHome(args.boneMap.trim()) : void 0
 			};
 			try {
-				return await runAnalyze(loaded.data, path.basename(loaded.abs), params, { assetDir: path.dirname(loaded.abs) });
+				return await runAnalyze(loaded.data, path.basename(loaded.abs), params, {
+					assetDir: path.dirname(loaded.abs),
+					absPath: loaded.abs
+				});
 			} catch (error) {
 				if (error instanceof KinemeshError) return errorPayload(error.message, error.guidance, `分析 ${loaded.abs}`);
 				return errorPayload(reasonOf(error), "确认模型能被 kinemesh_info 解析后重试；必要时缩小参数范围（降低 sampleFps / 换 clip）。", `分析 ${loaded.abs}`);
@@ -32601,17 +32738,18 @@ var MAX_MODEL_BYTES = 536870912;
 function apply(ctx) {
 	ctx.effect(() => registerTools(ctx));
 	ctx.effect(() => {
+		const sessions = createSessionModels();
 		const disposeRoute = ctx.webServer.register({
 			kind: "prefix",
 			path: ROUTE_PREFIX,
-			handler: (req, res) => handleRequest(ctx, req, res)
+			handler: (req, res) => handleRequest(ctx, sessions, req, res)
 		});
 		return () => {
 			disposeRoute();
 		};
 	});
 }
-async function handleRequest(ctx, req, res) {
+async function handleRequest(ctx, sessions, req, res) {
 	try {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		const method = req.method ?? "GET";
@@ -32623,15 +32761,38 @@ async function handleRequest(ctx, req, res) {
 			return;
 		}
 		if (routePath === `${ROUTE_PREFIX}/model` && method === "GET") {
-			await serveModel(res, url.searchParams.get("path") ?? "");
+			await serveModel(res, sessions, url.searchParams.get("path") ?? "", url.searchParams.get("sessionId") ?? "");
 			return;
 		}
 		if (routePath === `${ROUTE_PREFIX}/info` && method === "GET") {
-			await serveInfo(res, url.searchParams.get("path") ?? "");
+			await serveInfo(res, sessions, url.searchParams.get("path") ?? "", url.searchParams.get("sessionId") ?? "");
+			return;
+		}
+		if (routePath === `${ROUTE_PREFIX}/analysis` && method === "GET") {
+			await serveAnalysis(res, url.searchParams.get("path") ?? "", url.searchParams.get("clip") ?? "");
+			return;
+		}
+		if (routePath === `${ROUTE_PREFIX}/session-models` && method === "GET") {
+			const sessionId = (url.searchParams.get("sessionId") ?? "").trim();
+			if (sessionId === "") {
+				send(res, 400, {
+					ok: false,
+					error: {
+						code: "bad-request",
+						message: "缺少 sessionId 参数。"
+					}
+				});
+				return;
+			}
+			send(res, 200, {
+				ok: true,
+				models: await sessions.list(sessionId)
+			});
 			return;
 		}
 		if (routePath === `${ROUTE_PREFIX}/analyze` && method === "POST") {
-			const parsed = parseAnalyzeRequest(await readJson(req));
+			const body = await readJson(req);
+			const parsed = parseAnalyzeRequest(body);
 			if (!parsed.ok) {
 				send(res, 400, {
 					ok: false,
@@ -32642,7 +32803,9 @@ async function handleRequest(ctx, req, res) {
 				});
 				return;
 			}
-			if (!wakeAgent(ctx, parsed.request.sessionId, composeAnalyzeMessage(parsed.request))) {
+			const digest = body?.digest;
+			const message = composeAnalyzeMessage(parsed.request) + formatDigestSection(digest);
+			if (!wakeAgent(ctx, parsed.request.sessionId, message)) {
 				send(res, 409, {
 					ok: false,
 					error: {
@@ -32652,6 +32815,7 @@ async function handleRequest(ctx, req, res) {
 				});
 				return;
 			}
+			sessions.record(parsed.request.sessionId, resolveLocal(parsed.request.path));
 			send(res, 200, {
 				ok: true,
 				delivered: true
@@ -32675,8 +32839,8 @@ async function handleRequest(ctx, req, res) {
 		});
 	}
 }
-/** GET /kinemesh/model?path=…：给预览面板供模型字节 */
-async function serveModel(res, rawPath) {
+/** GET /kinemesh/model?path=&sessionId=：给预览面板供模型字节；成功即记入会话表（§6.10.4） */
+async function serveModel(res, sessions, rawPath, sessionId) {
 	if (rawPath.trim() === "") {
 		send(res, 400, {
 			ok: false,
@@ -32710,6 +32874,7 @@ async function serveModel(res, rawPath) {
 		return;
 	}
 	const data = await readFile(abs);
+	sessions.record(sessionId, abs);
 	res.statusCode = 200;
 	res.setHeader("content-type", "application/octet-stream");
 	res.setHeader("content-length", data.byteLength);
@@ -32717,8 +32882,8 @@ async function serveModel(res, rawPath) {
 	setCorsHeaders(res);
 	res.end(data);
 }
-/** GET /kinemesh/info?path=…：轻量 InfoReport（面板侧栏 / 快速体检） */
-async function serveInfo(res, rawPath) {
+/** GET /kinemesh/info?path=&sessionId=：轻量 InfoReport（面板侧栏 / 快速体检）；成功即记入会话表 */
+async function serveInfo(res, sessions, rawPath, sessionId) {
 	if (rawPath.trim() === "") {
 		send(res, 400, {
 			ok: false,
@@ -32731,10 +32896,174 @@ async function serveInfo(res, rawPath) {
 	}
 	const abs = resolveLocal(rawPath);
 	const data = await readFile(abs);
+	const report = await analyzeModel(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), path.basename(abs));
+	sessions.record(sessionId, abs);
 	send(res, 200, {
 		ok: true,
-		info: await analyzeModel(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), path.basename(abs))
+		info: report
 	});
+}
+/** GET /kinemesh/analysis?path=&clip=：预览曲线数据源（§6.10.3）——现场跑 analyzeClip（缺省参数），
+* 内存返回 digest/分段/关键帧/能量序列，不落盘。 */
+async function serveAnalysis(res, rawPath, rawClip) {
+	if (rawPath.trim() === "") {
+		send(res, 400, {
+			ok: false,
+			error: {
+				code: "bad-request",
+				message: "缺少 path 参数。"
+			}
+		});
+		return;
+	}
+	const abs = resolveLocal(rawPath);
+	const info = await stat(abs).catch(() => void 0);
+	if (info === void 0 || !info.isFile()) {
+		send(res, 404, {
+			ok: false,
+			error: {
+				code: "not-found",
+				message: `文件不存在：${abs}`
+			}
+		});
+		return;
+	}
+	const data = await readFile(abs);
+	const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+	const clip = rawClip.trim();
+	try {
+		send(res, 200, {
+			ok: true,
+			...await analyzeInMemory(buffer, path.basename(abs), clip === "" ? void 0 : clip, path.dirname(abs))
+		});
+	} catch (error) {
+		if (error instanceof KinemeshError) {
+			send(res, 400, {
+				ok: false,
+				error: {
+					code: "analyze-failed",
+					message: `${error.message}${error.guidance}`
+				}
+			});
+			return;
+		}
+		throw error;
+	}
+}
+/**
+* 预览页曲线数据源（§6.10.3）：与 kinemesh_analyze 的 runAnalyze 走同一条管线
+* （加载场景 → 身高归一 → vocab 发现 → analyzeClip），energy 直接取同一通道计算
+* （computeChannels）的序列——同一段代码，保证「曲线数值与中间文件一致」（§6.9 M6e 验收）。
+* analyzeClip 与 sampleClip 都是确定性纯函数，digest 与 energy 两次采样结果逐位一致。
+*/
+async function analyzeInMemory(data, fileName, clip, assetDir) {
+	const { scene } = await loadModelScene(data, fileName);
+	const normalization = resolveNormalization("height", sceneBoundsHeight(scene));
+	const vocab = await loadVocab({
+		assetDir,
+		cwd: process.cwd()
+	});
+	const analysis = analyzeClip(scene, {
+		clipName: clip,
+		scale: normalization.scale,
+		normalizeMode: "height",
+		vocab
+	});
+	const channels = computeChannels(sampleClip(scene, { clipName: clip }), { scale: normalization.scale });
+	return {
+		summaryDigest: analysis.digest,
+		segments: analysis.summary.segments,
+		keyframes: analysis.summary.keyframes,
+		frames: channels.frames,
+		energy: channels.energy
+	};
+}
+function createSessionModels() {
+	const pathsBySession = /* @__PURE__ */ new Map();
+	const clipCache = /* @__PURE__ */ new Map();
+	return {
+		record(sessionId, absPath) {
+			const id = sessionId.trim();
+			const target = absPath.trim();
+			if (id === "" || target === "") return;
+			const list = pathsBySession.get(id);
+			if (list === void 0) pathsBySession.set(id, [target]);
+			else if (!list.includes(target)) list.push(target);
+		},
+		async list(sessionId) {
+			const paths = pathsBySession.get(sessionId.trim()) ?? [];
+			const models = [];
+			for (const abs of paths) {
+				const info = await stat(abs).catch(() => void 0);
+				if (info === void 0 || !info.isFile()) continue;
+				let clips = clipCache.get(abs);
+				if (clips === void 0) {
+					clips = await clipInfoOf(abs);
+					clipCache.set(abs, clips);
+				}
+				models.push({
+					path: abs,
+					name: path.basename(abs),
+					animated: clips.animated,
+					clips: clips.clips,
+					bytes: info.size
+				});
+			}
+			return models;
+		}
+	};
+}
+/** 轻量 clip 信息（是否动画/clip 清单）；解析失败按无动画处理，不阻塞清单返回 */
+async function clipInfoOf(abs) {
+	try {
+		const data = await readFile(abs);
+		const report = await analyzeModel(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), path.basename(abs));
+		return {
+			animated: report.clips.length > 0,
+			clips: report.clips.map((clip) => clip.name)
+		};
+	} catch {
+		return {
+			animated: false,
+			clips: []
+		};
+	}
+}
+/**
+* 「发送给 AI 分析」消息的 digest 段（§6.10：把当前 summaryDigest 附进消息）。
+* 防御式读取 JSON 字段；无有效内容返回空串（消息保持 M3 原样）。
+*/
+function formatDigestSection(digest) {
+	if (typeof digest !== "object" || digest === null) return "";
+	const raw = digest;
+	const body = [];
+	const clipName = typeof raw.clip?.name === "string" ? raw.clip.name : "";
+	if (clipName !== "") {
+		const duration = typeof raw.clip?.duration === "number" ? `${raw.clip.duration.toFixed(2)}s` : "";
+		const frames = typeof raw.clip?.frames === "number" ? `${raw.clip.frames} 帧@30fps` : "";
+		body.push(`clip「${clipName}」${[duration, frames].filter(Boolean).join("，")}`);
+	}
+	const segments = Array.isArray(raw.segments) ? raw.segments : [];
+	if (segments.length > 0) {
+		body.push("分段：");
+		for (const segment of segments) body.push(`  ${String(segment.index ?? "")}. frame ${String(segment.frameStart ?? "?")}–${String(segment.frameEnd ?? "?")}：${String(segment.label ?? "")}，guess ${String(segment.guess ?? "")}，强度 ${String(segment.level ?? "")}`);
+	}
+	const verdict = typeof raw.loopCheck?.verdict === "string" ? raw.loopCheck.verdict : "";
+	if (verdict !== "") {
+		const range = raw.loopCheck?.bestLoopRange;
+		const rangeText = range !== null && typeof range === "object" ? `，bestLoopRange 采样帧 ${String(range.frameStart)}–${String(range.frameEnd)}` : "";
+		body.push(`循环检测：${verdict}${rangeText}`);
+	}
+	const facts = Array.isArray(raw.facts) ? raw.facts.filter((fact) => typeof fact === "string") : [];
+	if (facts.length > 0) body.push("事实：", ...facts.map((fact) => `  - ${fact}`));
+	const recipe = raw.keyframeRender;
+	if (recipe !== null && typeof recipe === "object") {
+		const frames = Array.isArray(recipe.frames) ? recipe.frames.map(String).join(", ") : "";
+		const views = Array.isArray(recipe.views) ? recipe.views.map(String).join("/") : "";
+		body.push(`keyframeRender 配方：frames [${frames}]，views ${views}，mode ${String(recipe.mode ?? "")}（原样传给 kinemesh_render）`);
+	}
+	if (body.length === 0) return "";
+	return `\n\n【动作分析 digest】（kinemesh_analyze 同源数值，直接引用、无需重新分析）\n${body.join("\n")}`;
 }
 /**
 * 唤醒绑定的 Agent（与 aiworkflow / 定时提醒同一套机制：followup 一条用户态消息）。
@@ -32801,4 +33130,4 @@ function setCorsHeaders(res) {
 	res.setHeader("access-control-max-age", "600");
 }
 //#endregion
-export { apply, inject };
+export { apply, formatDigestSection, inject };

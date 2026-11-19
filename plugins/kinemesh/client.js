@@ -46560,6 +46560,35 @@ var css = `
 .kinemesh-banner[data-kind="ok"]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}
 
 .kinemesh-foot{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
+
+/* ———— 模型预览页（conversation.view 页签，M6e） ———— */
+.kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
+.kinemesh-pageholder{flex:1;display:grid;place-items:center;padding:24px;text-align:center;
+  color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.kinemesh-side{width:250px;min-width:200px;flex:none;display:flex;flex-direction:column;
+  border-right:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+.kinemesh-sidehead{padding:10px 12px 6px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.kinemesh-sideitems{flex:1;overflow:auto;padding:0 8px;display:flex;flex-direction:column;gap:2px}
+.kinemesh-sideitem{display:flex;align-items:center;gap:6px;width:100%;padding:7px 8px;border-radius:8px;
+  border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);
+  font:inherit;font-size:12px;cursor:pointer;text-align:left;overflow:hidden}
+.kinemesh-sideitem:hover{background:var(--dsw-alias-bg-layer-2)}
+.kinemesh-sideitem[data-active="true"]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1)}
+.kinemesh-sidename{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kinemesh-badge{flex:none;padding:1px 6px;border-radius:6px;font-size:10.5px;
+  border:1px solid var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}
+.kinemesh-sideempty{padding:12px;color:var(--dsw-alias-label-secondary);font-size:11.5px;text-align:center}
+.kinemesh-sidefoot{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1)}
+.kinemesh-sidefoot .kinemesh-input{min-width:0;flex:1}
+.kinemesh-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto}
+
+/* ———— 强度曲线时间轴（§6.10.3）：进度条上方的曲线 + 分段色带 + 循环高亮 ———— */
+.kinemesh-timeline{margin:4px 14px 0}
+.kinemesh-timeline svg{display:block;width:100%;height:44px;cursor:crosshair;border-radius:8px;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);touch-action:none}
+.kinemesh-timeline .kinemesh-timelinehint{display:block;margin-top:2px;font-size:10.5px;
+  color:var(--dsw-alias-label-secondary)}
 `;
 function Styles() {
 	return /* @__PURE__ */ react.createElement("style", null, css);
@@ -46567,9 +46596,12 @@ function Styles() {
 //#endregion
 //#region
 var inject = ["slots", "locale"];
+var HEADER_SLOT = "conversation.session.header.utilities";
 var INPUT_LEFT_SLOT = "conversation.input.left";
 var OVERLAY_SLOT = "shell.overlay";
+var CONVERSATION_VIEW_SLOT = "conversation.view";
 var ENTRY_ID = "kinemesh-launcher";
+var PREVIEW_TAB_ID = "kinemesh-preview";
 var VIEW_MODES = [
 	"default",
 	"wireframe",
@@ -46596,6 +46628,155 @@ var overlayStore = {
 		for (const listener of this.listeners) listener();
 	}
 };
+var LOCALE_NS = "kinemesh-preview";
+var ZH_TEXTS = {
+	"tab.preview": "模型预览",
+	"page.models": "本会话的模型",
+	"page.emptySession": "会话信息不可用，先用「动析」浮层打开一次预览。",
+	"page.emptyModels": "本会话还没有用过的模型：用「动析」浮层加载，或在下方输入路径打开。",
+	"page.openPath": "模型文件路径（.fbx / .glb / .gltf / .obj）",
+	"page.open": "打开",
+	"list.animated": "动画",
+	"timeline.hint": "强度曲线（点击/拖动定位帧）；色带=分段 guess，半透明=循环区间"
+};
+var EN_TEXTS = {
+	"tab.preview": "Model preview",
+	"page.models": "Session models",
+	"page.emptySession": "Session info unavailable; open the preview overlay once first.",
+	"page.emptyModels": "No models used in this session yet: load one in the preview overlay, or type a path below.",
+	"page.openPath": "Model file path (.fbx / .glb / .gltf / .obj)",
+	"page.open": "Open",
+	"list.animated": "anim",
+	"timeline.hint": "Energy curve (click/drag to scrub); band = segment guess, translucent = loop range"
+};
+/** 页面/页签文本的兜底翻译（locale 服务不可用时直接用中文） */
+var fallbackTranslate = (key) => ZH_TEXTS[key] ?? key;
+var translate = fallbackTranslate;
+function registerTexts(ctx) {
+	const disposers = [];
+	const packs = [
+		["en", EN_TEXTS],
+		["zh", ZH_TEXTS],
+		["zh-CN", ZH_TEXTS],
+		["zh-Hans", ZH_TEXTS]
+	];
+	for (const [locale, dict] of packs) try {
+		const dispose = ctx.locale?.register?.(LOCALE_NS, locale, dict);
+		if (typeof dispose === "function") disposers.push(dispose);
+	} catch {}
+	return () => {
+		for (const dispose of disposers.reverse()) try {
+			dispose();
+		} catch {}
+	};
+}
+function bindTranslate(ctx) {
+	const raw = ctx.locale?.bind?.(LOCALE_NS);
+	if (typeof raw !== "function") return fallbackTranslate;
+	return (key) => {
+		const value = raw(key);
+		return value === key ? ZH_TEXTS[key] ?? key : value;
+	};
+}
+/** 页签可见性（§6.9 M6e 验收第一条：未用插件的会话没有页签） */
+function shouldShowPreviewTab(sessionId, used) {
+	return sessionId.trim() !== "" && used;
+}
+/** 能量序列归一到 0..1（峰值=1；空/全零恒 0；负值截 0） */
+function normalizeEnergySeries(values) {
+	let max = 0;
+	for (const value of values) max = Math.max(max, value);
+	if (max <= 0) return values.map(() => 0);
+	return values.map((value) => value <= 0 ? 0 : value / max);
+}
+/** 归一能量 → SVG 折线点列（[x, y]，y=0 为顶部；width/height 是坐标空间尺寸） */
+function energyPoints(values, width, height) {
+	if (values.length === 0 || width <= 0 || height <= 0) return [];
+	if (values.length === 1) return [[0, height]];
+	const last = values.length - 1;
+	return values.map((value, k) => [Number((k / last * width).toFixed(2)), Number(((1 - value) * height).toFixed(2))]);
+}
+/** 分段色带颜色（label 分类着色；未知 label 用同一蓝色） */
+var SEGMENT_COLORS = {
+	idle: "#6f7db8",
+	"contact-move": "#3f8f6f",
+	action: "#c98a3d",
+	airborne: "#8f6fc0"
+};
+function segmentColor(label) {
+	return SEGMENT_COLORS[label] ?? "#5c90d9";
+}
+/** 帧号 → 时间轴百分比（0..100，越界截断；maxFrame ≤ 0 恒 0） */
+function frameToPercent(frame, maxFrame) {
+	if (!Number.isFinite(frame) || !Number.isFinite(maxFrame) || maxFrame <= 0) return 0;
+	const ratio = Math.min(Math.max(frame, 0), maxFrame) / maxFrame * 100;
+	return Number(ratio.toFixed(3));
+}
+/** digest 摘要一行（发送按钮旁 chip 文案：clip · 段数 · loopCheck verdict）；无有效内容返回空串 */
+function formatDigestHeadline(digest) {
+	if (digest === null || digest === void 0 || typeof digest !== "object") return "";
+	const parts = [];
+	if (typeof digest.clip?.name === "string" && digest.clip.name !== "") parts.push(`clip「${digest.clip.name}」`);
+	if (Array.isArray(digest.segments) && digest.segments.length > 0) parts.push(`${digest.segments.length} 段`);
+	if (typeof digest.loopCheck?.verdict === "string" && digest.loopCheck.verdict !== "") parts.push(digest.loopCheck.verdict);
+	return parts.join(" · ");
+}
+var previewSession = {
+	listeners: /* @__PURE__ */ new Set(),
+	state: {
+		sessionId: "",
+		used: false
+	},
+	probeSeq: 0,
+	subscribe(listener) {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	},
+	getSnapshot() {
+		return this.state;
+	},
+	publish() {
+		for (const listener of this.listeners) listener();
+	},
+	setSession(sessionId) {
+		const id = typeof sessionId === "string" ? sessionId.trim() : "";
+		if (this.state.sessionId === id) return;
+		this.state = {
+			sessionId: id,
+			used: false
+		};
+		this.publish();
+		this.probe(id);
+	},
+	markUsed(sessionId) {
+		const id = typeof sessionId === "string" ? sessionId.trim() : "";
+		if (id !== "" && id !== this.state.sessionId) this.setSession(id);
+		if (!this.state.used) {
+			this.state = {
+				...this.state,
+				used: true
+			};
+			this.publish();
+		}
+	},
+	/** 页签打开/切会话时向 host 轻量拉一次清单（§6.10.1：不做轮询） */
+	async probe(sessionId) {
+		if (sessionId === "") return;
+		const seq = ++this.probeSeq;
+		try {
+			const body = await (await fetch(resolveEndpoint(`kinemesh/session-models?sessionId=${encodeURIComponent(sessionId)}`), { cache: "no-store" })).json().catch(() => null);
+			if (body?.ok === true && Array.isArray(body.models) && body.models.length > 0 && seq === this.probeSeq && this.state.sessionId === sessionId) this.markUsed();
+		} catch {}
+	}
+};
+function SessionCapture({ sessionId, store }) {
+	react.useEffect(() => {
+		store.setSession(sessionId);
+	}, [sessionId, store]);
+	return null;
+}
 function LauncherButton(props) {
 	const draft = typeof props?.useInput === "function" ? props.useInput((state) => state?.draft ?? "") : "";
 	const onClick = () => {
@@ -46636,8 +46817,84 @@ function LauncherButton(props) {
 		strokeLinejoin: "round"
 	})), /* @__PURE__ */ react.createElement("span", null, "动析")));
 }
-function PreviewDialog({ onClose }) {
-	const [modelPath, setModelPath] = react.useState("");
+var TIMELINE_VB_W = 600;
+var TIMELINE_VB_H = 44;
+var TIMELINE_CURVE_H = 28;
+var TIMELINE_BAND_TOP = 32;
+var TIMELINE_BAND_H = 9;
+function MotionTimeline(props) {
+	const dragging = react.useRef(false);
+	const normalized = normalizeEnergySeries(props.energy);
+	if (normalized.length === 0) return null;
+	const points = energyPoints(normalized, TIMELINE_VB_W, TIMELINE_CURVE_H).map(([x, y]) => `${x},${y}`).join(" ");
+	const playheadX = frameToPercent(props.frame, props.maxFrame) / 100 * TIMELINE_VB_W;
+	const seekFromEvent = (event) => {
+		const rect = event.currentTarget.getBoundingClientRect();
+		if (rect.width <= 0) return;
+		const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
+		props.onSeek(Math.round(ratio * props.maxFrame));
+	};
+	return /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timeline" }, /* @__PURE__ */ react.createElement("svg", {
+		viewBox: `0 0 ${TIMELINE_VB_W} ${TIMELINE_VB_H}`,
+		preserveAspectRatio: "none",
+		role: "img",
+		onPointerDown: (event) => {
+			dragging.current = true;
+			seekFromEvent(event);
+		},
+		onPointerMove: (event) => {
+			if (dragging.current) seekFromEvent(event);
+		},
+		onPointerUp: () => {
+			dragging.current = false;
+		},
+		onPointerLeave: () => {
+			dragging.current = false;
+		}
+	}, props.loopFrames !== null && /* @__PURE__ */ react.createElement("rect", {
+		x: frameToPercent(props.loopFrames.start, props.maxFrame) / 100 * TIMELINE_VB_W,
+		y: 0,
+		width: Math.max(2, (frameToPercent(props.loopFrames.end, props.maxFrame) - frameToPercent(props.loopFrames.start, props.maxFrame)) / 100 * TIMELINE_VB_W),
+		height: TIMELINE_VB_H,
+		fill: "rgba(230,190,90,0.22)",
+		stroke: "rgba(230,190,90,0.55)",
+		strokeDasharray: "4 3",
+		strokeWidth: "1"
+	}, /* @__PURE__ */ react.createElement("title", null, `循环区间 frame ${props.loopFrames.start}–${props.loopFrames.end}（loopCheck.bestLoopRange）`)), /* @__PURE__ */ react.createElement("polyline", {
+		points,
+		fill: "none",
+		stroke: "var(--dsw-alias-brand-primary, #4c8bf5)",
+		strokeWidth: "1.5"
+	}), /* @__PURE__ */ react.createElement("line", {
+		x1: playheadX,
+		y1: 0,
+		x2: playheadX,
+		y2: TIMELINE_VB_H,
+		stroke: "var(--dsw-alias-label-primary, #e8e8e8)",
+		strokeWidth: "1.2",
+		opacity: "0.85"
+	}), props.segments.map((segment, index) => {
+		const start = frameToPercent(segment.frameStart ?? 0, props.maxFrame);
+		const end = frameToPercent(segment.frameEnd ?? segment.frameStart ?? 0, props.maxFrame);
+		const x = start / 100 * TIMELINE_VB_W;
+		const width = Math.max(2, (end - start) / 100 * TIMELINE_VB_W);
+		const label = segment.label ?? "";
+		const guess = segment.guess ?? "";
+		return /* @__PURE__ */ react.createElement("rect", {
+			key: `${segment.frameStart ?? index}-${index}`,
+			x,
+			y: TIMELINE_BAND_TOP,
+			width,
+			height: TIMELINE_BAND_H,
+			fill: segmentColor(label),
+			opacity: "0.9"
+		}, /* @__PURE__ */ react.createElement("title", null, `#${index + 1} frame ${segment.frameStart ?? "?"}–${segment.frameEnd ?? "?"}：${label} · guess ${guess} · 强度 ${segment.level ?? "?"}`));
+	})), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-timelinehint" }, translate("timeline.hint")));
+}
+function PreviewPane(props) {
+	const showPathInput = props.showPathInput !== false;
+	const [pathInput, setPathInput] = react.useState("");
+	const [loadedPath, setLoadedPath] = react.useState("");
 	const [clip, setClip] = react.useState("");
 	const [frame, setFrame] = react.useState(0);
 	const [mode, setMode] = react.useState("default");
@@ -46649,10 +46906,16 @@ function PreviewDialog({ onClose }) {
 		clips: [],
 		maxFrame: 0
 	});
+	const [analysis, setAnalysis] = react.useState({
+		loading: false,
+		data: null
+	});
 	const [sending, setSending] = react.useState(false);
 	const [sent, setSent] = react.useState(null);
 	const hostRef = react.useRef(null);
 	const viewerRef = react.useRef(null);
+	const analysisSeq = react.useRef(0);
+	const lastRequestRef = react.useRef(null);
 	react.useEffect(() => {
 		if (hostRef.current === null) return void 0;
 		const viewer = mountViewer(hostRef.current, {
@@ -46678,9 +46941,41 @@ function PreviewDialog({ onClose }) {
 			window.clearInterval(timer);
 		};
 	}, []);
-	const load = async () => {
-		const trimmed = modelPath.trim();
-		if (trimmed === "") return;
+	const fetchAnalysis = async (targetPath, clipName) => {
+		if (targetPath === "") {
+			setAnalysis({
+				loading: false,
+				data: null
+			});
+			return;
+		}
+		const seq = ++analysisSeq.current;
+		setAnalysis({
+			loading: true,
+			data: null
+		});
+		try {
+			const url = resolveEndpoint(`kinemesh/analysis?path=${encodeURIComponent(targetPath)}&clip=${encodeURIComponent(clipName)}`);
+			const body = await (await fetch(url, { cache: "no-store" })).json().catch(() => null);
+			if (body?.ok === true && Array.isArray(body.energy)) {
+				if (seq === analysisSeq.current) setAnalysis({
+					loading: false,
+					data: body
+				});
+			} else if (seq === analysisSeq.current) setAnalysis({
+				loading: false,
+				data: null
+			});
+		} catch {
+			if (seq === analysisSeq.current) setAnalysis({
+				loading: false,
+				data: null
+			});
+		}
+	};
+	const load = async (rawTarget) => {
+		const target = (rawTarget ?? pathInput).trim();
+		if (target === "") return;
 		setState({
 			phase: "loading",
 			error: null,
@@ -46690,7 +46985,8 @@ function PreviewDialog({ onClose }) {
 		setPlaying(false);
 		setSent(null);
 		try {
-			const response = await fetch(resolveEndpoint(`kinemesh/model?path=${encodeURIComponent(trimmed)}`), { cache: "no-store" });
+			const sessionQuery = props.sessionId !== "" ? `&sessionId=${encodeURIComponent(props.sessionId)}` : "";
+			const response = await fetch(resolveEndpoint(`kinemesh/model?path=${encodeURIComponent(target)}${sessionQuery}`), { cache: "no-store" });
 			if (!response.ok) {
 				const body = await response.json().catch(() => null);
 				throw new Error(body?.error?.message ?? `HTTP ${response.status}`);
@@ -46698,7 +46994,7 @@ function PreviewDialog({ onClose }) {
 			const bytes = await response.arrayBuffer();
 			const viewer = viewerRef.current;
 			if (viewer === null) throw new Error("预览还没准备好");
-			const scene = await loadSceneFromBytes(bytes, trimmed);
+			const scene = await loadSceneFromBytes(bytes, target);
 			viewer.loadScene(scene);
 			const bounds = viewer.sceneBounds();
 			const maxFrame = Math.max(0, Math.floor(bounds.durationSeconds * 30));
@@ -46708,10 +47004,22 @@ function PreviewDialog({ onClose }) {
 				clips: bounds.clips,
 				maxFrame
 			});
+			setLoadedPath(target);
 			setClip("");
 			setFrame(0);
 			viewer.applyView(defaultView(bounds.center, bounds.radius));
+			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
+			props.onLoaded?.(target);
+			if (bounds.clips.length > 0) fetchAnalysis(target, "");
+			else setAnalysis({
+				loading: false,
+				data: null
+			});
 		} catch (cause) {
+			setAnalysis({
+				loading: false,
+				data: null
+			});
 			setState({
 				phase: "empty",
 				error: cause instanceof Error ? cause.message : String(cause),
@@ -46720,6 +47028,14 @@ function PreviewDialog({ onClose }) {
 			});
 		}
 	};
+	react.useEffect(() => {
+		const request = props.loadRequest ?? null;
+		if (request === null || request.path === "") return;
+		if (lastRequestRef.current !== null && lastRequestRef.current.nonce === request.nonce) return;
+		lastRequestRef.current = request;
+		setPathInput(request.path);
+		load(request.path);
+	}, [props.loadRequest]);
 	const applyClip = (nextClip) => {
 		setClip(nextClip);
 		const viewer = viewerRef.current;
@@ -46733,6 +47049,7 @@ function PreviewDialog({ onClose }) {
 		});
 		const info = viewer.frameInfo();
 		setFrame(info?.frame ?? 0);
+		fetchAnalysis(loadedPath, nextClip);
 	};
 	const togglePlay = () => {
 		const viewer = viewerRef.current;
@@ -46754,8 +47071,7 @@ function PreviewDialog({ onClose }) {
 		viewerRef.current?.setMode(next);
 	};
 	const send = async () => {
-		const viewer = viewerRef.current;
-		if (viewer === null || modelPath.trim() === "") return;
+		if (viewerRef.current === null || loadedPath === "" || props.sessionId === "") return;
 		setSending(true);
 		setSent(null);
 		try {
@@ -46766,46 +47082,44 @@ function PreviewDialog({ onClose }) {
 					accept: "application/json"
 				},
 				body: JSON.stringify({
-					path: modelPath.trim(),
-					sessionId: connection?.sessionId ?? "",
+					path: loadedPath,
+					sessionId: props.sessionId,
 					clip: clip === "" ? null : clip,
 					frame,
-					view: viewer.getViewState(),
-					note: connection?.draft ?? null
+					view: viewerRef.current.getViewState(),
+					note: props.note ?? null,
+					digest: analysis.data?.summaryDigest ?? null
 				})
 			});
 			const body = await response.json().catch(() => null);
 			if (body?.ok !== true) throw new Error(body?.error?.message ?? `HTTP ${response.status}`);
-			if (connection !== null && connection.draft.trim() !== "") try {
-				connection.actions?.setDraft?.("");
-			} catch {}
-			setSent("已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。");
-			onClose();
+			previewSession.markUsed(props.sessionId);
+			setSent(analysis.data !== null ? "已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。" : "已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。");
+			props.onSendSuccess?.();
 		} catch (cause) {
 			setSent(cause instanceof Error ? cause.message : String(cause));
 		} finally {
 			setSending(false);
 		}
 	};
-	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", {
-		className: "kinemesh-backdrop",
-		onClick: onClose,
-		role: "presentation"
-	}, /* @__PURE__ */ react.createElement("div", {
-		className: "kinemesh-dialog",
-		role: "dialog",
-		"aria-label": "动析 3D 预览",
-		onClick: (event) => event.stopPropagation()
-	}, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-head" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, "动析 · 3D 预览"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, "拖转视角；截图与 AI 分析用同一套构图"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
-		type: "button",
-		className: "kinemesh-iconbtn",
-		onClick: onClose,
-		"aria-label": "关闭"
-	}, "✕")), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-toolbar" }, /* @__PURE__ */ react.createElement("input", {
+	const loopFrames = react.useMemo(() => {
+		const range = analysis.data?.summaryDigest?.loopCheck?.bestLoopRange ?? null;
+		const frames = analysis.data?.frames ?? [];
+		if (range === null || typeof range !== "object" || typeof range.frameStart !== "number" || typeof range.frameEnd !== "number") return null;
+		const start = frames[range.frameStart];
+		const end = frames[range.frameEnd];
+		if (start === void 0 || end === void 0) return null;
+		return {
+			start,
+			end: Math.max(end, start)
+		};
+	}, [analysis.data]);
+	const digestHeadline = formatDigestHeadline(analysis.data?.summaryDigest ?? null);
+	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-toolbar" }, showPathInput && /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement("input", {
 		className: "kinemesh-input",
-		value: modelPath,
+		value: pathInput,
 		placeholder: "模型文件路径（.fbx / .glb / .gltf / .obj）",
-		onChange: (event) => setModelPath(event.target.value),
+		onChange: (event) => setPathInput(event.target.value),
 		onKeyDown: (event) => {
 			if (event.key === "Enter") load();
 		}
@@ -46814,7 +47128,7 @@ function PreviewDialog({ onClose }) {
 		className: "kinemesh-btn",
 		onClick: () => void load(),
 		disabled: state.phase === "loading"
-	}, state.phase === "loading" ? "加载中…" : "加载"), /* @__PURE__ */ react.createElement("select", {
+	}, state.phase === "loading" ? "加载中…" : "加载")), /* @__PURE__ */ react.createElement("select", {
 		className: "kinemesh-select",
 		value: clip,
 		onChange: (event) => applyClip(event.target.value),
@@ -46835,7 +47149,15 @@ function PreviewDialog({ onClose }) {
 	}, sent), /* @__PURE__ */ react.createElement("div", {
 		className: "kinemesh-stage",
 		ref: hostRef
-	}, state.phase !== "ready" && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-placeholder" }, state.phase === "loading" ? "加载模型中…" : "输入模型文件路径并点「加载」。加载后可拖转、拖帧、播放，或直接发给 AI 分析。")), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-controls" }, /* @__PURE__ */ react.createElement("button", {
+	}, state.phase !== "ready" && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-placeholder" }, state.phase === "loading" ? "加载模型中…" : showPathInput ? "输入模型文件路径并点「加载」。加载后可拖转、拖帧、播放，或直接发给 AI 分析。" : "从左侧选择模型。加载后可拖转、拖帧、播放，或直接发给 AI 分析。")), state.phase === "ready" && clip !== "" && analysis.data !== null && /* @__PURE__ */ react.createElement(MotionTimeline, {
+		frames: analysis.data.frames,
+		energy: analysis.data.energy,
+		segments: analysis.data.segments,
+		loopFrames,
+		maxFrame: state.maxFrame,
+		frame,
+		onSeek: seek
+	}), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-controls" }, /* @__PURE__ */ react.createElement("button", {
 		type: "button",
 		className: "kinemesh-btn",
 		onClick: togglePlay,
@@ -46848,13 +47170,119 @@ function PreviewDialog({ onClose }) {
 		value: frame,
 		onChange: (event) => seek(Number(event.target.value)),
 		disabled: state.phase !== "ready" || clip === ""
-	}), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-frame" }, "f", frame, " / f", Math.max(state.maxFrame, 0))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, "「发送」会把当前路径、片段、帧号与视角描述连同输入框附言一起交给当前会话的 AI。"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
+	}), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-frame" }, "f", frame, " / f", Math.max(state.maxFrame, 0))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), digestHeadline !== "" && /* @__PURE__ */ react.createElement("span", {
+		className: "kinemesh-chip",
+		title: "发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）"
+	}, `digest ${digestHeadline}`), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, "「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
 		type: "button",
 		className: "kinemesh-btn",
 		"data-primary": "true",
 		onClick: () => void send(),
-		disabled: state.phase !== "ready" || sending || (connection?.sessionId ?? "") === ""
-	}, sending ? "发送中…" : "发送给 AI 分析")))));
+		disabled: state.phase !== "ready" || sending || props.sessionId === ""
+	}, sending ? "发送中…" : "发送给 AI 分析")));
+}
+function PreviewDialog({ onClose }) {
+	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", {
+		className: "kinemesh-backdrop",
+		onClick: onClose,
+		role: "presentation"
+	}, /* @__PURE__ */ react.createElement("div", {
+		className: "kinemesh-dialog",
+		role: "dialog",
+		"aria-label": "动析 3D 预览",
+		onClick: (event) => event.stopPropagation()
+	}, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-head" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, "动析 · 3D 预览"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, "拖转视角；截图与 AI 分析用同一套构图"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
+		type: "button",
+		className: "kinemesh-iconbtn",
+		onClick: onClose,
+		"aria-label": "关闭"
+	}, "✕")), /* @__PURE__ */ react.createElement(PreviewPane, {
+		sessionId: connection?.sessionId ?? "",
+		note: connection?.draft ?? null,
+		onSendSuccess: () => {
+			if ((connection?.draft ?? "").trim() !== "") try {
+				connection?.actions?.setDraft?.("");
+			} catch {}
+			onClose();
+		}
+	}))));
+}
+function PreviewPage({ sessionId }) {
+	const sid = typeof sessionId === "string" ? sessionId.trim() : "";
+	const [models, setModels] = react.useState([]);
+	const [selected, setSelected] = react.useState("");
+	const [inputPath, setInputPath] = react.useState("");
+	const [loadRequest, setLoadRequest] = react.useState(null);
+	const nonceRef = react.useRef(0);
+	const refresh = react.useCallback(async () => {
+		if (sid === "") return [];
+		try {
+			const body = await (await fetch(resolveEndpoint(`kinemesh/session-models?sessionId=${encodeURIComponent(sid)}`), { cache: "no-store" })).json().catch(() => null);
+			const list = body?.ok === true && Array.isArray(body.models) ? body.models : [];
+			setModels(list);
+			return list;
+		} catch {
+			return [];
+		}
+	}, [sid]);
+	react.useEffect(() => {
+		setModels([]);
+		setSelected("");
+		setLoadRequest(null);
+		let cancelled = false;
+		(async () => {
+			const list = await refresh();
+			if (!cancelled && list.length > 0) {
+				const first = list[0];
+				setSelected(first.path);
+				setLoadRequest({
+					path: first.path,
+					nonce: ++nonceRef.current
+				});
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [refresh]);
+	const openPath = (raw) => {
+		const target = raw.trim();
+		if (target === "") return;
+		setSelected(target);
+		setLoadRequest({
+			path: target,
+			nonce: ++nonceRef.current
+		});
+	};
+	const handleLoaded = (path) => {
+		if (path !== "") refresh();
+	};
+	if (sid === "") return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-page" }, /* @__PURE__ */ react.createElement("div", { className: "kinemesh-pageholder" }, translate("page.emptySession"))));
+	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-page" }, /* @__PURE__ */ react.createElement("aside", { className: "kinemesh-side" }, /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sidehead" }, translate("page.models")), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sideitems" }, models.length === 0 ? /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sideempty" }, translate("page.emptyModels")) : models.map((entry) => /* @__PURE__ */ react.createElement("button", {
+		key: entry.path,
+		type: "button",
+		className: "kinemesh-sideitem",
+		"data-active": selected === entry.path ? "true" : "false",
+		title: entry.path,
+		onClick: () => openPath(entry.path)
+	}, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sidename" }, entry.name), entry.animated && /* @__PURE__ */ react.createElement("span", { className: "kinemesh-badge" }, translate("list.animated"))))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sidefoot" }, /* @__PURE__ */ react.createElement("input", {
+		className: "kinemesh-input",
+		value: inputPath,
+		placeholder: translate("page.openPath"),
+		onChange: (event) => setInputPath(event.target.value),
+		onKeyDown: (event) => {
+			if (event.key === "Enter") openPath(inputPath);
+		}
+	}), /* @__PURE__ */ react.createElement("button", {
+		type: "button",
+		className: "kinemesh-btn",
+		onClick: () => openPath(inputPath)
+	}, translate("page.open")))), /* @__PURE__ */ react.createElement("section", { className: "kinemesh-main" }, /* @__PURE__ */ react.createElement(PreviewPane, {
+		sessionId: sid,
+		showPathInput: false,
+		loadRequest,
+		onLoaded: handleLoaded
+	}))));
 }
 function defaultView(center, radius) {
 	return {
@@ -46876,6 +47304,50 @@ async function loadSceneFromBytes(data, fileName) {
 	return entry.load(data, { fileName });
 }
 function apply(ctx) {
+	const disposeTexts = registerTexts(ctx);
+	translate = bindTranslate(ctx);
+	ctx.effect(() => () => {
+		translate = fallbackTranslate;
+		disposeTexts();
+	});
+	let tabDispose = null;
+	const syncPreviewTab = () => {
+		const snap = previewSession.getSnapshot();
+		const show = shouldShowPreviewTab(snap.sessionId, snap.used);
+		try {
+			if (show && tabDispose === null) tabDispose = ctx.slots.inject(CONVERSATION_VIEW_SLOT, () => ctx.slots.register({
+				name: CONVERSATION_VIEW_SLOT,
+				id: PREVIEW_TAB_ID,
+				order: 20,
+				label: () => translate("tab.preview")
+			}, (props) => /* @__PURE__ */ react.createElement(PreviewPage, { sessionId: typeof props.sessionId === "string" ? props.sessionId : void 0 })));
+			else if (!show && tabDispose !== null) {
+				const dispose = tabDispose;
+				tabDispose = null;
+				dispose();
+			}
+		} catch {}
+	};
+	ctx.effect(() => {
+		const off = previewSession.subscribe(syncPreviewTab);
+		syncPreviewTab();
+		return () => {
+			off();
+			if (tabDispose !== null) {
+				const dispose = tabDispose;
+				tabDispose = null;
+				dispose();
+			}
+		};
+	});
+	ctx.effect(() => ctx.slots.inject(HEADER_SLOT, () => ctx.slots.register({
+		name: HEADER_SLOT,
+		id: PREVIEW_TAB_ID,
+		order: 45
+	}, (props) => /* @__PURE__ */ react.createElement(SessionCapture, {
+		sessionId: typeof props.sessionId === "string" ? props.sessionId : "",
+		store: previewSession
+	}))));
 	ctx.effect(() => ctx.slots.inject(INPUT_LEFT_SLOT, () => ctx.slots.register({
 		name: INPUT_LEFT_SLOT,
 		id: ENTRY_ID,
@@ -46889,7 +47361,13 @@ function apply(ctx) {
 }
 //#endregion
 exports.apply = apply;
+exports.energyPoints = energyPoints;
+exports.formatDigestHeadline = formatDigestHeadline;
+exports.frameToPercent = frameToPercent;
 exports.inject = inject;
+exports.normalizeEnergySeries = normalizeEnergySeries;
+exports.segmentColor = segmentColor;
+exports.shouldShowPreviewTab = shouldShowPreviewTab;
     })(module, module.exports, require);
     return module.exports;
   },

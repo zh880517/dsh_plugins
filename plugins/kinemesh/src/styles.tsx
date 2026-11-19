@@ -54,6 +54,35 @@ export const css = `
 .kinemesh-banner[data-kind="ok"]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}
 
 .kinemesh-foot{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
+
+/* ———— 模型预览页（conversation.view 页签，M6e） ———— */
+.kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
+.kinemesh-pageholder{flex:1;display:grid;place-items:center;padding:24px;text-align:center;
+  color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.kinemesh-side{width:250px;min-width:200px;flex:none;display:flex;flex-direction:column;
+  border-right:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+.kinemesh-sidehead{padding:10px 12px 6px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.kinemesh-sideitems{flex:1;overflow:auto;padding:0 8px;display:flex;flex-direction:column;gap:2px}
+.kinemesh-sideitem{display:flex;align-items:center;gap:6px;width:100%;padding:7px 8px;border-radius:8px;
+  border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);
+  font:inherit;font-size:12px;cursor:pointer;text-align:left;overflow:hidden}
+.kinemesh-sideitem:hover{background:var(--dsw-alias-bg-layer-2)}
+.kinemesh-sideitem[data-active="true"]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1)}
+.kinemesh-sidename{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kinemesh-badge{flex:none;padding:1px 6px;border-radius:6px;font-size:10.5px;
+  border:1px solid var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}
+.kinemesh-sideempty{padding:12px;color:var(--dsw-alias-label-secondary);font-size:11.5px;text-align:center}
+.kinemesh-sidefoot{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1)}
+.kinemesh-sidefoot .kinemesh-input{min-width:0;flex:1}
+.kinemesh-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto}
+
+/* ———— 强度曲线时间轴（§6.10.3）：进度条上方的曲线 + 分段色带 + 循环高亮 ———— */
+.kinemesh-timeline{margin:4px 14px 0}
+.kinemesh-timeline svg{display:block;width:100%;height:44px;cursor:crosshair;border-radius:8px;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);touch-action:none}
+.kinemesh-timeline .kinemesh-timelinehint{display:block;margin-top:2px;font-size:10.5px;
+  color:var(--dsw-alias-label-secondary)}
 `;
 
 export function Styles(): React.ReactElement {

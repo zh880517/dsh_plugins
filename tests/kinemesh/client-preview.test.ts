@@ -1,0 +1,95 @@
+// client 侧纯函数直测（M6e §6.10）：页签可见性、能量归一/折线点、分段色带颜色、
+// 帧号百分比、digest 摘要文案。交互与渲染在 client.tsx，不走 jsdom（与 handoff 同一套策略）。
+import { describe, expect, it } from 'vitest';
+import {
+  energyPoints,
+  formatDigestHeadline,
+  frameToPercent,
+  normalizeEnergySeries,
+  segmentColor,
+  shouldShowPreviewTab,
+} from '../../plugins/kinemesh/src/client.js';
+
+describe('页签可见性（§6.9 M6e：未用插件的会话无页签）', () => {
+  it('没拿到会话 id 时不出现页签', () => {
+    expect(shouldShowPreviewTab('', true)).toBe(false);
+    expect(shouldShowPreviewTab('   ', true)).toBe(false);
+  });
+
+  it('拿到会话但没用过 kinemesh 时不出现页签', () => {
+    expect(shouldShowPreviewTab('s1', false)).toBe(false);
+  });
+
+  it('会话用过 kinemesh 时出现页签', () => {
+    expect(shouldShowPreviewTab('s1', true)).toBe(true);
+  });
+});
+
+describe('能量曲线归一与折线点', () => {
+  it('峰值归一到 1，其余按比例；负值截 0', () => {
+    expect(normalizeEnergySeries([1, 2, 4])).toEqual([0.25, 0.5, 1]);
+    expect(normalizeEnergySeries([-1, 0, 2])).toEqual([0, 0, 1]);
+  });
+
+  it('空序列返回空；全零恒 0', () => {
+    expect(normalizeEnergySeries([])).toEqual([]);
+    expect(normalizeEnergySeries([0, 0, 0])).toEqual([0, 0, 0]);
+  });
+
+  it('折线点铺满坐标空间：首点在左下沿、峰值到顶', () => {
+    const points = energyPoints([0, 0.5, 1], 100, 40);
+    expect(points).toHaveLength(3);
+    expect(points[0]).toEqual([0, 40]);
+    expect(points[1]).toEqual([50, 20]);
+    expect(points[2]).toEqual([100, 0]);
+  });
+
+  it('空序列/非法尺寸返回空点列；单点也成点列', () => {
+    expect(energyPoints([], 100, 40)).toEqual([]);
+    expect(energyPoints([1], 0, 40)).toEqual([]);
+    expect(energyPoints([1], 100, 40)).toEqual([[0, 40]]);
+  });
+});
+
+describe('分段色带颜色与帧号百分比', () => {
+  it('label 分类着色：已知 label 各有颜色，未知 label 用同一兜底色', () => {
+    expect(segmentColor('idle')).toBe(segmentColor('idle'));
+    expect(segmentColor('idle')).not.toBe(segmentColor('contact-move'));
+    expect(segmentColor('contact-move')).not.toBe(segmentColor('action'));
+    expect(segmentColor('action')).not.toBe(segmentColor('airborne'));
+    expect(segmentColor('no-such-label')).toBe(segmentColor('another-unknown'));
+  });
+
+  it('frameToPercent：0/max → 0/100，越界截断，maxFrame ≤ 0 恒 0', () => {
+    expect(frameToPercent(0, 100)).toBe(0);
+    expect(frameToPercent(50, 100)).toBe(50);
+    expect(frameToPercent(100, 100)).toBe(100);
+    expect(frameToPercent(150, 100)).toBe(100);
+    expect(frameToPercent(-5, 100)).toBe(0);
+    expect(frameToPercent(10, 0)).toBe(0);
+    expect(frameToPercent(Number.NaN, 100)).toBe(0);
+  });
+});
+
+describe('digest 摘要文案（发送 chip）', () => {
+  it('clip 名 + 段数 + loopCheck verdict 组成一行', () => {
+    const headline = formatDigestHeadline({
+      clip: { name: 'Walk', duration: 0.5, frames: 15 },
+      segments: [
+        { frameStart: 0, frameEnd: 7, label: 'contact-move', guess: 'walk', level: 'low' },
+        { frameStart: 8, frameEnd: 15, label: 'idle', guess: 'idle', level: 'low' },
+      ],
+      loopCheck: { verdict: 'loop-ok', bestLoopRange: { frameStart: 0, frameEnd: 7 } },
+    });
+    expect(headline).toContain('Walk');
+    expect(headline).toContain('2 段');
+    expect(headline).toContain('loop-ok');
+  });
+
+  it('空 digest / 非对象返回空串；只有部分字段也能成句', () => {
+    expect(formatDigestHeadline(null)).toBe('');
+    expect(formatDigestHeadline(undefined)).toBe('');
+    expect(formatDigestHeadline({})).toBe('');
+    expect(formatDigestHeadline({ clip: { name: 'Idle' } })).toContain('Idle');
+  });
+});
