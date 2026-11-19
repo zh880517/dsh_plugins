@@ -62,7 +62,7 @@ const DIR_WORDS = [
 ] as const;
 
 /** wrap(θ) = ((θ + 180) mod 360) − 180，值域 [−180, 180)（A.4） */
-function wrapDegrees(theta: number): number {
+export function wrapDegrees(theta: number): number {
   return ((((theta + 180) % 360) + 360) % 360) - 180;
 }
 
@@ -71,7 +71,7 @@ function norm3(x: number, y: number, z: number): number {
 }
 
 /** 居中滑动平均（A.2）：窗宽 2m+1，端点用截断窗口 */
-function smooth(values: number[] | Float64Array, m: number): number[] {
+export function smoothSeries(values: number[] | Float64Array, m: number): number[] {
   const out = new Array<number>(values.length);
   for (let k = 0; k < values.length; k += 1) {
     const from = Math.max(0, k - m);
@@ -81,6 +81,35 @@ function smooth(values: number[] | Float64Array, m: number): number[] {
     out[k] = sum / (to - from + 1);
   }
   return out;
+}
+
+/**
+ * 每采样帧每关节的线速度模（H/s），N×J——A.2 差分公式的唯一实现，
+ * computeChannels 与 describe（peakJoint / 段特征）共用，避免公式分叉。
+ */
+export function jointSpeedMatrix(sample: SampleResult, scale = 1): Float64Array {
+  const n = sample.frameCount;
+  const jointCount = sample.joints.length;
+  const dt = sample.dt;
+  const raw = sample.positions;
+  const pos = new Float64Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) pos[i] = raw[i]! / scale;
+  const speeds = new Float64Array(n * jointCount);
+  for (let j = 0; j < jointCount; j += 1) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      const series = new Float64Array(n);
+      for (let k = 0; k < n; k += 1) series[k] = pos[(k * jointCount + j) * 3 + axis]!;
+      const d = new Float64Array(n);
+      for (let k = 0; k < n; k += 1) {
+        if (k === 0) d[k] = (series[1]! - series[0]!) / dt;
+        else if (k === n - 1) d[k] = (series[n - 1]! - series[n - 2]!) / dt;
+        else d[k] = (series[k + 1]! - series[k - 1]!) / (2 * dt);
+      }
+      for (let k = 0; k < n; k += 1) speeds[k * jointCount + j] = speeds[k * jointCount + j]! + d[k]! * d[k]!;
+    }
+  }
+  for (let i = 0; i < speeds.length; i += 1) speeds[i] = Math.sqrt(speeds[i]!);
+  return speeds;
 }
 
 export function computeChannels(sample: SampleResult, options: ChannelsOptions = {}): FrameChannels {
@@ -100,25 +129,9 @@ export function computeChannels(sample: SampleResult, options: ChannelsOptions =
     return [pos[base]!, pos[base + 1]!, pos[base + 2]!];
   };
 
-  // ———— 速度：内部中央差分、端点单侧（A.2） ————
-  const vel = new Float64Array(n * jointCount * 3);
-  for (let j = 0; j < jointCount; j += 1) {
-    for (let axis = 0; axis < 3; axis += 1) {
-      const series = new Float64Array(n);
-      for (let k = 0; k < n; k += 1) series[k] = at(k, j)[axis]!;
-      const d = new Float64Array(n);
-      for (let k = 0; k < n; k += 1) {
-        if (k === 0) d[k] = (series[1]! - series[0]!) / dt;
-        else if (k === n - 1) d[k] = (series[n - 1]! - series[n - 2]!) / dt;
-        else d[k] = (series[k + 1]! - series[k - 1]!) / (2 * dt);
-      }
-      for (let k = 0; k < n; k += 1) vel[(k * jointCount + j) * 3 + axis] = d[k]!;
-    }
-  }
-  const speedAt = (k: number, j: number): number => {
-    const base = (k * jointCount + j) * 3;
-    return norm3(vel[base]!, vel[base + 1]!, vel[base + 2]!);
-  };
+  // ———— 速度：内部中央差分、端点单侧（A.2，公式唯一实现见 jointSpeedMatrix） ————
+  const speeds = jointSpeedMatrix(sample, scale);
+  const speedAt = (k: number, j: number): number => speeds[k * jointCount + j]!;
 
   // ———— 能量：加权平均关节线速度（A.3） ————
   let weightSum = 0;
@@ -245,8 +258,8 @@ export function computeChannels(sample: SampleResult, options: ChannelsOptions =
       return out;
     };
     // XZ 分量后 smooth(m=1)（A.5 固定口径）
-    rootVelX = smooth(diff(absX), MOVE_SMOOTH_M);
-    rootVelZ = smooth(diff(absZ), MOVE_SMOOTH_M);
+    rootVelX = smoothSeries(diff(absX), MOVE_SMOOTH_M);
+    rootVelZ = smoothSeries(diff(absZ), MOVE_SMOOTH_M);
   }
   const moveSpeed = rootVelX.map((vx, k) => Math.sqrt(vx * vx + rootVelZ[k]! * rootVelZ[k]!));
 

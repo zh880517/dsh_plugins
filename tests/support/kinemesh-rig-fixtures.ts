@@ -181,3 +181,120 @@ export function buildMorphOnlyClip(): THREE.AnimationClip {
   const track = new THREE.NumberKeyframeTrack('Hips.morphTargetInfluences', [0, 1], [0, 1]);
   return new THREE.AnimationClip('Blink', 1, [track]);
 }
+
+// ———————— M6b：分段 / guess 决策表的已知答案动画 ————————
+
+/**
+ * 跳跃（纯垂直）：0.5s 起跳、0.95s 到顶 +0.4、1.4s 落地，全身随动。
+ * 顶点垂直速度归零 → Ê 在顶点形成显著能量谷（A.7 切分）→ 飞行拆成上升/下落两段，
+ * guess 分别为 jump（hips 峰值升高 ≥0.05H）与 fall（未升高）——这是决策表的确定性行为。
+ * 已知答案：liftoff frame 16、touchdown frame 44（30fps 口径）、airTime = 14/15 s、
+ * maxRootYGain ≈ 0.385 H、分段 [gesture(起跳过渡), airborne(jump), airborne(fall), idle]。
+ */
+export function buildJumpClip(rig: HumanoidRig, options: { duration?: number } = {}): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const hipsLocal = rig.bones.Hips.position;
+  const times = [0, 0.5, 0.95, 1.4, duration];
+  const values: number[] = [];
+  for (const t of times) {
+    const u = t <= 0.5 || t >= 1.4 ? 0 : t < 0.95 ? 0.4 * ((t - 0.5) / 0.45) : 0.4 * ((1.4 - t) / 0.45);
+    values.push(hipsLocal.x, hipsLocal.y + u, hipsLocal.z);
+  }
+  return new THREE.AnimationClip('Jump', duration, [
+    new THREE.VectorKeyframeTrack('Hips.position', times, values),
+  ]);
+}
+
+/**
+ * 出拳：idle → windup 后拉（0.3–0.55s）→ 刀位停顿（0.55–0.85，≥0.25s 保证平滑后仍有能量谷）→
+ * 高速前刺（0.85–1.15s，手/前臂/上臂局部 13.33/10.67/8 H/s，世界速度 32/18.67/8，
+ * 峰值能量 ≈ 5.29 ≥ 2.0）→ 顶点停顿（1.15–1.45）→ 慢收（1.45–2.35）→ 尾段静止。
+ * 注意 FK 层级：手臂关节世界速度 = 父链速度之和。
+ * 已知答案（分段 guess 序列）：[gesture, strike-punch, recover]。
+ */
+export function buildPunchClip(rig: HumanoidRig, options: { duration?: number } = {}): THREE.AnimationClip {
+  const duration = options.duration ?? 2.65;
+  const times = [0, 0.3, 0.55, 0.85, 1.15, 1.45, 2.35, duration];
+  const chains: Array<[string, number]> = [
+    ['RightHand', 1],
+    ['RightForeArm', 0.8],
+    ['RightArm', 0.6],
+  ];
+  const tracks = chains.map(([bone, ratio]) => {
+    const bone0 = rig.bones[bone]!;
+    const offsets = [0, 0, -0.5, -0.5, 3.5, 3.5, 0, 0];
+    const values: number[] = [];
+    for (const offset of offsets) values.push(bone0.position.x, bone0.position.y, bone0.position.z + offset * ratio);
+    return new THREE.VectorKeyframeTrack(`${bone}.position`, times, values);
+  });
+  return new THREE.AnimationClip('Punch', duration, tracks);
+}
+
+/**
+ * 倒退走：hips 以 0.5 H/s 沿 −z 平移，双脚用局部轨道保持世界位置（踩地不腾空）。
+ * 已知答案：单段 contact-move / guess backpedal、moveDirBody = back、rootSpeed 0.5、
+ * 支撑 double-support、能量 ≈ 0.413 H/s（9.5 权重 × 0.5 / 11.5）。
+ */
+export function buildBackpedalClip(rig: HumanoidRig, options: { duration?: number; speed?: number } = {}): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const speed = options.speed ?? 0.5;
+  const hipsLocal = rig.bones.Hips.position;
+  const tracks: THREE.KeyframeTrack[] = [
+    new THREE.VectorKeyframeTrack('Hips.position', [0, duration], [
+      hipsLocal.x,
+      hipsLocal.y,
+      hipsLocal.z,
+      hipsLocal.x,
+      hipsLocal.y,
+      hipsLocal.z - speed * duration,
+    ]),
+  ];
+  for (const side of ['Left', 'Right'] as const) {
+    const foot = rig.bones[`${side}Foot`]!;
+    tracks.push(
+      new THREE.VectorKeyframeTrack(`${side}Foot.position`, [0, duration], [
+        foot.position.x,
+        foot.position.y,
+        foot.position.z,
+        foot.position.x,
+        foot.position.y,
+        foot.position.z + speed * duration,
+      ]),
+    );
+  }
+  return new THREE.AnimationClip('Backpedal', duration, tracks);
+}
+
+/**
+ * 侧移（向右 strafe-r）：hips 以 0.6 H/s 沿 +x 平移（角色右侧 = +x），双脚保持世界位置。
+ * 已知答案：单段 contact-move / guess strafe-r、moveDirBody = right、能量 ≈ 0.496 H/s。
+ */
+export function buildStrafeClip(rig: HumanoidRig, options: { duration?: number; speed?: number } = {}): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const speed = options.speed ?? 0.6;
+  const hipsLocal = rig.bones.Hips.position;
+  const tracks: THREE.KeyframeTrack[] = [
+    new THREE.VectorKeyframeTrack('Hips.position', [0, duration], [
+      hipsLocal.x,
+      hipsLocal.y,
+      hipsLocal.z,
+      hipsLocal.x + speed * duration,
+      hipsLocal.y,
+      hipsLocal.z,
+    ]),
+  ];
+  for (const side of ['Left', 'Right'] as const) {
+    const foot = rig.bones[`${side}Foot`]!;
+    tracks.push(
+      new THREE.VectorKeyframeTrack(`${side}Foot.position`, [0, duration], [
+        foot.position.x,
+        foot.position.y,
+        foot.position.z,
+        foot.position.x - speed * duration,
+        foot.position.y,
+        foot.position.z,
+      ]),
+    );
+  }
+  return new THREE.AnimationClip('Strafe', duration, tracks);
+}

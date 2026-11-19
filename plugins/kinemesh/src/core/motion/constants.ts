@@ -42,9 +42,29 @@ export const WALK_SPEED = 0.3;
 export const TURN_TH = 45;
 export const SPIN_TH = 270;
 
-/** 关键帧挑选（A.11）：上限 / 帧距去重 */
+/** 关键帧挑选（A.11）：上限 / 帧距去重 / 参与挑选的段数（按 peakE 降序） */
 export const KEYFRAME_MAX = 8;
 export const KEYFRAME_DEDUP = 0.3;
+export const KEYFRAME_SEGMENT_TOP = 6;
+
+/** 事件时间轴（A.7）：全片上限 / 方向切换需此后稳定的帧数 */
+export const EVENTS_MAX = 32;
+export const DIRECTION_STABLE_FRAMES = 3;
+
+/** hipsLow 判据偏移（A.8 #10）：段内 hips 均值 < 全片 P10 − 0.05 */
+export const HIPS_LOW_OFFSET = 0.05;
+
+/** trajectory SVG 强度五档着色（A.13，按能量着色） */
+export const LEVEL_COLORS: Record<IntensityLevel, string> = {
+  static: '#dddddd',
+  low: '#b3de69',
+  medium: '#fdb462',
+  high: '#fb8072',
+  extreme: '#9e0142',
+};
+
+/** trajectory SVG 采样圆点抽稀上限（A.13：帧多时按 stride 抽稀到 ≤ 600 个，路径不抽稀） */
+export const TRAJECTORY_MAX_DOTS = 600;
 
 /**
  * 强度档位（§6.6.2，A.9）：mean 按「平均能量」列、peak 按「峰值能量」列各判一档，
