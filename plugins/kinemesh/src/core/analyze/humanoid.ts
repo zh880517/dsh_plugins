@@ -16,6 +16,70 @@ const CATEGORIES: Array<[string, RegExp]> = [
 /** 至少命中这么多身体分类才判定 humanoidLike */
 const MIN_CATEGORIES = 4;
 
+// ———————— J15 关节命名惯例（M6 附录 A.0：关节集解析的纯逻辑部分） ————————
+
+/** J15 部件类 + 足点 Toe（Toe 不进 J15，只作接触/打击的足点候选，见附录 A.6/A.8） */
+export type JointKind =
+  | 'hips'
+  | 'spine'
+  | 'head'
+  | 'upper-arm'
+  | 'lower-arm'
+  | 'hand'
+  | 'upper-leg'
+  | 'lower-leg'
+  | 'foot'
+  | 'toe';
+
+export interface JointClassification {
+  kind: JointKind;
+  side: 'L' | 'R' | null;
+}
+
+/**
+ * 按命名惯例把一根骨骼分到部件类（附录 A.0）。特异性序：先具体后泛称——
+ * ForeArm 要先于 arm、UpLeg 要先于 leg、Toe 要先于 foot，否则会被泛称抢走。
+ * 语义上属于中轴的（hips/spine/head）不带左右侧。
+ */
+const JOINT_KIND_PATTERNS: Array<[JointKind, RegExp]> = [
+  ['toe', /toe|ball_?roll|ball/],
+  ['hand', /hand|palm|wrist/],
+  ['lower-arm', /lowerarm|forearm|elbow/],
+  ['upper-arm', /arm|bicep|tricep/],
+  ['foot', /foot|ankle|heel/],
+  ['upper-leg', /upleg|upperleg|thigh/],
+  ['lower-leg', /lowerleg|calf|shin|knee|leg/],
+  ['hips', /hips|pelvis/],
+  ['spine', /spine|torso|chest|ribs/],
+  ['head', /head|skull|jaw/],
+];
+
+/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写 */
+function normalize(name: string): string {
+  return name.toLowerCase().replace(/^.*:/, '').replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, '');
+}
+
+/** 左右侧识别：Left 前缀、或独立分隔的 l/r（hand_l / L Hand / Bip01-L-Hand）。
+ *  独立 l/r 要求两侧都是分隔符或端点，避免 leg/roll/forearm 这类词误判。 */
+function sideOf(name: string): 'L' | 'R' | null {
+  if (/left/.test(name) || /(^|[^a-z])l(?![a-z])/.test(name)) return 'L';
+  if (/right/.test(name) || /(^|[^a-z])r(?![a-z])/.test(name)) return 'R';
+  return null;
+}
+
+export function classifyJointName(rawName: string): JointClassification | null {
+  const name = normalize(rawName);
+  if (name === '') return null;
+  const side = sideOf(name);
+  for (const [kind, pattern] of JOINT_KIND_PATTERNS) {
+    if (pattern.test(name)) {
+      const unilateral = kind === 'hips' || kind === 'spine' || kind === 'head';
+      return { kind, side: unilateral ? null : side };
+    }
+  }
+  return null;
+}
+
 export function isHumanoidLike(boneNames: string[]): boolean {
   return matchedCategories(boneNames).length >= MIN_CATEGORIES;
 }
@@ -30,9 +94,4 @@ export function matchedCategories(boneNames: string[]): string[] {
     }
   }
   return [...hit];
-}
-
-/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写 */
-function normalize(name: string): string {
-  return name.toLowerCase().replace(/^.*:/, '').replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, '');
 }

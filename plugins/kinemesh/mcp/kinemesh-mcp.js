@@ -44685,6 +44685,10 @@ var CATEGORIES = [
 ];
 /** 至少命中这么多身体分类才判定 humanoidLike */
 var MIN_CATEGORIES = 4;
+/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写 */
+function normalize(name) {
+	return name.toLowerCase().replace(/^.*:/, "").replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, "");
+}
 function isHumanoidLike(boneNames) {
 	return matchedCategories(boneNames).length >= MIN_CATEGORIES;
 }
@@ -44696,10 +44700,6 @@ function matchedCategories(boneNames) {
 		for (const [category, pattern] of CATEGORIES) if (!hit.has(category) && pattern.test(name)) hit.add(category);
 	}
 	return [...hit];
-}
-/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写 */
-function normalize(name) {
-	return name.toLowerCase().replace(/^.*:/, "").replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, "");
 }
 //#endregion
 //#region
