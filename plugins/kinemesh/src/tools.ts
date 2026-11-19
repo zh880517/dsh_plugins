@@ -9,6 +9,7 @@ import { sceneBoundsHeight } from './core/analyze/scene-info.js';
 import { analyzeClip, type MotionDigest } from './core/motion/analyze.js';
 import { resolveNormalization } from './core/motion/normalize.js';
 import { loadVocab } from './core/motion/vocab.js';
+import { getCachedScene } from './core/scene-cache.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
 import type { InfoReport } from './core/types.js';
@@ -82,10 +83,12 @@ async function readModelFile(rawPath: string): Promise<LoadedModel> {
 
 /** 三出口同名同参口径（DSH JSON Schema / CLI flag / MCP zod 各自投影，语义以此接口为准） */
 export interface AnalyzeToolParams {
-  /** 缺省第一个 clip；批量与 range 切片是 M6f 任务，本版不做 */
+  /** 缺省第一个 clip；'*' 批量分析全部 clips（M6f，§6.7：summary 变 clips[]、文件按 <clip>/ 分桶） */
   clip?: string;
   /** 中间文件输出目录；缺省 <系统临时目录>/kinemesh-analysis/run-<时间戳>-<pid>/ */
   out?: string;
+  /** [t0, t1] 秒切片（M6f）：帧号仍按全片口径；t0 < t1 在出口校验，t1 ≤ 时长由 core 校验 */
+  range?: [number, number];
   /** 1–60，缺省 15（core 采样层校验） */
   sampleFps?: number;
   /** 'auto'（缺省）或关节 id / 骨骼名清单 */
@@ -106,28 +109,41 @@ export interface AnalyzeToolParams {
   boneMap?: string;
 }
 
+/** 批量口径的 summaryDigest（M6f §6.7：digest.clips[] 逐 clip 内联） */
+export interface BatchDigest {
+  batch: true;
+  clips: Array<{ name: string; digest: MotionDigest }>;
+}
+
 export interface AnalyzeRunResult {
   ok: true;
   dir: string;
   files: Array<{ name: string; bytes: number; what: string }>;
-  summaryDigest: MotionDigest;
+  /** 单 clip：MotionDigest；clip:"*" 批量：BatchDigest（digest.clips[]，中间文件按 <clip>/ 分桶） */
+  summaryDigest: MotionDigest | BatchDigest;
   warnings?: string[];
   /** 仅当输出落在系统临时目录时给出（读不到文件的自愈指引，§6.4） */
   hint?: string;
 }
 
 /**
- * 三出口共用的 analyze 执行 runner：加载场景 → 身高归一 → vocab 发现 → analyzeClip → 落盘。
- * 抛 KinemeshError（无动画 / clip 缺失 / morph-only / 参数越界 / 词表非法等），由各出口转成
- * 自己的错误口径（tools errorPayload / CLI fail / MCP errorResult）。
+ * 三出口共用的 analyze 执行 runner：加载场景（M6f 起走 path+mtime 进程内缓存）→ 身高归一 →
+ * vocab 发现 → analyzeClip（单 clip 或 '*' 批量）→ 落盘。抛 KinemeshError（无动画 / clip 缺失 /
+ * morph-only / 参数越界 / 词表非法等），由各出口转成自己的错误口径（tools errorPayload / CLI fail /
+ * MCP errorResult）。
  */
 export async function runAnalyze(
   data: ArrayBuffer,
   fileName: string,
   params: AnalyzeToolParams,
-  context: { assetDir?: string } = {},
+  context: { assetDir?: string; absPath?: string } = {},
 ): Promise<AnalyzeRunResult> {
-  const { scene } = await loadModelScene(data, fileName);
+  // 场景缓存（M6f §6.2）：给了绝对路径就走 path+mtime 进程内缓存（rest 姿态由 sample.ts
+  // finally 恢复，命中复用安全）；测试直调无 absPath 时保持直载
+  const loadedScene = context.absPath
+    ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) }
+    : await loadModelScene(data, fileName);
+  const { scene } = loadedScene;
   const normalization = resolveNormalization(params.normalize ?? 'height', sceneBoundsHeight(scene));
   const vocab = await loadVocab({
     explicitPath: params.vocab,
@@ -136,6 +152,7 @@ export async function runAnalyze(
   });
   const analysis = analyzeClip(scene, {
     clipName: params.clip,
+    range: params.range,
     sampleFps: params.sampleFps,
     joints: params.joints,
     smooth: params.smooth,
@@ -157,15 +174,36 @@ export async function runAnalyze(
     await writeFile(target, artifact.content, 'utf8');
     files.push({ name: artifact.name, bytes: artifact.bytes, what: artifact.what });
   }
-  const warnings = [...new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
+  // 批量口径（M6f）：warnings 逐 clip 聚合去重，digest 用 clips[] envelope；单 clip 路径不变
+  const batch = analysis.batch === true;
+  const warnings = batch
+    ? [
+        ...new Set(
+          (analysis.summary.clips ?? []).flatMap((entry) => [...entry.summary.warnings, ...entry.summary.normalize.warnings]),
+        ),
+      ]
+    : [...new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
   return {
     ok: true,
     dir,
     files,
-    summaryDigest: analysis.digest,
+    // 批量时 analysis.digest 运行时就是 BatchDigest envelope（analyze.ts 构造）；静态类型仍是单 clip 口径
+    summaryDigest: batch ? (analysis.digest as unknown as BatchDigest) : analysis.digest,
     ...(warnings.length > 0 ? { warnings } : {}),
     ...(specified ? {} : { hint: '输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
   };
+}
+
+/** range 参数投影（M6f）：undefined = 未给；null = 形状/顺序不合法（调用方给三段式）；数组 = 通过 */
+function parseRangeArg(value: unknown): [number, number] | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length !== 2) return null;
+  const t0 = value[0];
+  const t1 = value[1];
+  if (typeof t0 !== 'number' || typeof t1 !== 'number' || !Number.isFinite(t0) || !Number.isFinite(t1) || t0 >= t1) {
+    return null;
+  }
+  return [t0, t1];
 }
 
 function analyzeTool(): AgentTool {
@@ -175,14 +213,22 @@ function analyzeTool(): AgentTool {
       '对模型文件的动画片段做动作分析（本地只读，不改文件）：headless 采样 + 派生通道，产出中间文件目录' +
       '（motion-summary.json 分段/facts/loopCheck、motion-frames.csv、motion-segments.json、motion-keyframes.json、' +
       'trajectory、指定关节曲线），并返回内联 summaryDigest（分段表 + 全片统计 + loopCheck + keyframeRender 配方）。' +
+      'clip="*" 批量分析全部片段（返回 clips[]、中间文件按 <clip>/ 分子目录）；range=[t0,t1] 秒切片（帧号仍按全片口径）。' +
       '数据层工具：一切数值/label/guess/verdict 由它产出，AI 只引用数值做语义推测；' +
       '语义存疑时把 summaryDigest.keyframeRender 配方原样传给 kinemesh_render 出识别用图。',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）' },
-        clip: { type: 'string', description: '动画片段名（先 kinemesh_info 查）；缺省第一个 clip' },
+        clip: { type: 'string', description: '动画片段名或 "*"（批量分析全部 clips，先 kinemesh_info 查）；缺省第一个 clip' },
         out: { type: 'string', description: '中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/' },
+        range: {
+          type: 'array',
+          items: { type: 'number' },
+          minItems: 2,
+          maxItems: 2,
+          description: '[t0, t1] 秒切片（0 ≤ t0 < t1 ≤ 片段时长）；帧号仍按全片口径，结果可直接喂 kinemesh_render',
+        },
         sampleFps: { type: 'integer', description: '采样率 1–60，缺省 15' },
         joints: {
           anyOf: [{ type: 'string', enum: ['auto'] }, { type: 'array', items: { type: 'string' } }],
@@ -206,12 +252,21 @@ function analyzeTool(): AgentTool {
     output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => textResult(value) },
     timeoutMs: 120_000,
     async execute(args) {
+      const range = parseRangeArg(args?.range);
+      if (range === null) {
+        return errorPayload(
+          'range 参数不合法：需要 [t0, t1] 秒数字数组且 t0 < t1。',
+          '例如 "range": [0.5, 2]；t1 不超过片段时长（先用 kinemesh_info 查 clips[].duration）。',
+          '解析 range 参数',
+        );
+      }
       const given = typeof args?.path === 'string' ? args.path : '';
       const loaded = await readModelFile(given);
       if (!loaded.ok) return loaded.payload;
       const params: AnalyzeToolParams = {
         clip: typeof args?.clip === 'string' && args.clip.trim() !== '' ? args.clip : undefined,
         out: typeof args?.out === 'string' ? args.out : undefined,
+        range,
         sampleFps: typeof args?.sampleFps === 'number' ? args.sampleFps : undefined,
         joints:
           args?.joints === 'auto'
@@ -228,7 +283,10 @@ function analyzeTool(): AgentTool {
         boneMap: typeof args?.boneMap === 'string' && args.boneMap.trim() !== '' ? expandHome(args.boneMap.trim()) : undefined,
       };
       try {
-        return await runAnalyze(loaded.data, path.basename(loaded.abs), params, { assetDir: path.dirname(loaded.abs) });
+        return await runAnalyze(loaded.data, path.basename(loaded.abs), params, {
+          assetDir: path.dirname(loaded.abs),
+          absPath: loaded.abs,
+        });
       } catch (error) {
         if (error instanceof KinemeshError) {
           return errorPayload(error.message, error.guidance, `分析 ${loaded.abs}`);

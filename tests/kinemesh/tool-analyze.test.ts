@@ -66,7 +66,7 @@ describe('kinemesh_analyze 工具', () => {
     expect(tool?.name).toBe('kinemesh_analyze');
     expect(tool?.parameters.required).toEqual(['path']);
     expect(Object.keys(tool?.parameters.properties ?? {})).toEqual([
-      'path', 'clip', 'out', 'sampleFps', 'joints', 'detail', 'curvesFor', 'smooth', 'loopMode', 'normalize', 'vocab', 'boneMap',
+      'path', 'clip', 'out', 'range', 'sampleFps', 'joints', 'detail', 'curvesFor', 'smooth', 'loopMode', 'normalize', 'vocab', 'boneMap',
     ]);
   });
 

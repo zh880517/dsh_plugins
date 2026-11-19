@@ -466,3 +466,113 @@ export function buildNoReturnClip(
   ]);
   return new THREE.AnimationClip('NoReturn', duration, [hipsTrack, spineTrack]);
 }
+
+// ———————— M6f：多 clip 的 glTF 文件样例（工具层批量 clip:"*" 用） ————————
+
+const CUBE_POSITIONS = new Float32Array([
+  -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+  -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+]);
+const CUBE_INDICES = new Uint16Array([
+  0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5, 0, 1, 5, 0, 5, 4, 3, 2, 6, 3, 6, 7,
+]);
+
+interface PackedGltfBuffer {
+  sections: Array<{ offset: number; byteLength: number }>;
+  dataUri: string;
+  byteLength: number;
+}
+
+/** 各段 Float32/Uint16 按 4 字节对齐打包成一块 base64 data URI buffer（测试内存构造，不落盘） */
+function packGltfBuffer(parts: Array<Float32Array | Uint16Array>): PackedGltfBuffer {
+  const sections: Array<{ offset: number; byteLength: number }> = [];
+  const chunks: Uint8Array[] = [];
+  let cursor = 0;
+  for (const part of parts) {
+    const view = new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+    sections.push({ offset: cursor, byteLength: part.byteLength });
+    chunks.push(view);
+    cursor += part.byteLength;
+    const padding = (4 - (cursor % 4)) % 4;
+    if (padding !== 0) {
+      chunks.push(new Uint8Array(padding));
+      cursor += padding;
+    }
+  }
+  const bytes = new Uint8Array(cursor);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  const base64 = Buffer.from(bytes).toString('base64');
+  return { sections, dataUri: `data:application/octet-stream;base64,${base64}`, byteLength: bytes.byteLength };
+}
+
+/**
+ * 与 buildAnimatedCubeGltf 同构的最小 cube 场景，但带两个动画（同轨道键，输出不同）：
+ * - Walk：rig 节点沿 +x 平移 0→2（净位移 → rootMotion）；
+ * - Jump：rig 节点沿 +y 平移 0→1.5。
+ * 供工具层 clip:"*" 批量测试：一次 analyze 出两个 clip 的 digest、中间文件按 <clip>/ 分桶。
+ */
+export function buildTwoClipCubeGltf(): Record<string, unknown> {
+  const positions = CUBE_POSITIONS;
+  const indices = CUBE_INDICES;
+  const ibm = new Float32Array(32); // 2 个单位 MAT4（loader 只要 accessor 存在）
+  for (let matrix = 0; matrix < 2; matrix += 1) ibm[matrix * 16] = 1;
+  const times = new Float32Array([0, 0.5]);
+  const walkTranslation = new Float32Array([0, 0, 0, 2, 0, 0]);
+  const jumpTranslation = new Float32Array([0, 0, 0, 0, 1.5, 0]);
+
+  const layout = packGltfBuffer([positions, indices, ibm, times, walkTranslation, jumpTranslation]);
+  const [pos, idx, matrices, tArr, walk, jump] = layout.sections;
+
+  return {
+    asset: { version: '2.0', generator: 'kinemesh-fixtures' },
+    scene: 0,
+    scenes: [{ name: 'Scene', nodes: [0, 3] }],
+    nodes: [
+      { name: 'rig', children: [1] },
+      { name: 'bone_a', children: [2] },
+      { name: 'bone_b' },
+      { name: 'cube', mesh: 0, skin: 0 },
+    ],
+    meshes: [
+      {
+        name: 'Body',
+        primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }],
+      },
+    ],
+    materials: [{ name: 'BodyMat', pbrMetallicRoughness: { baseColorFactor: [0.8, 0.6, 0.4, 1] } }],
+    skins: [{ name: 'Armature', joints: [1, 2], inverseBindMatrices: 2 }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 8, type: 'VEC3', min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
+      { bufferView: 1, componentType: 5123, count: 36, type: 'SCALAR' },
+      { bufferView: 2, componentType: 5126, count: 2, type: 'MAT4' },
+      { bufferView: 3, componentType: 5126, count: 2, type: 'SCALAR', min: [0], max: [0.5] },
+      { bufferView: 4, componentType: 5126, count: 2, type: 'VEC3', min: [0, 0, 0], max: [2, 0, 0] },
+      { bufferView: 5, componentType: 5126, count: 2, type: 'VEC3', min: [0, 0, 0], max: [0, 1.5, 0] },
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: pos.offset, byteLength: pos.byteLength },
+      { buffer: 0, byteOffset: idx.offset, byteLength: idx.byteLength },
+      { buffer: 0, byteOffset: matrices.offset, byteLength: matrices.byteLength },
+      { buffer: 0, byteOffset: tArr.offset, byteLength: tArr.byteLength },
+      { buffer: 0, byteOffset: walk.offset, byteLength: walk.byteLength },
+      { buffer: 0, byteOffset: jump.offset, byteLength: jump.byteLength },
+    ],
+    buffers: [{ byteLength: layout.byteLength, uri: layout.dataUri }],
+    animations: [
+      {
+        name: 'Walk',
+        samplers: [{ input: 3, output: 4 }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      },
+      {
+        name: 'Jump',
+        samplers: [{ input: 3, output: 5 }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      },
+    ],
+  };
+}

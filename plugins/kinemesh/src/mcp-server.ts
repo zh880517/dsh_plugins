@@ -80,8 +80,9 @@ server.tool(
     '语义存疑时把 summaryDigest.keyframeRender 配方原样传给 kinemesh_render 出识别用图。',
   {
     path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
-    clip: z.string().optional().describe('动画片段名（先 kinemesh_info 查）；缺省第一个 clip'),
+    clip: z.string().optional().describe('动画片段名或 "*"（批量分析全部 clips，先 kinemesh_info 查）；缺省第一个 clip'),
     out: z.string().optional().describe('中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/'),
+    range: z.tuple([z.number(), z.number()]).optional().describe('[t0, t1] 秒切片（0 ≤ t0 < t1 ≤ 片段时长）；帧号仍按全片口径，结果可直接喂 kinemesh_render'),
     sampleFps: z.number().int().optional().describe('采样率 1–60，缺省 15（越界由分析层给三段式自愈指引）'),
     joints: z.union([z.literal('auto'), z.array(z.string())]).optional().describe('"auto"（缺省）或关节 id / 骨骼名清单'),
     detail: z.enum(['summary', 'standard', 'full']).optional().describe('summary=只出 summary.json；standard=+frames/segments/keyframes/trajectory；full=+全部关节曲线；缺省 standard'),
@@ -92,7 +93,7 @@ server.tool(
     vocab: z.string().optional().describe('词汇表文件路径（kinemesh-vocab.json）；缺省按 资产同目录 > 工作区 > builtin 发现'),
     boneMap: z.string().optional().describe('骨架映射文件路径（M7 消费；当前仅接受参数）'),
   },
-  async ({ path: rawPath, clip, out, sampleFps, joints, detail, curvesFor, smooth, loopMode, normalize, vocab, boneMap }) => {
+  async ({ path: rawPath, clip, out, range, sampleFps, joints, detail, curvesFor, smooth, loopMode, normalize, vocab, boneMap }) => {
     try {
       const loaded = await readModelFile(rawPath);
       const result = await runAnalyze(
@@ -101,6 +102,7 @@ server.tool(
         {
           clip,
           out: out === undefined ? undefined : expandHome(out),
+          range,
           sampleFps,
           joints,
           detail,
@@ -111,7 +113,7 @@ server.tool(
           vocab: vocab === undefined ? undefined : expandHome(vocab),
           boneMap: boneMap === undefined ? undefined : expandHome(boneMap),
         },
-        { assetDir: path.dirname(loaded.abs) },
+        { assetDir: path.dirname(loaded.abs), absPath: loaded.abs },
       );
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (error) {

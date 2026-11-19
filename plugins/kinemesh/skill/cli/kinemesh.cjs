@@ -31054,6 +31054,7 @@ function cutSegments(channels, options) {
 			const left = i > 0 ? ranges[i - 1] : null;
 			const right = i < ranges.length - 1 ? ranges[i + 1] : null;
 			let target;
+			if (left === null && right === null) break;
 			if (left === null) target = "right";
 			else if (right === null) target = "left";
 			else target = Math.abs(meanOf(e, left.start, left.end) - mean) <= Math.abs(meanOf(e, right.start, right.end) - mean) ? "left" : "right";
@@ -31341,6 +31342,19 @@ function resolveSampleFps(sampleFps) {
 	if (!Number.isFinite(sampleFps) || sampleFps < 1 || sampleFps > 60) throw new KinemeshError(`sampleFps 超出范围（1–60）：${sampleFps}。`, `把 sampleFps 放回 1–60（缺省 15）。`);
 	return sampleFps;
 }
+/** 采样网格对齐容差：t0·f_s / t1·f_s 落在整数码头上时不受浮点噪声影响 */
+var RANGE_GRID_EPS = 1e-9;
+/**
+* range 切片校验（M6f §6.7）：0 ≤ t0 < t1 ≤ duration；t1 越界的容差 = 网格容差。
+* 校验不通过给三段式（口径同 A.14 拒绝路径）；通过时返回夹好的 [t0, t1]。
+*/
+function resolveRange(range, clipName, duration) {
+	if (range === void 0) return null;
+	const [t0, t1] = range;
+	if (!Number.isFinite(t0) || !Number.isFinite(t1) || t0 < 0 || t0 >= t1) throw new KinemeshError(`range 参数不合法：[${t0}, ${t1}]。`, `range 是 [t0, t1] 秒数组，要求 0 ≤ t0 < t1 ≤ 片段时长；先用 kinemesh_info 查 clips[].duration 再给 range。`);
+	if (t1 > duration + RANGE_GRID_EPS) throw new KinemeshError(`range 越界：t1 = ${t1}s 超过片段「${clipName}」时长 ${duration}s。`, `把 t1 放回 0–${duration}s 且保持 t0 < t1；先用 kinemesh_info 查 clips[].duration。`);
+	return [t0, Math.min(t1, duration)];
+}
 function collectCandidates(root) {
 	const bones = [];
 	const named = [];
@@ -31587,15 +31601,18 @@ function sampleClip(scene, options = {}) {
 	const sampleFps = resolveSampleFps(options.sampleFps);
 	const duration = clip.duration;
 	if (!Number.isFinite(duration) || duration <= 0) throw new KinemeshError(`片段过短：动画片段「${clip.name}」时长为 ${duration}s，无法采样。`, "该 clip 没有有效时长；先用 kinemesh_info 确认 clips[].duration，换一个有时长的 clip。");
-	const frameCount = Math.ceil(duration * sampleFps);
-	if (frameCount < 3) throw new KinemeshError(`片段过短：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`, `提高 sampleFps（1–60）；太短的片段不适合动作分析，换更长的 clip。`);
-	if (duration * sampleFps > 24e3) throw new KinemeshError(`采样点过多：时长 ${duration}s × sampleFps ${sampleFps} = ${Math.ceil(duration * sampleFps)} 超过上限 ${SAMPLE_COUNT_MAX}。`, `降低 sampleFps（当前 ${sampleFps}），或用 range 参数切片后分段分析。`);
+	const range = resolveRange(options.range, clip.name, duration);
+	const rangeEnd = range ? range[1] : duration;
+	const kStart = range ? Math.ceil(range[0] * sampleFps - RANGE_GRID_EPS) : 0;
+	const frameCount = range ? Math.floor(rangeEnd * sampleFps + RANGE_GRID_EPS) - kStart + 1 : Math.ceil(duration * sampleFps);
+	if (frameCount < 3) throw new KinemeshError(range ? `片段过短：range [${range[0]}, ${range[1]}]s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。` : `片段过短：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`, `提高 sampleFps（1–60）${range ? "或加大 range 跨度" : ""}；太短的片段不适合动作分析，换更长的 clip。`);
+	if (frameCount > 24e3) throw new KinemeshError(range ? `采样点过多：range [${range[0]}, ${range[1]}]s × sampleFps ${sampleFps} = ${frameCount} 超过上限 ${SAMPLE_COUNT_MAX}。` : `采样点过多：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 超过上限 ${SAMPLE_COUNT_MAX}。`, `降低 sampleFps（当前 ${sampleFps}），或用 range 参数切片后分段分析。`);
 	const root = scene.object;
 	const snapshot = snapshotRestPose(root);
 	try {
 		const prepared = prepareTracks(root, clip);
 		const dt = 1 / sampleFps;
-		const times = Array.from({ length: frameCount }, (_, k) => k * dt);
+		const times = Array.from({ length: frameCount }, (_, k) => (kStart + k) * dt);
 		const frames = times.map((time) => Math.round(time * 30));
 		const evaluateAt = (time) => {
 			for (const track of prepared.bindings) {
@@ -31643,7 +31660,7 @@ function sampleClip(scene, options = {}) {
 				rootQuaternions[k * 4 + 3] = scratchQ.w;
 			}
 		}
-		evaluateAt(duration);
+		evaluateAt(rangeEnd);
 		const endpointPositions = new Float64Array(jointCount * 3);
 		for (let j = 0; j < jointCount; j += 1) {
 			jointObjects[j].getWorldPosition(scratch);
@@ -31667,7 +31684,7 @@ function sampleClip(scene, options = {}) {
 			frameCount,
 			times,
 			frames,
-			endpointTime: duration,
+			endpointTime: rangeEnd,
 			positions,
 			endpointPositions,
 			jointBasis: resolution.basis,
@@ -31682,7 +31699,8 @@ function sampleClip(scene, options = {}) {
 				endpointQuaternion
 			} : null,
 			declaredJoints: resolution.declaredJoints,
-			warnings
+			warnings,
+			...range ? { range } : {}
 		};
 	} finally {
 		restoreRestPose(root, snapshot);
@@ -32040,7 +32058,8 @@ function buildSummary(input) {
 			sampleFps: sample.sampleFps,
 			fps: input.fps,
 			frameCount: sample.frameCount,
-			frames: frames30
+			frames: frames30,
+			...input.range ? { range: input.range } : {}
 		},
 		jointBasis: {
 			basis: sample.jointBasis,
@@ -32087,10 +32106,16 @@ function segmentsJson(segments) {
 //#endregion
 //#region
 function analyzeClip(scene, options = {}) {
+	if (options.clipName === "*") return analyzeAllClips(scene, options);
+	return analyzeOneClip(scene, options);
+}
+/** 单 clip 分析（M6d 原路径，结构不变）：sample → channels → segment → describe → report */
+function analyzeOneClip(scene, options) {
 	const sample = sampleClip(scene, {
 		clipName: options.clipName,
 		sampleFps: options.sampleFps,
-		joints: options.joints
+		joints: options.joints,
+		range: options.range
 	});
 	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
 	const channels = computeChannels(sample, { scale });
@@ -32123,6 +32148,7 @@ function analyzeClip(scene, options = {}) {
 		keyframes,
 		normalize,
 		warnings: sample.warnings,
+		range: sample.range,
 		smooth: options.smooth,
 		loopCheck,
 		loopSentence: `循环 ${loopCheck.verdict}`,
@@ -32155,6 +32181,70 @@ function analyzeClip(scene, options = {}) {
 		digest,
 		files
 	};
+}
+/**
+* '*' 批量分析（M6f §6.7）：每个 clip 一份完整 summary + digest 内联，中间文件名加
+* `<clip>/` 前缀（工具层按 files[].name 分桶落 `<dir>/<clip>/` 子目录）。
+* 单 clip 的返回结构不变（向后兼容红线）：批量口径只体现在 batch 标记与 clips[] 字段。
+* 实现：把场景视图收窄成单 clip 再走 analyzeOneClip——未命名 clip / 重名 clip 都按
+* animations 数组序号精确定位，不靠 pickClip 的按名匹配。
+*/
+function analyzeAllClips(scene, options) {
+	if (options.range !== void 0) throw new KinemeshError("range 切片与 clip:\"*\" 批量不能同用：批量按各 clip 全片分析。", "切片分析请指定单一 clip（clip 名 + range）；批量分析去掉 range 参数。");
+	if (scene.animations.length === 0) analyzeOneClip({
+		...scene,
+		animations: []
+	}, {
+		...options,
+		clipName: void 0
+	});
+	const usedDirs = /* @__PURE__ */ new Set();
+	const perClip = scene.animations.map((clip) => {
+		const one = analyzeOneClip({
+			...scene,
+			animations: [clip]
+		}, {
+			...options,
+			clipName: void 0
+		});
+		return {
+			name: clip.name,
+			dir: uniqueClipDir(clip.name, usedDirs),
+			analysis: one
+		};
+	});
+	const files = perClip.flatMap(({ dir, analysis }) => analysis.files.map((file) => ({
+		...file,
+		name: `${dir}/${file.name}`
+	})));
+	return {
+		summary: {
+			batch: true,
+			clips: perClip.map(({ name, analysis }) => ({
+				name,
+				summary: analysis.summary,
+				digest: analysis.digest
+			}))
+		},
+		digest: {
+			batch: true,
+			clips: perClip.map(({ name, analysis }) => ({
+				name,
+				digest: analysis.digest
+			}))
+		},
+		files,
+		batch: true
+	};
+}
+/** clip 子目录名（§6.7 `<dir>/<clip>/`）：安全化 + 重名去重（追加 -2/-3…），空名回退序号 */
+function uniqueClipDir(name, used) {
+	const safe = name.replace(/[^\w.-]+/g, "_");
+	let candidate = safe === "" ? "clip" : safe;
+	let suffix = 2;
+	while (used.has(candidate)) candidate = `${safe === "" ? "clip" : safe}-${suffix}`;
+	used.add(candidate);
+	return candidate;
 }
 /** 曲线关节解析（§6.4）：detail=full 出全部关节；curvesFor 指定的按 id/骨骼名解析，找不到给自愈指引 */
 function resolveCurveJoints(sample, options) {
@@ -32225,18 +32315,42 @@ function resolveNormalization(requested, height) {
 }
 //#endregion
 //#region
+var cache = /* @__PURE__ */ new Map();
+/** stat 不可用时（文件在读后被删等竞态）退化为「永不命中」的键，不吞掉 load 本身的报错 */
+async function mtimeOf(path) {
+	try {
+		return (await (0, node_fs_promises.stat)(path)).mtimeMs;
+	} catch {
+		return -1;
+	}
+}
+/**
+* 取缓存场景：命中（同路径同 mtime）直接返回同一实例，未命中才调 load 并入缓存。
+* load 抛错不进缓存；文件变化（mtime 变）自然产生新键、旧实例被替换。
+*/
+async function getCachedScene(path, load) {
+	const key = `${path}\u0000${await mtimeOf(path)}`;
+	const hit = cache.get(key);
+	if (hit !== void 0) return hit;
+	const scene = await load();
+	cache.set(key, scene);
+	return scene;
+}
+//#endregion
+//#region
 function expandHome$1(input) {
 	if (input === "~") return (0, node_os.homedir)();
 	if (input.startsWith("~/") || input.startsWith("~\\")) return node_path.default.join((0, node_os.homedir)(), input.slice(2));
 	return input;
 }
 /**
-* 三出口共用的 analyze 执行 runner：加载场景 → 身高归一 → vocab 发现 → analyzeClip → 落盘。
-* 抛 KinemeshError（无动画 / clip 缺失 / morph-only / 参数越界 / 词表非法等），由各出口转成
-* 自己的错误口径（tools errorPayload / CLI fail / MCP errorResult）。
+* 三出口共用的 analyze 执行 runner：加载场景（M6f 起走 path+mtime 进程内缓存）→ 身高归一 →
+* vocab 发现 → analyzeClip（单 clip 或 '*' 批量）→ 落盘。抛 KinemeshError（无动画 / clip 缺失 /
+* morph-only / 参数越界 / 词表非法等），由各出口转成自己的错误口径（tools errorPayload / CLI fail /
+* MCP errorResult）。
 */
 async function runAnalyze(data, fileName, params, context = {}) {
-	const { scene } = await loadModelScene(data, fileName);
+	const { scene } = context.absPath ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) } : await loadModelScene(data, fileName);
 	const normalization = resolveNormalization(params.normalize ?? "height", sceneBoundsHeight(scene));
 	const vocab = await loadVocab({
 		explicitPath: params.vocab,
@@ -32245,6 +32359,7 @@ async function runAnalyze(data, fileName, params, context = {}) {
 	});
 	const analysis = analyzeClip(scene, {
 		clipName: params.clip,
+		range: params.range,
 		sampleFps: params.sampleFps,
 		joints: params.joints,
 		smooth: params.smooth,
@@ -32268,12 +32383,13 @@ async function runAnalyze(data, fileName, params, context = {}) {
 			what: artifact.what
 		});
 	}
-	const warnings = [.../* @__PURE__ */ new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
+	const batch = analysis.batch === true;
+	const warnings = batch ? [...new Set((analysis.summary.clips ?? []).flatMap((entry) => [...entry.summary.warnings, ...entry.summary.normalize.warnings]))] : [.../* @__PURE__ */ new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
 	return {
 		ok: true,
 		dir,
 		files,
-		summaryDigest: analysis.digest,
+		summaryDigest: batch ? analysis.digest : analysis.digest,
 		...warnings.length > 0 ? { warnings } : {},
 		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
 	};
@@ -32288,7 +32404,8 @@ var USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
   kinemesh analyze <file> [选项]
       对动画片段做动作分析，产出中间文件目录；stdout 返回 {ok,dir,files,summaryDigest}。
-      --clip <name>            动画片段名（先 info 查）；缺省第一个 clip
+      --clip <name|*>          动画片段名（先 info 查）；"*" 批量分析全部 clips（返回 clips[]、按 <clip>/ 分桶）
+      --range <t0,t1>          秒切片 [t0,t1]（帧号仍按全片口径，结果可直接喂 render）
       --detail <name>          summary / standard / full（缺省 standard；full=+全部关节曲线）
       --curves-for <joints>    指定关节加出 motion-curves/<joint>.csv（逗号分隔，如 L.Hand,R.Hand）
       --sample-fps <n>         采样率 1–60（缺省 15）
@@ -32455,6 +32572,19 @@ function enumFlag(flags, name, allowed, guidance) {
 	}
 	return raw;
 }
+/** --range t0,t1 解析（M6f）：undefined = 未给；null = 不合法（已输出三段式 stderr） */
+function rangeFlag(flags, name) {
+	const raw = flags[name];
+	if (raw === void 0 || raw === "") return void 0;
+	const parts = raw.split(",").map((token) => Number(token.trim()));
+	const t0 = parts[0];
+	const t1 = parts[1];
+	if (parts.length !== 2 || !Number.isFinite(t0) || !Number.isFinite(t1) || t0 >= t1) {
+		fail(`--${name} 的值「${raw}」不合法。`, "--range 是 [t0,t1] 秒，逗号分隔且 t0 < t1（t1 ≤ 片段时长，先 info 查）；例如 --range 0.5,2。", "解析 analyze 参数");
+		return null;
+	}
+	return [t0, t1];
+}
 async function runAnalyzeCli(fileArg, flags) {
 	const detail = enumFlag(flags, "detail", [
 		"summary",
@@ -32466,11 +32596,14 @@ async function runAnalyzeCli(fileArg, flags) {
 	if (loopMode === null) return 1;
 	const normalize = enumFlag(flags, "normalize", ["height", "none"], "--normalize 取 height / none（缺省 height）。");
 	if (normalize === null) return 1;
+	const range = rangeFlag(flags, "range");
+	if (range === null) return 1;
 	const curvesFor = flags["curves-for"] === void 0 ? void 0 : flags["curves-for"].split(",").map((token) => token.trim()).filter((token) => token !== "");
 	const loaded = await readModel(fileArg);
 	if (loaded === null) return 1;
 	const params = {
 		clip: flags.clip,
+		range,
 		sampleFps: numberFlag(flags, "sample-fps"),
 		detail,
 		curvesFor: curvesFor === void 0 || curvesFor.length === 0 ? void 0 : curvesFor,
@@ -32480,7 +32613,10 @@ async function runAnalyzeCli(fileArg, flags) {
 		vocab: flags.vocab === void 0 ? void 0 : expandHome(flags.vocab)
 	};
 	try {
-		emit(await runAnalyze(loaded.data, node_path.default.basename(loaded.abs), params, { assetDir: node_path.default.dirname(loaded.abs) }));
+		emit(await runAnalyze(loaded.data, node_path.default.basename(loaded.abs), params, {
+			assetDir: node_path.default.dirname(loaded.abs),
+			absPath: loaded.abs
+		}));
 		return 0;
 	} catch (error) {
 		if (error instanceof KinemeshError) return fail(error.message, error.guidance, `分析 ${loaded.abs}`);

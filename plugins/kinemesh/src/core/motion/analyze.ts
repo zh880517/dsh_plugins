@@ -26,8 +26,10 @@ import {
 import type { VocabEntry } from './vocab.js';
 
 export interface AnalyzeOptions {
-  /** 缺省第一个 clip；'*' 批量在工具层展开（M6d） */
-  clipName?: string;
+  /** 缺省第一个 clip；'*' 批量分析全部 clips（M6f 实装，§6.7 批量语义） */
+  clipName?: string | '*';
+  /** [t0, t1] 秒切片（M6f §6.7）：采样网格仍按全片 t 轴、帧号不重置；与 clipName:'*' 互斥 */
+  range?: [number, number];
   sampleFps?: number;
   joints?: 'auto' | string[];
   /** 能量平滑窗口（采样帧，缺省 5） */
@@ -60,6 +62,8 @@ export interface MotionDigest {
   loopCheck: LoopCheck | null;
   facts: string[];
   keyframeRender: { frames: number[]; views: string[]; mode: string; altModes: string[] };
+  /** '*' 批量口径（M6f §6.7）：digest.clips[] 逐 clip 内联；单 clip 时缺省（向后兼容红线） */
+  clips?: Array<{ name: string; digest: MotionDigest }>;
 }
 
 export interface MotionAnalysis {
@@ -67,13 +71,23 @@ export interface MotionAnalysis {
   /** summaryDigest（§6.7）：分段表 + 全片统计 + loopCheck + keyframeRender 配方 */
   digest: MotionDigest;
   files: MotionArtifact[];
+  /** '*' 批量分支标记（M6f）：存在即批量口径——summary.clips[] 每份完整 summary（digest 内联）、
+   *  digest.clips[] 逐 clip、files[].name 带 `<clip>/` 前缀；单 clip 时缺省（向后兼容红线） */
+  batch?: true;
 }
 
 export function analyzeClip(scene: CanonicalScene, options: AnalyzeOptions = {}): MotionAnalysis {
+  if (options.clipName === '*') return analyzeAllClips(scene, options);
+  return analyzeOneClip(scene, options);
+}
+
+/** 单 clip 分析（M6d 原路径，结构不变）：sample → channels → segment → describe → report */
+function analyzeOneClip(scene: CanonicalScene, options: AnalyzeOptions): MotionAnalysis {
   const sampleOptions: SampleOptions = {
     clipName: options.clipName,
     sampleFps: options.sampleFps,
     joints: options.joints,
+    range: options.range,
   };
   const sample = sampleClip(scene, sampleOptions);
   const scale = options.scale !== undefined && options.scale > 0 ? options.scale : 1;
@@ -107,6 +121,7 @@ export function analyzeClip(scene: CanonicalScene, options: AnalyzeOptions = {})
     keyframes,
     normalize,
     warnings: sample.warnings,
+    range: sample.range,
     smooth: options.smooth,
     loopCheck,
     loopSentence: `循环 ${loopCheck.verdict}`,
@@ -149,6 +164,50 @@ export function analyzeClip(scene: CanonicalScene, options: AnalyzeOptions = {})
     );
   }
   return { summary, digest, files };
+}
+
+/**
+ * '*' 批量分析（M6f §6.7）：每个 clip 一份完整 summary + digest 内联，中间文件名加
+ * `<clip>/` 前缀（工具层按 files[].name 分桶落 `<dir>/<clip>/` 子目录）。
+ * 单 clip 的返回结构不变（向后兼容红线）：批量口径只体现在 batch 标记与 clips[] 字段。
+ * 实现：把场景视图收窄成单 clip 再走 analyzeOneClip——未命名 clip / 重名 clip 都按
+ * animations 数组序号精确定位，不靠 pickClip 的按名匹配。
+ */
+function analyzeAllClips(scene: CanonicalScene, options: AnalyzeOptions): MotionAnalysis {
+  if (options.range !== undefined) {
+    throw new KinemeshError(
+      'range 切片与 clip:"*" 批量不能同用：批量按各 clip 全片分析。',
+      '切片分析请指定单一 clip（clip 名 + range）；批量分析去掉 range 参数。',
+    );
+  }
+  if (scene.animations.length === 0) {
+    // 复用单 clip 的「无动画资产」三段式拒绝，口径完全一致
+    analyzeOneClip({ ...scene, animations: [] }, { ...options, clipName: undefined });
+  }
+  const usedDirs = new Set<string>();
+  const perClip = scene.animations.map((clip) => {
+    // 场景视图收窄到单 clip（clipName 清空 → pickClip 取视图内唯一 clip），按数组序号精确定位
+    const one = analyzeOneClip({ ...scene, animations: [clip] }, { ...options, clipName: undefined });
+    return { name: clip.name, dir: uniqueClipDir(clip.name, usedDirs), analysis: one };
+  });
+  const files = perClip.flatMap(({ dir, analysis }) =>
+    analysis.files.map((file) => ({ ...file, name: `${dir}/${file.name}` })),
+  );
+  const clips = perClip.map(({ name, analysis }) => ({ name, summary: analysis.summary, digest: analysis.digest }));
+  const batchSummary = { batch: true, clips } as unknown as MotionSummary;
+  const digestClips = perClip.map(({ name, analysis }) => ({ name, digest: analysis.digest }));
+  const batchDigest = { batch: true as const, clips: digestClips } as unknown as MotionDigest;
+  return { summary: batchSummary, digest: batchDigest, files, batch: true };
+}
+
+/** clip 子目录名（§6.7 `<dir>/<clip>/`）：安全化 + 重名去重（追加 -2/-3…），空名回退序号 */
+function uniqueClipDir(name: string, used: Set<string>): string {
+  const safe = name.replace(/[^\w.-]+/g, '_');
+  let candidate = safe === '' ? 'clip' : safe;
+  let suffix = 2;
+  while (used.has(candidate)) candidate = `${safe === '' ? 'clip' : safe}-${suffix}`;
+  used.add(candidate);
+  return candidate;
 }
 
 /** 曲线关节解析（§6.4）：detail=full 出全部关节；curvesFor 指定的按 id/骨骼名解析，找不到给自愈指引 */

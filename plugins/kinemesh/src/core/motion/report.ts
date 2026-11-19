@@ -39,6 +39,7 @@ import {
   type IntensityLevel,
 } from './constants.js';
 import { smoothSeries, type FrameChannels } from './channels.js';
+import type { MotionDigest } from './analyze.js';
 import type { DescribedSegment } from './describe.js';
 import type { LoopCheck } from './loop.js';
 import type { MotionEvent } from './segment.js';
@@ -388,6 +389,8 @@ export interface MotionSummary {
     frameCount: number;
     /** 30fps 口径总帧数 round(duration×30) */
     frames: number;
+    /** range 切片标注（M6f §6.7）：实际分析的 [t0, t1] 秒；未切片时缺省。帧号仍按全片口径 */
+    range?: [number, number];
   };
   jointBasis: {
     basis: string;
@@ -420,6 +423,11 @@ export interface MotionSummary {
   vocab: { source: string; entries: number };
   facts: string[];
   warnings: string[];
+  /**
+   * '*' 批量口径（M6f §6.7）：存在时本对象是批量 envelope——每 clip 一份完整 summary + digest 内联；
+   * 单 clip 时缺省（向后兼容红线：单 clip 顶层结构与现有测试不变）。
+   */
+  clips?: Array<{ name: string; summary: MotionSummary; digest: MotionDigest }>;
 }
 
 export interface SummaryInput {
@@ -433,6 +441,8 @@ export interface SummaryInput {
   keyframes: KeyframeEntry[];
   normalize: { mode: string; scale: number; warnings: string[] };
   warnings: string[];
+  /** range 切片（M6f）：sample.range 透传，标注进 summary.clip；未切片缺省 */
+  range?: [number, number];
   smooth?: number;
   /** 全片 facts 句的循环子句（M6c 传入 `循环 {verdict}`，缺省无循环子句） */
   loopSentence?: string;
@@ -561,6 +571,7 @@ export function buildSummary(input: SummaryInput): MotionSummary {
       fps: input.fps,
       frameCount: sample.frameCount,
       frames: frames30,
+      ...(input.range ? { range: input.range } : {}),
     },
     jointBasis: {
       basis: sample.jointBasis,

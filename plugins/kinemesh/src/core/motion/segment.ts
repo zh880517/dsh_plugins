@@ -110,6 +110,9 @@ function cutSegments(channels: FrameChannels, options: SegmentOptions): SegmentR
       const left = i > 0 ? ranges[i - 1]! : null;
       const right = i < ranges.length - 1 ? ranges[i + 1]! : null;
       let target: 'left' | 'right';
+      // M6f（M6b 潜伏缺陷修复）：唯一一段且过短时无邻居可并——保留短段（A.14：N ≥ 3 帧即可分析），
+      // range 切片 < 0.4s 的合法分析此前会在这里解引用 null 崩溃
+      if (left === null && right === null) break;
       if (left === null) target = 'right';
       else if (right === null) target = 'left';
       else {

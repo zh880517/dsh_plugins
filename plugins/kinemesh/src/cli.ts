@@ -18,7 +18,8 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
   kinemesh analyze <file> [选项]
       对动画片段做动作分析，产出中间文件目录；stdout 返回 {ok,dir,files,summaryDigest}。
-      --clip <name>            动画片段名（先 info 查）；缺省第一个 clip
+      --clip <name|*>          动画片段名（先 info 查）；"*" 批量分析全部 clips（返回 clips[]、按 <clip>/ 分桶）
+      --range <t0,t1>          秒切片 [t0,t1]（帧号仍按全片口径，结果可直接喂 render）
       --detail <name>          summary / standard / full（缺省 standard；full=+全部关节曲线）
       --curves-for <joints>    指定关节加出 motion-curves/<joint>.csv（逗号分隔，如 L.Hand,R.Hand）
       --sample-fps <n>         采样率 1–60（缺省 15）
@@ -202,6 +203,20 @@ function enumFlag(flags: Record<string, string>, name: string, allowed: string[]
   return raw;
 }
 
+/** --range t0,t1 解析（M6f）：undefined = 未给；null = 不合法（已输出三段式 stderr） */
+function rangeFlag(flags: Record<string, string>, name: string): [number, number] | null | undefined {
+  const raw = flags[name];
+  if (raw === undefined || raw === '') return undefined;
+  const parts = raw.split(',').map((token) => Number(token.trim()));
+  const t0 = parts[0]!;
+  const t1 = parts[1]!;
+  if (parts.length !== 2 || !Number.isFinite(t0) || !Number.isFinite(t1) || t0 >= t1) {
+    fail(`--${name} 的值「${raw}」不合法。`, '--range 是 [t0,t1] 秒，逗号分隔且 t0 < t1（t1 ≤ 片段时长，先 info 查）；例如 --range 0.5,2。', '解析 analyze 参数');
+    return null;
+  }
+  return [t0, t1];
+}
+
 async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, string>): Promise<number> {
   const detail = enumFlag(flags, 'detail', ['summary', 'standard', 'full'], '--detail 取 summary / standard / full（缺省 standard）。');
   if (detail === null) return 1;
@@ -209,6 +224,8 @@ async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, 
   if (loopMode === null) return 1;
   const normalize = enumFlag(flags, 'normalize', ['height', 'none'], '--normalize 取 height / none（缺省 height）。');
   if (normalize === null) return 1;
+  const range = rangeFlag(flags, 'range');
+  if (range === null) return 1;
   const curvesFor = flags['curves-for'] === undefined
     ? undefined
     : flags['curves-for'].split(',').map((token) => token.trim()).filter((token) => token !== '');
@@ -216,6 +233,7 @@ async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, 
   if (loaded === null) return 1;
   const params: AnalyzeToolParams = {
     clip: flags.clip,
+    range,
     sampleFps: numberFlag(flags, 'sample-fps'),
     detail: detail as AnalyzeToolParams['detail'],
     curvesFor: curvesFor === undefined || curvesFor.length === 0 ? undefined : curvesFor,
@@ -225,7 +243,10 @@ async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, 
     vocab: flags.vocab === undefined ? undefined : expandHome(flags.vocab),
   };
   try {
-    const result = await runAnalyze(loaded.data, path.basename(loaded.abs), params, { assetDir: path.dirname(loaded.abs) });
+    const result = await runAnalyze(loaded.data, path.basename(loaded.abs), params, {
+      assetDir: path.dirname(loaded.abs),
+      absPath: loaded.abs,
+    });
     emit(result);
     return 0;
   } catch (error) {

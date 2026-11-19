@@ -82,6 +82,8 @@ export interface SampleResult {
   declaredJoints: string[];
   /** 非致命提示：忽略的 morph 轨道、未绑定成功的轨道 */
   warnings: string[];
+  /** range 切片（M6f）：本次采样实际覆盖的 [t0, t1]（t1 夹到时长）；未切片时缺省 */
+  range?: [number, number];
 }
 
 export interface SampleOptions {
@@ -91,6 +93,8 @@ export interface SampleOptions {
   sampleFps?: number;
   /** 'auto'（缺省）或关节 id / 骨骼名清单（§6.7 joints 参数） */
   joints?: 'auto' | string[];
+  /** [t0, t1] 秒切片（M6f §6.7）：只采样全片网格上 t∈[t0,t1] 的点；帧号仍按全片口径（t 不重置） */
+  range?: [number, number];
 }
 
 // ———————— J15 + Toe 解析计划（附录 A.0 顺序即输出顺序） ————————
@@ -233,6 +237,31 @@ function resolveSampleFps(sampleFps: number | undefined): number {
     );
   }
   return sampleFps;
+}
+
+/** 采样网格对齐容差：t0·f_s / t1·f_s 落在整数码头上时不受浮点噪声影响 */
+const RANGE_GRID_EPS = 1e-9;
+
+/**
+ * range 切片校验（M6f §6.7）：0 ≤ t0 < t1 ≤ duration；t1 越界的容差 = 网格容差。
+ * 校验不通过给三段式（口径同 A.14 拒绝路径）；通过时返回夹好的 [t0, t1]。
+ */
+function resolveRange(range: [number, number] | undefined, clipName: string, duration: number): [number, number] | null {
+  if (range === undefined) return null;
+  const [t0, t1] = range;
+  if (!Number.isFinite(t0) || !Number.isFinite(t1) || t0 < 0 || t0 >= t1) {
+    throw new KinemeshError(
+      `range 参数不合法：[${t0}, ${t1}]。`,
+      `range 是 [t0, t1] 秒数组，要求 0 ≤ t0 < t1 ≤ 片段时长；先用 kinemesh_info 查 clips[].duration 再给 range。`,
+    );
+  }
+  if (t1 > duration + RANGE_GRID_EPS) {
+    throw new KinemeshError(
+      `range 越界：t1 = ${t1}s 超过片段「${clipName}」时长 ${duration}s。`,
+      `把 t1 放回 0–${duration}s 且保持 t0 < t1；先用 kinemesh_info 查 clips[].duration。`,
+    );
+  }
+  return [t0, Math.min(t1, duration)];
 }
 
 // ———————— 关节集解析（附录 A.0：humanoid 惯例集 > motion-top15 > explicit） ————————
@@ -498,16 +527,26 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
       '该 clip 没有有效时长；先用 kinemesh_info 确认 clips[].duration，换一个有时长的 clip。',
     );
   }
-  const frameCount = Math.ceil(duration * sampleFps);
+  // range 切片（M6f）：全片采样网格上取 t∈[t0,t1] 的码点，帧号/时间不重置（可直接喂 render）
+  const range = resolveRange(options.range, clip.name, duration);
+  const rangeEnd = range ? range[1] : duration;
+  const kStart = range ? Math.ceil(range[0] * sampleFps - RANGE_GRID_EPS) : 0;
+  const frameCount = range
+    ? Math.floor(rangeEnd * sampleFps + RANGE_GRID_EPS) - kStart + 1
+    : Math.ceil(duration * sampleFps);
   if (frameCount < 3) {
     throw new KinemeshError(
-      `片段过短：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`,
-      `提高 sampleFps（1–${SAMPLE_FPS_MAX}）；太短的片段不适合动作分析，换更长的 clip。`,
+      range
+        ? `片段过短：range [${range[0]}, ${range[1]}]s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`
+        : `片段过短：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 采样帧（至少 3 帧）。`,
+      `提高 sampleFps（1–${SAMPLE_FPS_MAX}）${range ? '或加大 range 跨度' : ''}；太短的片段不适合动作分析，换更长的 clip。`,
     );
   }
-  if (duration * sampleFps > SAMPLE_COUNT_MAX) {
+  if (frameCount > SAMPLE_COUNT_MAX) {
     throw new KinemeshError(
-      `采样点过多：时长 ${duration}s × sampleFps ${sampleFps} = ${Math.ceil(duration * sampleFps)} 超过上限 ${SAMPLE_COUNT_MAX}。`,
+      range
+        ? `采样点过多：range [${range[0]}, ${range[1]}]s × sampleFps ${sampleFps} = ${frameCount} 超过上限 ${SAMPLE_COUNT_MAX}。`
+        : `采样点过多：时长 ${duration}s × sampleFps ${sampleFps} = ${frameCount} 超过上限 ${SAMPLE_COUNT_MAX}。`,
       `降低 sampleFps（当前 ${sampleFps}），或用 range 参数切片后分段分析。`,
     );
   }
@@ -517,7 +556,8 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
   try {
     const prepared = prepareTracks(root, clip);
     const dt = 1 / sampleFps;
-    const times = Array.from({ length: frameCount }, (_, k) => k * dt);
+    // 切片时 times 仍落在全片网格（k = kStart..kEnd−1），frame = round(t×30) 全片口径不重置
+    const times = Array.from({ length: frameCount }, (_, k) => (kStart + k) * dt);
     const frames = times.map((time) => Math.round(time * RENDER_FPS));
     const evaluateAt = (time: number): void => {
       for (const track of prepared.bindings) {
@@ -579,8 +619,8 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
       }
     }
 
-    // 精确端点（虚拟点 k=N）：seam 分量与「端点」关键帧专用，不进常规网格
-    evaluateAt(duration);
+    // 精确端点（虚拟点 k=N）：切片时端点 = t1；seam 分量与「端点」关键帧专用，不进常规网格
+    evaluateAt(rangeEnd);
     const endpointPositions = new Float64Array(jointCount * 3);
     for (let j = 0; j < jointCount; j += 1) {
       jointObjects[j]!.getWorldPosition(scratch);
@@ -605,7 +645,7 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
       frameCount,
       times,
       frames,
-      endpointTime: duration,
+      endpointTime: rangeEnd,
       positions,
       endpointPositions,
       jointBasis: resolution.basis,
@@ -619,6 +659,7 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
           : null,
       declaredJoints: resolution.declaredJoints,
       warnings,
+      ...(range ? { range } : {}),
     };
   } finally {
     restoreRestPose(root, snapshot);

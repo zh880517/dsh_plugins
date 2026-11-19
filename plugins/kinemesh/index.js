@@ -30729,6 +30729,7 @@ function cutSegments(channels, options) {
 			const left = i > 0 ? ranges[i - 1] : null;
 			const right = i < ranges.length - 1 ? ranges[i + 1] : null;
 			let target;
+			if (left === null && right === null) break;
 			if (left === null) target = "right";
 			else if (right === null) target = "left";
 			else target = Math.abs(meanOf(e, left.start, left.end) - mean) <= Math.abs(meanOf(e, right.start, right.end) - mean) ? "left" : "right";
