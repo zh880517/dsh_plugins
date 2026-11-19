@@ -5,11 +5,8 @@
 // 仅用于 seam 分量与「端点」关键帧，见附录 A.0/A.10）。
 import * as THREE from 'three';
 import { KinemeshError } from '../errors.js';
-import {
-  classifyJointName,
-  isHumanoidLike,
-  type JointKind,
-} from '../analyze/humanoid.js';
+import { classifyJointName, isHumanoidLike, type JointKind } from '../analyze/humanoid.js';
+import { matchCanonical, type BonesMapping } from '../analyze/bone-map.js';
 import type { CanonicalScene } from '../types.js';
 import {
   JOINT_WEIGHTS,
@@ -20,8 +17,12 @@ import {
 } from './constants.js';
 import { RENDER_FPS } from '../viewstate.js';
 
-/** 关节集解析口径（附录 A.0） */
-export type JointBasis = 'humanoid-conventions' | 'motion-top15' | 'explicit';
+/**
+ * 关节集解析口径（附录 A.0 + M7 §7.4 升级）：
+ * bone-map = 映射文件（kinemesh-bones.json，最高优先）＞ humanoid-conventions = 字典查表（B.1–B.2）＞
+ * motion-top15 = 回退（summary 注明并附「AI 补映射」指引）；explicit 不变。
+ */
+export type JointBasis = 'humanoid-conventions' | 'bone-map' | 'motion-top15' | 'explicit';
 
 export interface SampledJoint {
   /** 规范 id：J15 用 hips/spine/head/L.Hand…；top15 与 explicit-骨骼名用场景对象名 */
@@ -95,6 +96,12 @@ export interface SampleOptions {
   joints?: 'auto' | string[];
   /** [t0, t1] 秒切片（M6f §6.7）：只采样全片网格上 t∈[t0,t1] 的点；帧号仍按全片口径（t 不重置） */
   range?: [number, number];
+  /**
+   * 骨架映射文件（M7 §7.4，B.5 校验产物）：joints=auto 时解析顺序最高优先——
+   * 映射文件 > 字典查表（B.1–B.2）> motion-top15 回退。humanoid 简写（core 表）参与 J15 解析，
+   * 非 humanoid 映射在本版本不进采样关节集（泛化通道后续里程碑）。
+   */
+  boneMap?: BonesMapping | null;
 }
 
 // ———————— J15 + Toe 解析计划（附录 A.0 顺序即输出顺序） ————————
@@ -342,18 +349,87 @@ function resolveHumanoidJoints(root: THREE.Object3D): JointResolution | null {
   });
   if (!isHumanoidLike(names)) return null;
 
-  // 按 A.0 槽位表做首名占位：遍历顺序即优先级（先遇到的占槽）
+  // 字典层（M7 起 = 附录 B.1–B.2 查表，表序保证 forearm 先于 arm、upleg 先于 leg）：
+  // 按 A.0 槽位表做首名占位：遍历顺序即优先级（先遇到的占槽；B.2 多骨同槽的中位保留在
+  // skeleton-report 侧执行，采样槽位沿用 A.0 的遍历序口径）
   const slots = new Map<string, THREE.Object3D>();
   root.traverse((obj) => {
     if (obj === root || obj.name === '') return;
-    const classification = classifyJointName(obj.name);
-    if (!classification) return;
-    const key = slotKey(classification);
+    const match = matchCanonical(obj.name);
+    if (!match) return;
+    const kind = CANONICAL_KIND[match.canonical];
+    if (kind === undefined) return; // neck 等 EXTRA 部位不进 J15 槽位
+    const side = match.side;
+    const key = slotKey({ kind, side: side as 'L' | 'R' | null });
     if (!slots.has(key)) slots.set(key, obj);
   });
   const hips = slots.get(':hips');
   if (!hips) return null; // 没有 hips 就没有 rootPos/heading 的锚，退 top15（A.5 口径）
 
+  return buildResolutionFromSlots(slots, 'humanoid-conventions', hips);
+}
+
+/** B.2 canonical 部位 → J15 槽位 kind；neck/chest 等不在表内的返回 undefined */
+const CANONICAL_KIND: Record<string, JointKind> = {
+  hips: 'hips',
+  spine: 'spine',
+  head: 'head',
+  upperarm: 'upper-arm',
+  lowerarm: 'lower-arm',
+  hand: 'hand',
+  upperleg: 'upper-leg',
+  lowerleg: 'lower-leg',
+  foot: 'foot',
+  toe: 'toe',
+};
+
+/** B.0 白名单 id（映射文件键）→ J15 槽位；neck 与未知 id 返回 null（不进采样关节集） */
+function coreIdToSlot(coreId: string): { kind: JointKind; side: 'L' | 'R' | null } | null {
+  const sided = ['upperarm', 'lowerarm', 'hand', 'upperleg', 'lowerleg', 'foot', 'toe'] as const;
+  for (const canonical of sided) {
+    if (coreId.startsWith(`${canonical}-`)) {
+      const side = coreId.slice(canonical.length + 1);
+      if (side !== 'l' && side !== 'r') return null;
+      return { kind: CANONICAL_KIND[canonical]!, side: side === 'l' ? 'L' : 'R' };
+    }
+  }
+  if (coreId === 'hips' || coreId === 'spine' || coreId === 'chest' || coreId === 'head') {
+    return { kind: CANONICAL_KIND[coreId === 'chest' ? 'spine' : coreId]!, side: null };
+  }
+  return null;
+}
+
+/**
+ * 映射文件层（M7 §7.4，解析链最高优先）：按映射文件 humanoid 简写把骨骼名钉到 J15 槽位，
+ * 纯确定性查表；hips 不强制（缺 hips 时 rootJoint=null，rootPos/heading 记 0 并在 warnings 注明）。
+ * 映射里没有的槽位进 declaredJoints（与惯例集同口径）。
+ */
+function resolveMappedJoints(root: THREE.Object3D, mapping: BonesMapping | null | undefined): JointResolution | null {
+  if (!mapping || mapping.core.size === 0) return null;
+  const byName = new Map<string, THREE.Object3D>();
+  root.traverse((obj) => {
+    if (obj !== root && obj.name !== '' && !byName.has(obj.name)) byName.set(obj.name, obj);
+  });
+  const slots = new Map<string, THREE.Object3D>();
+  // B.5 简写方向：bones = { 骨骼名: canonical id }（键是场景骨骼名，值是 B.0 白名单 id）
+  for (const [boneName, coreId] of mapping.core) {
+    const slot = coreIdToSlot(coreId);
+    if (!slot) continue; // neck / 未知 id 不进采样关节集
+    const object = byName.get(boneName);
+    if (!object) continue; // 工具层已对骨架校验；core 直调缺名时静默跳过
+    const key = slotKey(slot);
+    if (!slots.has(key)) slots.set(key, object);
+  }
+  if (slots.size === 0) return null;
+  return buildResolutionFromSlots(slots, 'bone-map', slots.get(':hips') ?? null);
+}
+
+/** 槽位表 → 采样关节集（A.0 顺序即输出顺序；J15_PLAN + Toe，权重按惯例表） */
+function buildResolutionFromSlots(
+  slots: Map<string, THREE.Object3D>,
+  basis: JointBasis,
+  rootJoint: THREE.Object3D | null,
+): JointResolution {
   const jointObjects: THREE.Object3D[] = [];
   const joints: SampledJoint[] = [];
   const declaredJoints: string[] = [];
@@ -375,12 +451,12 @@ function resolveHumanoidJoints(root: THREE.Object3D): JointResolution | null {
     }
   }
   return {
-    basis: 'humanoid-conventions',
+    basis,
     jointObjects,
     joints,
     declaredJoints,
     anchors: buildAnchors(joints),
-    rootJoint: hips,
+    rootJoint,
   };
 }
 
@@ -567,11 +643,13 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
       root.updateMatrixWorld(true);
     };
 
-    // 关节集解析（A.0）：auto = humanoid 惯例集，匹配不上（或没有 hips）退 motion-top15
+    // 关节集解析（A.0 + M7 §7.4）：auto = 映射文件 > 字典查表（B.1–B.2）> motion-top15 回退；
+    // AI 兜底是 Agent 侧流程（读 report/图 → 写 kinemesh-bones.json），不进工具运行时。
     const requested = options.joints ?? 'auto';
     const resolution =
       requested === 'auto'
-        ? (resolveHumanoidJoints(root) ??
+        ? (resolveMappedJoints(root, options.boneMap) ??
+          resolveHumanoidJoints(root) ??
           resolveTop15Joints(root, times, evaluateAt))
         : resolveExplicitJoints(root, requested);
     const { joints, jointObjects } = resolution;
@@ -586,7 +664,13 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
       warnings.push(`有 ${prepared.unresolved.length} 条轨道未找到目标节点，已跳过：${names}${more}。`);
     }
     if (resolution.basis === 'motion-top15') {
-      warnings.push('非人形骨架：关节集取世界位移方差 Top-15 骨骼（jointBasis=motion-top15），能量权重统一为 1。');
+      warnings.push(
+        '非人形骨架：关节集取世界位移方差 Top-15 骨骼（jointBasis=motion-top15），能量权重统一为 1；' +
+          '要按部位分析，先用 kinemesh_skeleton 出两级指引与标注截图批次，把结论写 kinemesh-bones.json 后重跑（工具确定性消费，不再回退 Top-15）。',
+      );
+    }
+    if (resolution.basis === 'bone-map' && resolution.rootJoint === null) {
+      warnings.push('映射文件缺 hips 槽位：rootPos/heading 无参照，本片记 0；把 hips 补进 kinemesh-bones.json 后重跑。');
     }
 
     const jointCount = joints.length;

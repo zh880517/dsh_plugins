@@ -421,6 +421,8 @@ export interface MotionSummary {
   keyframes: KeyframeEntry[];
   loopCheck: LoopCheck | null;
   vocab: { source: string; entries: number };
+  /** 骨架映射文件回显（M7 B.5）：加载了映射文件才出现 */
+  boneMap?: { source: string; archetype: string; mapped: number };
   facts: string[];
   warnings: string[];
   /**
@@ -450,6 +452,8 @@ export interface SummaryInput {
   loopFact?: string;
   loopCheck?: LoopCheck | null;
   vocab?: { source: string; entries: number };
+  /** 骨架映射文件回显（M7 B.5）：给 summary.boneMap；未加载映射文件时缺省 */
+  boneMap?: { source: string; archetype: string; mapped: number };
 }
 
 export function buildSummary(input: SummaryInput): MotionSummary {
@@ -593,6 +597,7 @@ export function buildSummary(input: SummaryInput): MotionSummary {
     keyframes: input.keyframes,
     loopCheck: input.loopCheck ?? null,
     vocab: input.vocab ?? { source: 'builtin', entries: 0 },
+    ...(input.boneMap === undefined ? {} : { boneMap: input.boneMap }),
     facts,
     warnings: input.warnings,
   };

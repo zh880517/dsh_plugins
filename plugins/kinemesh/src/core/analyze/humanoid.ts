@@ -54,16 +54,22 @@ const JOINT_KIND_PATTERNS: Array<[JointKind, RegExp]> = [
   ['head', /head|skull|jaw/],
 ];
 
-/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写 */
-function normalize(name: string): string {
+/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写。
+ *  M7 起由 bone-map.ts 复用（B.1 名称归一的基座），不再各写一份。 */
+export function normalize(name: string): string {
   return name.toLowerCase().replace(/^.*:/, '').replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, '');
 }
 
 /** 左右侧识别：Left 前缀、或独立分隔的 l/r（hand_l / L Hand / Bip01-L-Hand）。
- *  独立 l/r 要求两侧都是分隔符或端点，避免 leg/roll/forearm 这类词误判。 */
-function sideOf(name: string): 'L' | 'R' | null {
-  if (/left/.test(name) || /(^|[^a-z])l(?![a-z])/.test(name)) return 'L';
-  if (/right/.test(name) || /(^|[^a-z])r(?![a-z])/.test(name)) return 'R';
+ *  独立 l/r 要求两侧都是分隔符或端点，避免 leg/roll/forearm 这类词误判。
+ *  左右同时出现（L_R_Arm）→ side=null（B.1 口径：都有或都无 → 未知，缺口交映射文件补）。
+ *  M7 起由 bone-map.ts 复用（B.1 side 识别同口径）。 */
+export function sideOf(name: string): 'L' | 'R' | null {
+  const hasL = /left/.test(name) || /(^|[^a-z])l(?![a-z])/.test(name);
+  const hasR = /right/.test(name) || /(^|[^a-z])r(?![a-z])/.test(name);
+  if (hasL && hasR) return null;
+  if (hasL) return 'L';
+  if (hasR) return 'R';
   return null;
 }
 

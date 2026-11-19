@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { analyzeModelCached } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
-import { runAnalyze } from './tools.js';
+import { runAnalyze, runSkeleton } from './tools.js';
 import type { InfoReport } from './core/types.js';
 
 const SERVER_VERSION = '0.4.0';
@@ -92,7 +92,7 @@ server.tool(
     loopMode: z.enum(['strict', 'pose-only']).optional().describe('bestLoopRange 口径：strict（缺省）四分量；pose-only 去掉位移/朝向（root-motion 循环用）'),
     normalize: z.enum(['height', 'none']).optional().describe('身高归一，缺省 height（数值单位为身高倍数）'),
     vocab: z.string().optional().describe('词汇表文件路径（kinemesh-vocab.json）；缺省按 资产同目录 > 工作区 > builtin 发现'),
-    boneMap: z.string().optional().describe('骨架映射文件路径（M7 消费；当前仅接受参数）'),
+    boneMap: z.string().optional().describe('骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现；joints=auto 时映射优先于字典查表'),
   },
   async ({ path: rawPath, clip, out, range, sampleFps, joints, detail, curvesFor, smooth, loopMode, normalize, vocab, boneMap }) => {
     try {
@@ -119,6 +119,38 @@ server.tool(
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (error) {
       return errorResult(error, `分析 ${rawPath}`);
+    }
+  },
+);
+
+server.tool(
+  'kinemesh_skeleton',
+  '骨架识别与映射（本地只读）：产出 skeleton-report.json（每骨名称/层级/rest 世界坐标/partGuess/置信、convention 约定识别、' +
+    '映射覆盖统计、未映射清单、结构统计、标注截图批次配方与映射文件 schema 尾注），返回内联 digest + 两级兜底指引。' +
+    '标准命名 rig（Mixamo/Biped/UE/VRM/Rigify）字典查表直达；非标命名回退 AI 流程：读 report →（不透明再按批次清单出标注截图）→ ' +
+    '写 kinemesh-bones.json → 重跑 analyze 即确定性消费。工具只做字典查表与约定识别。',
+  {
+    path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
+    shots: z.enum(['auto', 'none', 'all']).optional().describe('标注截图批次：auto（缺省，CORE15 有缺口才出）/ none（只出 report）/ all（强制全量批次）'),
+    boneMap: z.string().optional().describe('骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现'),
+    out: z.string().optional().describe('中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/'),
+  },
+  async ({ path: rawPath, shots, boneMap, out }) => {
+    try {
+      const loaded = await readModelFile(rawPath);
+      const result = await runSkeleton(
+        loaded.data,
+        path.basename(loaded.abs),
+        {
+          shots,
+          boneMap: boneMap === undefined ? undefined : expandHome(boneMap),
+          out: out === undefined ? undefined : expandHome(out),
+        },
+        { assetDir: path.dirname(loaded.abs), absPath: loaded.abs },
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      return errorResult(error, `识别 ${rawPath} 的骨架`);
     }
   },
 );

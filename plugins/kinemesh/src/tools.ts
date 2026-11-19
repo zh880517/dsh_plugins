@@ -12,7 +12,19 @@ import { loadVocab } from './core/motion/vocab.js';
 import { getCachedScene } from './core/scene-cache.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
-import type { InfoReport } from './core/types.js';
+import {
+  checkBonesAgainstSkeleton,
+  loadBonesFile,
+  type BonesMapping,
+} from './core/analyze/bone-map.js';
+import {
+  buildSkeletonDigest,
+  buildSkeletonReport,
+  collectSkeletonSet,
+  skeletonReportJson,
+  type SkeletonDigest,
+} from './core/analyze/skeleton-report.js';
+import type { CanonicalScene, InfoReport } from './core/types.js';
 
 interface AgentTool {
   name: string;
@@ -43,7 +55,12 @@ function expandHome(input: string): string {
 
 /** 注册 Agent 工具，返回一次性释放句柄 */
 export function registerTools(ctx: any): () => void {
-  const disposers = [ctx.tools.register(infoTool()), ctx.tools.register(analyzeTool()), ctx.tools.register(renderTool())];
+  const disposers = [
+    ctx.tools.register(infoTool()),
+    ctx.tools.register(analyzeTool()),
+    ctx.tools.register(renderTool()),
+    ctx.tools.register(skeletonTool()),
+  ];
   return () => {
     for (const dispose of disposers.reverse()) {
       try {
@@ -105,7 +122,7 @@ export interface AnalyzeToolParams {
   normalize?: 'height' | 'none';
   /** 词汇表文件路径；缺省按 §6.6.3 顺序发现（资产同目录 > cwd > builtin） */
   vocab?: string;
-  /** 骨架映射文件路径（M7 消费；本版只接受参数，不做行为） */
+  /** 骨架映射文件路径（kinemesh-bones.json，M7 B.5）；缺省按 资产同目录 > cwd 发现；显式路径不存在给三段式 */
   boneMap?: string;
 }
 
@@ -127,10 +144,26 @@ export interface AnalyzeRunResult {
 }
 
 /**
+ * 映射文件发现 + 对骨架校验（M7 B.5，analyze 与 skeleton 共用）：
+ * boneMap 参数 > 资产同目录 kinemesh-bones.json > cwd > 无；显式路径不存在 → KinemeshError
+ * （存在性校验，不再静默成功）；JSON/schema/骨骼名/肢链链不合法 → 三段式 KinemeshError。
+ */
+async function resolveBonesMapping(
+  explicitPath: string | undefined,
+  assetDir: string | undefined,
+  scene: CanonicalScene,
+): Promise<BonesMapping | null> {
+  const loaded = await loadBonesFile({ explicitPath, assetDir, cwd: process.cwd() });
+  if (loaded === null) return null;
+  const { parentOf } = collectSkeletonSet(scene);
+  return checkBonesAgainstSkeleton(loaded.data, loaded.source, parentOf);
+}
+
+/**
  * 三出口共用的 analyze 执行 runner：加载场景（M6f 起走 path+mtime 进程内缓存）→ 身高归一 →
- * vocab 发现 → analyzeClip（单 clip 或 '*' 批量）→ 落盘。抛 KinemeshError（无动画 / clip 缺失 /
- * morph-only / 参数越界 / 词表非法等），由各出口转成自己的错误口径（tools errorPayload / CLI fail /
- * MCP errorResult）。
+ * vocab 发现 → 映射文件发现（M7）→ analyzeClip（单 clip 或 '*' 批量）→ 落盘。抛 KinemeshError（无动画 /
+ * clip 缺失 / morph-only / 参数越界 / 词表或映射文件非法等），由各出口转成自己的错误口径
+ * （tools errorPayload / CLI fail / MCP errorResult）。
  */
 export async function runAnalyze(
   data: ArrayBuffer,
@@ -144,6 +177,7 @@ export async function runAnalyze(
     ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) }
     : await loadModelScene(data, fileName);
   const { scene } = loadedScene;
+  const bonesMapping = await resolveBonesMapping(params.boneMap, context.assetDir, scene);
   const normalization = resolveNormalization(params.normalize ?? 'height', sceneBoundsHeight(scene));
   const vocab = await loadVocab({
     explicitPath: params.vocab,
@@ -162,6 +196,7 @@ export async function runAnalyze(
     curvesFor: params.curvesFor,
     loopMode: params.loopMode,
     vocab,
+    boneMap: bonesMapping,
   });
   const specified = params.out !== undefined && params.out.trim() !== '';
   const dir = specified
@@ -183,6 +218,12 @@ export async function runAnalyze(
         ),
       ]
     : [...new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
+  // M7：非人形映射文件的诚实提示——泛化通道未实装，本次采样关节集走常规链
+  if (bonesMapping !== null && bonesMapping.archetype !== 'humanoid') {
+    warnings.push(
+      `映射文件 archetype=${bonesMapping.archetype}：非人形泛化通道未在本版本实装，本次 joints 解析按常规链（字典查表 / Top-15 回退）执行；映射文件已入库，通道切换后即生效。`,
+    );
+  }
   return {
     ok: true,
     dir,
@@ -244,7 +285,7 @@ function analyzeTool(): AgentTool {
         loopMode: { type: 'string', enum: ['strict', 'pose-only'], description: 'bestLoopRange 口径：strict（缺省）四分量；pose-only 去掉位移/朝向（root-motion 循环用）' },
         normalize: { type: 'string', enum: ['height', 'none'], description: '身高归一，缺省 height（数值单位为身高倍数）；拿不到身高自动降级 none' },
         vocab: { type: 'string', description: '词汇表文件路径（kinemesh-vocab.json）；缺省按 资产同目录 > 工作区 > builtin 发现' },
-        boneMap: { type: 'string', description: '骨架映射文件路径（M7 消费；当前仅接受参数）' },
+        boneMap: { type: 'string', description: '骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现；joints=auto 时映射优先于字典查表' },
       },
       required: ['path'],
       additionalProperties: false,
@@ -292,6 +333,124 @@ function analyzeTool(): AgentTool {
           return errorPayload(error.message, error.guidance, `分析 ${loaded.abs}`);
         }
         return errorPayload(reasonOf(error), '确认模型能被 kinemesh_info 解析后重试；必要时缩小参数范围（降低 sampleFps / 换 clip）。', `分析 ${loaded.abs}`);
+      }
+    },
+  };
+}
+
+// ———————— kinemesh_skeleton（M7，设计文档 §7.3 / 附录 B） ————————
+
+/** 三出口同名同参口径（DSH JSON Schema / CLI flag / MCP zod 各自投影，语义以此接口为准） */
+export interface SkeletonToolParams {
+  /** 中间文件输出目录；缺省 <系统临时目录>/kinemesh-analysis/run-<时间戳>-<pid>/ */
+  out?: string;
+  /** 标注截图批次：auto（缺省，CORE15 有缺口才出）/ none（只出 report）/ all（全量） */
+  shots?: 'auto' | 'none' | 'all';
+  /** 骨架映射文件路径（kinemesh-bones.json，B.5）；缺省按 资产同目录 > cwd 发现 */
+  boneMap?: string;
+}
+
+export interface SkeletonRunResult {
+  ok: true;
+  dir: string;
+  files: Array<{ name: string; bytes: number; what: string }>;
+  /** 内联 skeleton digest：convention / 覆盖统计 / 未映射清单 / 批次清单 / 两级指引 facts */
+  digest: SkeletonDigest;
+  /** 仅当输出落在系统临时目录时给出（读不到文件的自愈指引，§6.4） */
+  hint?: string;
+}
+
+/**
+ * 三出口共用的 skeleton 执行 runner：加载场景（进程内缓存，与 analyze 同源）→ 映射文件发现与
+ * 校验 → skeleton-report（字典查表 + 映射文件叠加 partGuess、convention、覆盖统计、结构统计、
+ * B.4 标注截图批次配方）→ 落盘 skeleton-report.json。抛 KinemeshError（映射文件路径/schema 非法），
+ * 由各出口转成自己的错误口径。
+ */
+export async function runSkeleton(
+  data: ArrayBuffer,
+  fileName: string,
+  params: SkeletonToolParams,
+  context: { assetDir?: string; absPath?: string } = {},
+): Promise<SkeletonRunResult> {
+  const loadedScene = context.absPath
+    ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) }
+    : await loadModelScene(data, fileName);
+  const { scene } = loadedScene;
+  const bonesMapping = await resolveBonesMapping(params.boneMap, context.assetDir, scene);
+  const report = buildSkeletonReport(scene, {
+    fileName,
+    mapping: bonesMapping,
+    shots: params.shots ?? 'auto',
+  });
+  const specified = params.out !== undefined && params.out.trim() !== '';
+  const dir = specified
+    ? path.resolve(expandHome(params.out!.trim()))
+    : path.join(tmpdir(), 'kinemesh-analysis', `run-${Date.now()}-${process.pid}`);
+  const content = skeletonReportJson(report);
+  const target = path.join(dir, 'skeleton-report.json');
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, content, 'utf8');
+  return {
+    ok: true,
+    dir,
+    files: [
+      {
+        name: 'skeleton-report.json',
+        bytes: Buffer.byteLength(content, 'utf8'),
+        what: '骨骼清单/convention/映射覆盖/未映射清单/结构统计/标注截图批次配方/schema 尾注',
+      },
+    ],
+    digest: buildSkeletonDigest(report),
+    ...(specified ? {} : { hint: '输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
+  };
+}
+
+function skeletonTool(): AgentTool {
+  return {
+    name: 'kinemesh_skeleton',
+    description:
+      '骨架识别与映射（本地只读）：产出 skeleton-report.json（每骨名称/层级/rest 世界坐标/partGuess/置信、' +
+      'convention 约定识别、映射覆盖统计、未映射清单、结构统计 limbChains/groundTips/symmetryPairs/maxChainDepth、' +
+      '标注截图批次配方与映射文件 schema 尾注），并返回内联 digest + 两级兜底指引。' +
+      '标准命名 rig（Mixamo/Biped/UE/VRM/Rigify）字典查表直达；非标命名回退 AI 流程：读 report → ' +
+      '（命名不透明再按批次清单出标注截图）→ 写 kinemesh-bones.json → 重跑 analyze 即确定性消费。' +
+      '工具只做字典查表与约定识别，模糊匹配与几何启发不做。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）' },
+        shots: {
+          type: 'string',
+          enum: ['auto', 'none', 'all'],
+          description: '标注截图批次：auto（缺省，CORE15 有缺口才出）/ none（只出 report）/ all（强制全量批次）',
+        },
+        boneMap: { type: 'string', description: '骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现' },
+        out: { type: 'string', description: '中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => textResult(value) },
+    timeoutMs: 60_000,
+    async execute(args) {
+      const given = typeof args?.path === 'string' ? args.path : '';
+      const loaded = await readModelFile(given);
+      if (!loaded.ok) return loaded.payload;
+      const params: SkeletonToolParams = {
+        shots: args?.shots === 'auto' || args?.shots === 'none' || args?.shots === 'all' ? args.shots : undefined,
+        boneMap: typeof args?.boneMap === 'string' && args.boneMap.trim() !== '' ? expandHome(args.boneMap.trim()) : undefined,
+        out: typeof args?.out === 'string' ? args.out : undefined,
+      };
+      try {
+        return await runSkeleton(loaded.data, path.basename(loaded.abs), params, {
+          assetDir: path.dirname(loaded.abs),
+          absPath: loaded.abs,
+        });
+      } catch (error) {
+        if (error instanceof KinemeshError) {
+          return errorPayload(error.message, error.guidance, `识别 ${loaded.abs} 的骨架`);
+        }
+        return errorPayload(reasonOf(error), '确认模型能被 kinemesh_info 解析后重试。', `识别 ${loaded.abs} 的骨架`);
       }
     },
   };

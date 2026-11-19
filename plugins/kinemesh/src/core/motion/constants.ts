@@ -131,3 +131,11 @@ export const JOINT_WEIGHTS = {
 
 /** J15 权重合计（A.3）；实际 Σw 按解析到的关节子集求和 */
 export const JOINT_WEIGHTS_TOTAL = Object.values(JOINT_WEIGHTS).reduce((sum, w) => sum + w, 0);
+
+// ———————— M7 骨架映射（附录 B.3 / B.4，随 skeleton-report 回显） ————————
+
+/** 约定识别判定的最低指纹分（B.3）：score ≥ 0.5 才认该约定，否则 custom */
+export const CONVENTION_MIN = 0.5;
+
+/** 骨骼名标注截图的每批骨骼数（B.4）：按 DFS 序号 mod 批数 stride 分批防叠 */
+export const LABELS_PER_SHOT = 12;

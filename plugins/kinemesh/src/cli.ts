@@ -7,7 +7,7 @@ import path from 'node:path';
 import { analyzeModelCached } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
-import { runAnalyze, type AnalyzeToolParams } from './tools.js';
+import { runAnalyze, runSkeleton, type AnalyzeToolParams, type SkeletonToolParams } from './tools.js';
 import type { ViewMode } from './core/viewstate.js';
 
 const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
@@ -23,10 +23,20 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       --detail <name>          summary / standard / full（缺省 standard；full=+全部关节曲线）
       --curves-for <joints>    指定关节加出 motion-curves/<joint>.csv（逗号分隔，如 L.Hand,R.Hand）
       --sample-fps <n>         采样率 1–60（缺省 15）
+      --smooth <n>             能量平滑窗口（采样帧，缺省 5）
+      --joints <joints>        关节 id/骨骼名清单（逗号分隔，如 L.Hand,R.Foot）；缺省 auto
       --loop-mode <name>       strict / pose-only（bestLoopRange 口径，缺省 strict）
       --normalize <name>       height / none（缺省 height，数值单位为身高倍数）
+      --bone-map <file>        kinemesh-bones.json 映射文件路径（缺省按 资产同目录 > 工作区 发现；
+                               joints=auto 时解析顺序：映射文件 > 字典查表 > Top-15 回退）
       --out <dir>              中间文件输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
       --vocab <file>           kinemesh-vocab.json 词汇表路径（缺省按 资产同目录 > 工作区 > builtin 发现）
+
+  kinemesh skeleton <file> [选项]
+      骨架识别与映射：stdout 返回 {ok,dir,files,digest}（skeleton-report.json 落盘）。
+      --shots <name>           标注截图批次 auto / none / all（缺省 auto：CORE15 有缺口才出批次清单）
+      --bone-map <file>        kinemesh-bones.json 映射文件路径（缺省按 资产同目录 > 工作区 发现）
+      --out <dir>              输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
 
   kinemesh render <file> [选项]
       按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
@@ -230,6 +240,9 @@ async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, 
   const curvesFor = flags['curves-for'] === undefined
     ? undefined
     : flags['curves-for'].split(',').map((token) => token.trim()).filter((token) => token !== '');
+  const joints = flags.joints === undefined
+    ? undefined
+    : flags.joints.split(',').map((token) => token.trim()).filter((token) => token !== '');
   const loaded = await readModel(fileArg);
   if (loaded === null) return 1;
   const params: AnalyzeToolParams = {
@@ -238,10 +251,13 @@ async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, 
     sampleFps: numberFlag(flags, 'sample-fps'),
     detail: detail as AnalyzeToolParams['detail'],
     curvesFor: curvesFor === undefined || curvesFor.length === 0 ? undefined : curvesFor,
+    joints: joints === undefined || joints.length === 0 ? undefined : joints,
     loopMode: loopMode as AnalyzeToolParams['loopMode'],
     normalize: normalize as AnalyzeToolParams['normalize'],
+    smooth: numberFlag(flags, 'smooth'),
     out: flags.out,
     vocab: flags.vocab === undefined ? undefined : expandHome(flags.vocab),
+    boneMap: flags['bone-map'] === undefined ? undefined : expandHome(flags['bone-map']),
   };
   try {
     const result = await runAnalyze(loaded.data, path.basename(loaded.abs), params, {
@@ -253,6 +269,29 @@ async function runAnalyzeCli(fileArg: string | undefined, flags: Record<string, 
   } catch (error) {
     if (error instanceof KinemeshError) return fail(error.message, error.guidance, `分析 ${loaded.abs}`);
     return fail(reasonOf(error), '确认模型能被 info 解析后重试；必要时缩小参数范围（降低 --sample-fps / 换 --clip）。', `分析 ${loaded.abs}`);
+  }
+}
+
+async function runSkeletonCli(fileArg: string | undefined, flags: Record<string, string>): Promise<number> {
+  const shots = enumFlag(flags, 'shots', ['auto', 'none', 'all'], '--shots 取 auto / none / all（缺省 auto）。');
+  if (shots === null) return 1;
+  const loaded = await readModel(fileArg);
+  if (loaded === null) return 1;
+  const params: SkeletonToolParams = {
+    shots: shots as SkeletonToolParams['shots'],
+    boneMap: flags['bone-map'] === undefined ? undefined : expandHome(flags['bone-map']),
+    out: flags.out,
+  };
+  try {
+    const result = await runSkeleton(loaded.data, path.basename(loaded.abs), params, {
+      assetDir: path.dirname(loaded.abs),
+      absPath: loaded.abs,
+    });
+    emit(result);
+    return 0;
+  } catch (error) {
+    if (error instanceof KinemeshError) return fail(error.message, error.guidance, `识别 ${loaded.abs} 的骨架`);
+    return fail(reasonOf(error), '确认模型能被 info 解析后重试。', `识别 ${loaded.abs} 的骨架`);
   }
 }
 
@@ -269,12 +308,13 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (command === 'info') return runInfo(positional[0]);
   if (command === 'analyze') return runAnalyzeCli(positional[0], flags);
+  if (command === 'skeleton') return runSkeletonCli(positional[0], flags);
   if (command === 'render') return runRender(positional[0], flags);
   process.stderr.write(
     `${JSON.stringify({
       ok: false,
       what: `未知命令「${command}」。`,
-      guidance: '可用命令：info <file> / analyze <file> [选项] / render <file> [选项]；--help 看全部。',
+      guidance: '可用命令：info <file> / analyze <file> [选项] / skeleton <file> [选项] / render <file> [选项]；--help 看全部。',
       step: '解析命令行',
     })}\n`,
   );

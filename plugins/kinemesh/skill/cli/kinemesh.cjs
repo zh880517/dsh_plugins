@@ -22982,15 +22982,21 @@ var JOINT_KIND_PATTERNS = [
 	["spine", /spine|torso|chest|ribs/],
 	["head", /head|skull|jaw/]
 ];
-/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写 */
+/** 去掉命名空间与常见前缀：mixamorig:Hips / b_Enable01 / Bip01-L-Hand → 可匹配的小写。
+*  M7 起由 bone-map.ts 复用（B.1 名称归一的基座），不再各写一份。 */
 function normalize(name) {
 	return name.toLowerCase().replace(/^.*:/, "").replace(/^(b_|bip01[_-]?|def-|joint_|jnt_|ctl_)+/i, "");
 }
 /** 左右侧识别：Left 前缀、或独立分隔的 l/r（hand_l / L Hand / Bip01-L-Hand）。
-*  独立 l/r 要求两侧都是分隔符或端点，避免 leg/roll/forearm 这类词误判。 */
+*  独立 l/r 要求两侧都是分隔符或端点，避免 leg/roll/forearm 这类词误判。
+*  左右同时出现（L_R_Arm）→ side=null（B.1 口径：都有或都无 → 未知，缺口交映射文件补）。
+*  M7 起由 bone-map.ts 复用（B.1 side 识别同口径）。 */
 function sideOf(name) {
-	if (/left/.test(name) || /(^|[^a-z])l(?![a-z])/.test(name)) return "L";
-	if (/right/.test(name) || /(^|[^a-z])r(?![a-z])/.test(name)) return "R";
+	const hasL = /left/.test(name) || /(^|[^a-z])l(?![a-z])/.test(name);
+	const hasR = /right/.test(name) || /(^|[^a-z])r(?![a-z])/.test(name);
+	if (hasL && hasR) return null;
+	if (hasL) return "L";
+	if (hasR) return "R";
 	return null;
 }
 function classifyJointName(rawName) {
@@ -30130,6 +30136,8 @@ var JOINT_WEIGHTS = {
 	Foot: 1
 };
 Object.values(JOINT_WEIGHTS).reduce((sum, w) => sum + w, 0);
+/** 约定识别判定的最低指纹分（B.3）：score ≥ 0.5 才认该约定，否则 custom */
+var CONVENTION_MIN = .5;
 //#endregion
 //#region
 var DIR_WORDS = [
@@ -31225,6 +31233,479 @@ function segmentClip(channels, sample, options = {}) {
 }
 //#endregion
 //#region
+/** CORE15（= J15，一律小写、side 显式） */
+var CORE15_IDS = [
+	"hips",
+	"spine",
+	"head",
+	"upperarm-l",
+	"upperarm-r",
+	"lowerarm-l",
+	"lowerarm-r",
+	"hand-l",
+	"hand-r",
+	"upperleg-l",
+	"upperleg-r",
+	"lowerleg-l",
+	"lowerleg-r",
+	"foot-l",
+	"foot-r"
+];
+/** EXTRA（可选，接触检测用） */
+var EXTRA_IDS = [
+	"toe-l",
+	"toe-r",
+	"neck",
+	"chest"
+];
+var ARCHETYPES = [
+	"humanoid",
+	"quadruped",
+	"winged",
+	"multiped",
+	"chain",
+	"custom"
+];
+var LIMB_ROLES = [
+	"leg",
+	"arm",
+	"wing",
+	"tail"
+];
+/** 带左右侧的 canonical 部位（B.2 表键）；hips/spine/head/neck/chest 无侧别 */
+var SIDED_CANONICALS = /* @__PURE__ */ new Set([
+	"toe",
+	"foot",
+	"lowerleg",
+	"upperleg",
+	"hand",
+	"lowerarm",
+	"upperarm"
+]);
+/** canonical + side → B.0 白名单 id；带侧 canonical 缺 side 时返回 null（工具不做几何猜测，缺口交 AI） */
+function coreIdOf(canonical, side) {
+	if (SIDED_CANONICALS.has(canonical)) return side === null ? null : `${canonical}-${side.toLowerCase()}`;
+	return canonical;
+}
+/**
+* 前缀表（B.1，循环剥到不再匹配；开放于 vocab 同款扩展文件的机制留后续）。
+* 剥除条件：前缀后紧跟分隔符/结尾，或前缀自带分隔符结尾（armature|）——防止 blockhead 这类词误剥。
+*/
+var PREFIXES = [
+	"mixamorig",
+	"bip001",
+	"bip01",
+	"bip",
+	"j_bip_c",
+	"j_sec_c",
+	"def_c",
+	"armature|",
+	"block"
+];
+var SEPARATOR_SPLIT = /[_:.\- ]+/;
+var SIDE_TOKENS = /* @__PURE__ */ new Set([
+	"l",
+	"left",
+	"r",
+	"right"
+]);
+/** 分词：分隔符切分 + CamelCase 边界 + 字母/数字边界（bip01 → bip/01、spine01 → spine/01） */
+function tokenize(lower) {
+	return lower.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(SEPARATOR_SPLIT).flatMap((token) => token === "" ? [] : token.split(/(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])/)).filter((token) => token !== "");
+}
+/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀 → 去 side/纯数字 token */
+function normalizeBoneName(rawName) {
+	const lower = rawName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+	const side = sideOf(lower);
+	let stripped = lower;
+	let looped = true;
+	while (looped) {
+		looped = false;
+		for (const prefix of PREFIXES) {
+			if (!stripped.startsWith(prefix)) continue;
+			const rest = stripped.slice(prefix.length);
+			if (!(rest === "" || /[a-z0-9]/.test(prefix.slice(-1)) === false || SEPARATOR_SPLIT.test(rest[0] ?? ""))) continue;
+			stripped = rest;
+			looped = true;
+			break;
+		}
+	}
+	const tokens = tokenize(stripped).filter((token) => !SIDE_TOKENS.has(token) && !/^\d+$/.test(token));
+	const strippedLower = stripped.replace(/^[_:.\- ]+/, "");
+	return {
+		raw: lower,
+		lower: strippedLower === "" ? lower : strippedLower,
+		side,
+		tokens
+	};
+}
+/** 表序即优先级：forearm 行在 arm（upperarm）行上、upleg 行在 leg（lowerleg）行上 */
+var SYNONYMS = [
+	{
+		canonical: "toe",
+		exact: [
+			"toe",
+			"toes",
+			"ball",
+			"toebase"
+		],
+		substring: ["thumb"]
+	},
+	{
+		canonical: "foot",
+		exact: [
+			"foot",
+			"feet",
+			"ankle"
+		],
+		substring: ["jiao"]
+	},
+	{
+		canonical: "lowerleg",
+		exact: [
+			"leg",
+			"calf",
+			"shin",
+			"knee",
+			"lowerleg"
+		],
+		substring: ["xiaotui"]
+	},
+	{
+		canonical: "upperleg",
+		exact: [
+			"thigh",
+			"upleg",
+			"upperleg"
+		],
+		substring: ["datui"]
+	},
+	{
+		canonical: "hand",
+		exact: [
+			"hand",
+			"palm",
+			"wrist"
+		],
+		substring: ["shou"]
+	},
+	{
+		canonical: "lowerarm",
+		exact: [
+			"forearm",
+			"lowerarm",
+			"elbow"
+		],
+		substring: ["xiaobi"]
+	},
+	{
+		canonical: "upperarm",
+		exact: [
+			"upperarm",
+			"arm",
+			"clavicle",
+			"collar",
+			"shoulder"
+		],
+		substring: ["gebo"]
+	},
+	{
+		canonical: "head",
+		exact: ["head"],
+		substring: ["tou"]
+	},
+	{
+		canonical: "neck",
+		exact: ["neck"],
+		substring: ["bozi"]
+	},
+	{
+		canonical: "spine",
+		exact: [
+			"spine",
+			...Array.from({ length: 10 }, (_, i) => `spine${i}`),
+			"chest",
+			"torso"
+		],
+		substring: []
+	},
+	{
+		canonical: "hips",
+		exact: [
+			"hips",
+			"hip",
+			"pelvis"
+		],
+		substring: ["ku"]
+	}
+];
+/**
+* L1 字典查表（纯数据，无启发式）：先对主体 token 按「token 序 → 连接串最长优先 → 表序」精确匹配，
+* 再按表序对全名做子串兜底；两轮都落空返回 null（缺口回退 AI，红线不做模糊匹配）。
+* 表序保证 Mixamo ForeArm→lowerarm 先于 Arm→upperarm、UpLeg→upperleg 先于 Leg→lowerleg 语义。
+*/
+function matchCanonical(rawName) {
+	const normalized = normalizeBoneName(rawName);
+	const tokens = normalized.tokens;
+	for (let start = 0; start < tokens.length; start += 1) for (let end = tokens.length; end > start; end -= 1) {
+		const run = tokens.slice(start, end).join("");
+		for (const row of SYNONYMS) if (row.exact.includes(run)) return {
+			canonical: row.canonical,
+			side: normalized.side,
+			how: "exact"
+		};
+	}
+	for (const row of SYNONYMS) for (const sub of row.substring) if (normalized.lower.includes(sub)) return {
+		canonical: row.canonical,
+		side: normalized.side,
+		how: "substring"
+	};
+	return null;
+}
+/** 家族指纹（B.3）：mixamo/biped/vrm 看原始名前缀，ue 看原始名后缀+主体 token，rigify 看点分后缀。
+*  指纹一律吃 raw（原名小写、未剥前缀），否则 mixamorig:/bip01/j_bip 这类前缀自身会被 B.1 剥掉。 */
+var FINGERPRINTS = [
+	{
+		id: "mixamo",
+		hit: (raw) => raw.startsWith("mixamorig:")
+	},
+	{
+		id: "biped",
+		hit: (raw) => /^bip0\d+[_ ]/.test(raw)
+	},
+	{
+		id: "ue",
+		hit: (raw, tokens) => /_(l|r)$/.test(raw) && tokens.some((token) => [
+			"thigh",
+			"calf",
+			"upperarm",
+			"lowerarm"
+		].includes(token))
+	},
+	{
+		id: "vrm",
+		hit: (raw) => raw.startsWith("j_bip")
+	},
+	{
+		id: "rigify",
+		hit: (raw) => /(upper_arm|forearm|hand)\.[lr]$/.test(raw)
+	}
+];
+/** score = 指纹命中骨数 / 总骨数；convention = argmax 且 ≥ CONVENTION_MIN，否则 custom（B.3） */
+function detectConvention(boneNames) {
+	const counts = /* @__PURE__ */ new Map();
+	for (const name of boneNames) {
+		const normalized = normalizeBoneName(name);
+		for (const fingerprint of FINGERPRINTS) if (fingerprint.hit(normalized.raw, normalized.tokens)) {
+			counts.set(fingerprint.id, (counts.get(fingerprint.id) ?? 0) + 1);
+			break;
+		}
+	}
+	const total = boneNames.length;
+	let best = "custom";
+	let bestCount = 0;
+	for (const [id, count] of counts) if (count > bestCount) {
+		best = id;
+		bestCount = count;
+	}
+	const score = total > 0 ? bestCount / total : 0;
+	if (bestCount === 0 || score < .5) return {
+		convention: "custom",
+		matched: bestCount,
+		total,
+		score
+	};
+	return {
+		convention: best,
+		matched: bestCount,
+		total,
+		score
+	};
+}
+/** 约定文件名（资产同目录 / cwd 自动发现，B.5 发现顺序的缺省文件名） */
+var BONES_FILE_NAME = "kinemesh-bones.json";
+var WHITELIST_TEXT = `${[...CORE15_IDS, ...EXTRA_IDS].join(" / ")}`;
+/** JSON 文本 → BonesFileData；schema 校验失败抛 KinemeshError（错在哪 + 正确姿势并列合法值清单，B.5） */
+function parseBonesFile(text, sourcePath) {
+	let data;
+	try {
+		data = JSON.parse(text);
+	} catch (error) {
+		throw new KinemeshError(`映射文件 JSON 解析失败：${sourcePath}（${reasonOf(error)}）。`, `${BONES_FILE_NAME} 必须是合法 JSON（schema v2）：{_meta: {archetype, …}, root?, head?, spine?, limbs?, bones?}；逐项检查逗号/引号后重跑。`);
+	}
+	if (typeof data !== "object" || data === null || Array.isArray(data)) throw new KinemeshError(`映射文件结构不对：${sourcePath} 顶层必须是对象。`, `schema v2 顶层形如 {"_meta": {"archetype": "humanoid"}, "bones": {"Head_01": "head"}}；非 humanoid 再给 root/head/spine/limbs。`);
+	const record = data;
+	let rawArchetype = "humanoid";
+	if (record._meta !== void 0) {
+		if (typeof record._meta !== "object" || record._meta === null || Array.isArray(record._meta)) throw new KinemeshError(`映射文件 _meta 不是对象：${sourcePath}。`, `_meta 形如 {"archetype": "quadruped", "convention": "custom", "by": "ai", "notes": "…"}；archetype 合法值：${ARCHETYPES.join(" / ")}。`);
+		const meta = record._meta;
+		if (meta.archetype !== void 0) rawArchetype = meta.archetype;
+		for (const key of [
+			"convention",
+			"by",
+			"notes"
+		]) if (meta[key] !== void 0 && typeof meta[key] !== "string") throw new KinemeshError(`映射文件 _meta.${key} 必须是字符串：${sourcePath}。`, `例如 "_meta": {"${key}": "…"}。`);
+	}
+	if (typeof rawArchetype !== "string" || !ARCHETYPES.includes(rawArchetype)) throw new KinemeshError(`映射文件 archetype 非法（${JSON.stringify(rawArchetype)}）：${sourcePath}。`, `archetype 只允许：${ARCHETYPES.join(" / ")}（B.0 枚举）。`);
+	const archetype = rawArchetype;
+	const metaSource = record._meta ?? {};
+	const meta = {
+		archetype,
+		...typeof metaSource.convention === "string" ? { convention: metaSource.convention } : {},
+		...typeof metaSource.by === "string" ? { by: metaSource.by } : {},
+		...typeof metaSource.notes === "string" ? { notes: metaSource.notes } : {}
+	};
+	const textAt = (key, value) => {
+		if (typeof value !== "string" || value.trim() === "") throw new KinemeshError(`映射文件 ${key} 必须是非空字符串：${sourcePath}。`, `${key} 写场景里真实存在的骨骼名（先 kinemesh_info 查 bones 列表）。`);
+		return value;
+	};
+	const stringList = (key, value) => {
+		if (!Array.isArray(value)) throw new KinemeshError(`映射文件 ${key} 必须是字符串数组：${sourcePath}。`, `例如 "${key}": ["Spine_01", "Spine_02"]。`);
+		return value.map((entry, index) => textAt(`${key}[${index}]`, entry));
+	};
+	const root = record.root === void 0 ? null : textAt("root", record.root);
+	const head = record.head === void 0 ? null : textAt("head", record.head);
+	const spine = record.spine === void 0 ? [] : stringList("spine", record.spine);
+	const limbs = [];
+	if (record.limbs !== void 0) {
+		if (!Array.isArray(record.limbs)) throw new KinemeshError(`映射文件 limbs 必须是数组：${sourcePath}。`, `每条形如 {"role": "leg", "tag": "fl", "bones": ["Leg_FL_1", "Leg_FL_2"], "tip": "Foot_FL"}。`);
+		record.limbs.forEach((raw, index) => {
+			const where = `limbs[${index}]`;
+			if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new KinemeshError(`映射文件 ${where} 不是对象：${sourcePath}。`, `每条肢链形如 {"role": "leg", "bones": […], "tip": "…"}。`);
+			const limb = raw;
+			if (typeof limb.role !== "string" || !LIMB_ROLES.includes(limb.role)) throw new KinemeshError(`映射文件 ${where}.role 非法（${JSON.stringify(limb.role)}）：${sourcePath}。`, `role 只允许：${LIMB_ROLES.join(" / ")}。`);
+			const bones = stringList(`${where}.bones`, limb.bones);
+			if (bones.length === 0) throw new KinemeshError(`映射文件 ${where}.bones 是空数组：${sourcePath}。`, "每条肢链至少要有一节骨骼，tip 指向最后一节。");
+			const tag = limb.tag === void 0 ? void 0 : textAt(`${where}.tag`, limb.tag);
+			const tip = textAt(`${where}.tip`, limb.tip);
+			limbs.push({
+				role: limb.role,
+				bones,
+				tip,
+				...tag === void 0 ? {} : { tag }
+			});
+		});
+	}
+	const bones = /* @__PURE__ */ new Map();
+	if (record.bones !== void 0) {
+		if (typeof record.bones !== "object" || record.bones === null || Array.isArray(record.bones)) throw new KinemeshError(`映射文件 bones 必须是对象（骨骼名 → canonical id）：${sourcePath}。`, `例如 "bones": {"Head_01": "head", "Hand_L": "hand-l"}。`);
+		for (const [boneName, value] of Object.entries(record.bones)) {
+			if (boneName.trim() === "") throw new KinemeshError(`映射文件 bones 有空骨骼名键：${sourcePath}。`, "键写场景里真实存在的骨骼名（先 kinemesh_info 查 bones 列表）。");
+			if (typeof value !== "string") throw new KinemeshError(`映射文件 bones["${boneName}"] 必须是字符串：${sourcePath}。`, `值用 B.0 白名单 id：${WHITELIST_TEXT}。`);
+			if ((SIDED_CANONICALS.has(value) || value.startsWith("toe")) && !/-(l|r)$/.test(value)) throw new KinemeshError(`映射文件 bones["${boneName}"] 的值「${value}」缺 side：${sourcePath}。`, `带侧别部位必须显式给左右，例如 "${value}-l" 与 "${value}-r" 两个键值。`);
+			if (!CORE15_IDS.includes(value) && !EXTRA_IDS.includes(value)) throw new KinemeshError(`映射文件 bones["${boneName}"] 的值「${value}」不在 B.0 白名单：${sourcePath}。`, `值只允许：${WHITELIST_TEXT}（side 必须显式，如 upperarm-l / upperarm-r）。`);
+			const taken = [...bones.entries()].find(([, existing]) => existing === value);
+			if (taken !== void 0) throw new KinemeshError(`映射文件同一 canonical id「${value}」被两根骨骼占用（${taken[0]} 与 ${boneName}）：${sourcePath}。`, "一个 canonical id 只映射一根骨骼；脊柱家族多余骨骼不要写进 bones，交给字典中位保留或留空。");
+			bones.set(boneName, value);
+		}
+	}
+	if (archetype === "humanoid" && bones.size === 0) throw new KinemeshError(`映射文件 archetype=humanoid 但没有 bones 映射：${sourcePath}。`, `humanoid 只需 bones 简写：{"_meta": {"archetype": "humanoid"}, "bones": {"Head_01": "head", …}}；值用白名单 id：${WHITELIST_TEXT}。`);
+	if (archetype !== "humanoid" && root === null) throw new KinemeshError(`映射文件 archetype=${archetype} 但缺 root：${sourcePath}。`, `非 humanoid 时 root 必填（head/spine/limbs 按需，bones 字段此时忽略）；root 写根骨骼名。`);
+	const legLimbs = limbs.filter((limb) => limb.role === "leg").length;
+	if (legLimbs > 8) throw new KinemeshError(`映射文件 leg 肢链数 ${legLimbs} 超过 8：${sourcePath}。`, `leg 肢链数 > 8 通常意味着 archetype 判错了（如把触手/装饰链写成了 leg）；复核 archetype（合法值：${ARCHETYPES.join(" / ")}）或把非腿链改成 wing/tail/arm 后重写文件。`);
+	return {
+		meta,
+		root,
+		head,
+		spine,
+		limbs,
+		bones
+	};
+}
+function checkBonesAgainstSkeleton(data, sourcePath, parentOf) {
+	const parts = /* @__PURE__ */ new Map();
+	const referenced = [];
+	const humanoid = data.meta.archetype === "humanoid";
+	if (humanoid) for (const [boneName, coreId] of data.bones) referenced.push({
+		name: boneName,
+		part: coreId
+	});
+	else {
+		if (data.root !== null) referenced.push({
+			name: data.root,
+			part: "root"
+		});
+		if (data.head !== null) referenced.push({
+			name: data.head,
+			part: "head"
+		});
+		for (const name of data.spine) referenced.push({
+			name,
+			part: "spine"
+		});
+		data.limbs.forEach((limb, index) => {
+			const label = limb.tag === void 0 ? `limb:${limb.role}` : `limb:${limb.role}:${limb.tag}`;
+			for (const name of limb.bones) referenced.push({
+				name,
+				part: label
+			});
+			referenced.push({
+				name: limb.tip,
+				part: label
+			});
+		});
+	}
+	const missing = referenced.filter((entry) => !parentOf.has(entry.name));
+	if (missing.length > 0) throw new KinemeshError(`映射文件引用的骨骼不存在于骨架：${[...new Set(missing.map((entry) => entry.name))].join("、")}（${sourcePath}）。`, "骨骼名要与场景完全一致（区分大小写）；先 kinemesh_info 查 bones 列表，逐个核对映射文件后再重跑。");
+	for (const entry of referenced) if (!parts.has(entry.name)) parts.set(entry.name, entry.part);
+	data.limbs.forEach((limb, index) => {
+		const where = `limbs[${index}]（${limb.role}${limb.tag === void 0 ? "" : ` ${limb.tag}`}）`;
+		for (let k = 0; k + 1 < limb.bones.length; k += 1) {
+			const child = limb.bones[k + 1];
+			const parent = limb.bones[k];
+			if (parentOf.get(child) !== parent) throw new KinemeshError(`映射文件 ${where} 不是连续链：「${child}」的直接父骨是「${parentOf.get(child) ?? "(无)"}」，不是「${parent}」。`, "limbs[].bones 按 链首→tip 顺序写，相邻两项必须逐级父子相连；按 skeleton-report 的 parent/children 层级抄写。");
+		}
+		if (limb.tip !== limb.bones[limb.bones.length - 1]) throw new KinemeshError(`映射文件 ${where} 的 tip「${limb.tip}」不是 bones 最后一节「${limb.bones[limb.bones.length - 1]}」。`, "tip 必须等于 bones 数组最后一节（指端）；把 tip 改成末节骨骼名。");
+	});
+	return {
+		source: sourcePath,
+		archetype: data.meta.archetype,
+		root: humanoid ? null : data.root,
+		head: humanoid ? null : data.head,
+		spine: humanoid ? [] : data.spine,
+		limbs: humanoid ? [] : data.limbs,
+		core: humanoid ? data.bones : /* @__PURE__ */ new Map(),
+		parts
+	};
+}
+function isMissingFile(error) {
+	return error.code === "ENOENT";
+}
+/**
+* 发现顺序（B.5）：boneMap 参数 > 资产同目录 kinemesh-bones.json > cwd > 无。
+* 显式路径读不到 → KinemeshError（存在性校验，不再静默成功）；发现路径读不到 → 静默跳下一个；
+* 读到了但 JSON/schema 非法 → parseBonesFile 的三段式 KinemeshError。
+*/
+async function loadBonesFile(options = {}) {
+	const explicit = options.explicitPath?.trim();
+	if (explicit !== void 0 && explicit !== "") {
+		let text;
+		try {
+			text = await (0, node_fs_promises.readFile)(explicit, "utf8");
+		} catch (error) {
+			if (isMissingFile(error)) throw new KinemeshError(`boneMap 指定的映射文件不存在：${explicit}。`, `确认路径拼写；缺省可把 kinemesh-bones.json 放在资产同目录（发现顺序：boneMap 参数 > 资产同目录 > 工作区）。schema v2 见 kinemesh_skeleton 报告尾注。`);
+			throw new KinemeshError(`映射文件读取失败：${explicit}（${reasonOf(error)}）。`, "确认文件存在且可读（Windows 路径用正斜杠或双反斜杠）后重试。");
+		}
+		return {
+			source: node_path.default.resolve(explicit),
+			data: parseBonesFile(text, explicit)
+		};
+	}
+	const candidates = [];
+	if (options.assetDir !== void 0 && options.assetDir.trim() !== "") candidates.push(node_path.default.join(options.assetDir, BONES_FILE_NAME));
+	if (options.cwd !== void 0 && options.cwd.trim() !== "") candidates.push(node_path.default.join(options.cwd, BONES_FILE_NAME));
+	for (const candidate of candidates) {
+		const text = await (0, node_fs_promises.readFile)(candidate, "utf8").catch(() => null);
+		if (text === null) continue;
+		return {
+			source: node_path.default.resolve(candidate),
+			data: parseBonesFile(text, candidate)
+		};
+	}
+	return null;
+}
+//#endregion
+//#region
 var J15_PLAN = [
 	{
 		id: "hips",
@@ -31454,13 +31935,83 @@ function resolveHumanoidJoints(root) {
 	const slots = /* @__PURE__ */ new Map();
 	root.traverse((obj) => {
 		if (obj === root || obj.name === "") return;
-		const classification = classifyJointName(obj.name);
-		if (!classification) return;
-		const key = slotKey(classification);
+		const match = matchCanonical(obj.name);
+		if (!match) return;
+		const kind = CANONICAL_KIND[match.canonical];
+		if (kind === void 0) return;
+		const side = match.side;
+		const key = slotKey({
+			kind,
+			side
+		});
 		if (!slots.has(key)) slots.set(key, obj);
 	});
 	const hips = slots.get(":hips");
 	if (!hips) return null;
+	return buildResolutionFromSlots(slots, "humanoid-conventions", hips);
+}
+/** B.2 canonical 部位 → J15 槽位 kind；neck/chest 等不在表内的返回 undefined */
+var CANONICAL_KIND = {
+	hips: "hips",
+	spine: "spine",
+	head: "head",
+	upperarm: "upper-arm",
+	lowerarm: "lower-arm",
+	hand: "hand",
+	upperleg: "upper-leg",
+	lowerleg: "lower-leg",
+	foot: "foot",
+	toe: "toe"
+};
+/** B.0 白名单 id（映射文件键）→ J15 槽位；neck 与未知 id 返回 null（不进采样关节集） */
+function coreIdToSlot(coreId) {
+	for (const canonical of [
+		"upperarm",
+		"lowerarm",
+		"hand",
+		"upperleg",
+		"lowerleg",
+		"foot",
+		"toe"
+	]) if (coreId.startsWith(`${canonical}-`)) {
+		const side = coreId.slice(canonical.length + 1);
+		if (side !== "l" && side !== "r") return null;
+		return {
+			kind: CANONICAL_KIND[canonical],
+			side: side === "l" ? "L" : "R"
+		};
+	}
+	if (coreId === "hips" || coreId === "spine" || coreId === "chest" || coreId === "head") return {
+		kind: CANONICAL_KIND[coreId === "chest" ? "spine" : coreId],
+		side: null
+	};
+	return null;
+}
+/**
+* 映射文件层（M7 §7.4，解析链最高优先）：按映射文件 humanoid 简写把骨骼名钉到 J15 槽位，
+* 纯确定性查表；hips 不强制（缺 hips 时 rootJoint=null，rootPos/heading 记 0 并在 warnings 注明）。
+* 映射里没有的槽位进 declaredJoints（与惯例集同口径）。
+*/
+function resolveMappedJoints(root, mapping) {
+	if (!mapping || mapping.core.size === 0) return null;
+	const byName = /* @__PURE__ */ new Map();
+	root.traverse((obj) => {
+		if (obj !== root && obj.name !== "" && !byName.has(obj.name)) byName.set(obj.name, obj);
+	});
+	const slots = /* @__PURE__ */ new Map();
+	for (const [boneName, coreId] of mapping.core) {
+		const slot = coreIdToSlot(coreId);
+		if (!slot) continue;
+		const object = byName.get(boneName);
+		if (!object) continue;
+		const key = slotKey(slot);
+		if (!slots.has(key)) slots.set(key, object);
+	}
+	if (slots.size === 0) return null;
+	return buildResolutionFromSlots(slots, "bone-map", slots.get(":hips") ?? null);
+}
+/** 槽位表 → 采样关节集（A.0 顺序即输出顺序；J15_PLAN + Toe，权重按惯例表） */
+function buildResolutionFromSlots(slots, basis, rootJoint) {
 	const jointObjects = [];
 	const joints = [];
 	const declaredJoints = [];
@@ -31493,12 +32044,12 @@ function resolveHumanoidJoints(root) {
 		}
 	}
 	return {
-		basis: "humanoid-conventions",
+		basis,
 		jointObjects,
 		joints,
 		declaredJoints,
 		anchors: buildAnchors(joints),
-		rootJoint: hips
+		rootJoint
 	};
 }
 function resolveTop15Joints(root, times, evaluateAt) {
@@ -31647,7 +32198,7 @@ function sampleClip(scene, options = {}) {
 			root.updateMatrixWorld(true);
 		};
 		const requested = options.joints ?? "auto";
-		const resolution = requested === "auto" ? resolveHumanoidJoints(root) ?? resolveTop15Joints(root, times, evaluateAt) : resolveExplicitJoints(root, requested);
+		const resolution = requested === "auto" ? resolveMappedJoints(root, options.boneMap) ?? resolveHumanoidJoints(root) ?? resolveTop15Joints(root, times, evaluateAt) : resolveExplicitJoints(root, requested);
 		const { joints, jointObjects } = resolution;
 		const warnings = [];
 		if (prepared.morphIgnored > 0) warnings.push(`已忽略 ${prepared.morphIgnored} 条 morph/blend shape 轨道（骨骼运动分析不涉及形态动画）。`);
@@ -31656,7 +32207,8 @@ function sampleClip(scene, options = {}) {
 			const more = prepared.unresolved.length > 5 ? ` 等 ${prepared.unresolved.length} 条` : "";
 			warnings.push(`有 ${prepared.unresolved.length} 条轨道未找到目标节点，已跳过：${names}${more}。`);
 		}
-		if (resolution.basis === "motion-top15") warnings.push("非人形骨架：关节集取世界位移方差 Top-15 骨骼（jointBasis=motion-top15），能量权重统一为 1。");
+		if (resolution.basis === "motion-top15") warnings.push("非人形骨架：关节集取世界位移方差 Top-15 骨骼（jointBasis=motion-top15），能量权重统一为 1；要按部位分析，先用 kinemesh_skeleton 出两级指引与标注截图批次，把结论写 kinemesh-bones.json 后重跑（工具确定性消费，不再回退 Top-15）。");
+		if (resolution.basis === "bone-map" && resolution.rootJoint === null) warnings.push("映射文件缺 hips 槽位：rootPos/heading 无参照，本片记 0；把 hips 补进 kinemesh-bones.json 后重跑。");
 		const jointCount = joints.length;
 		const positions = new Float64Array(frameCount * jointCount * 3);
 		const scratch = new Vector3();
@@ -32118,6 +32670,7 @@ function buildSummary(input) {
 			source: "builtin",
 			entries: 0
 		},
+		...input.boneMap === void 0 ? {} : { boneMap: input.boneMap },
 		facts,
 		warnings: input.warnings
 	};
@@ -32140,7 +32693,8 @@ function analyzeOneClip(scene, options) {
 		clipName: options.clipName,
 		sampleFps: options.sampleFps,
 		joints: options.joints,
-		range: options.range
+		range: options.range,
+		boneMap: options.boneMap
 	});
 	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
 	const channels = computeChannels(sample, { scale });
@@ -32181,6 +32735,11 @@ function analyzeOneClip(scene, options) {
 		vocab: options.vocab && {
 			source: options.vocab.source,
 			entries: options.vocab.entries.length
+		},
+		boneMap: options.boneMap === void 0 || options.boneMap === null ? void 0 : {
+			source: options.boneMap.source,
+			archetype: options.boneMap.archetype,
+			mapped: options.boneMap.parts.size
 		}
 	});
 	const recipe = keyframesFile(keyframes).renderRecipe;
@@ -32340,19 +32899,313 @@ function resolveNormalization(requested, height) {
 }
 //#endregion
 //#region
+/** 与 sample.ts collectCandidates 同口径：有 Bone 收 Bone，否则收命名节点；空名节点跳过。
+*  Mesh 一律跳过——骨架清单是关节，不是渲染网格（GLTFLoader 还会给未命名 mesh 起别名 mesh_0）。 */
+function collectSkeletonSet(scene) {
+	const root = scene.object;
+	let hasBones = false;
+	root.traverse((obj) => {
+		if (obj !== root && obj.isBone) hasBones = true;
+	});
+	const raw = [];
+	const walk = (obj, parent) => {
+		for (const child of obj.children) {
+			let node = null;
+			if (child.name !== "" && !child.isMesh && (!hasBones || child.isBone)) {
+				node = {
+					name: child.name,
+					parent: parent === null ? null : parent.name,
+					depth: parent === null ? 0 : parent.depth + 1,
+					children: [],
+					restWorldPos: [
+						0,
+						0,
+						0
+					],
+					dfsIndex: 0
+				};
+				raw.push({
+					node,
+					object: child
+				});
+			}
+			walk(child, node ?? parent);
+		}
+	};
+	walk(root, null);
+	root.updateMatrixWorld(true);
+	const scratch = new Vector3();
+	const nodes = raw.map((entry, index) => {
+		const node = entry.node;
+		entry.object.getWorldPosition(scratch);
+		node.dfsIndex = index;
+		node.restWorldPos = [
+			scratch.x,
+			scratch.y,
+			scratch.z
+		].map((axis) => Number(axis.toFixed(3)));
+		return node;
+	});
+	const byName = new Map(nodes.map((node) => [node.name, node]));
+	for (const node of nodes) if (node.parent !== null) byName.get(node.parent)?.children.push(node.name);
+	return {
+		nodes,
+		parentOf: new Map(nodes.map((node) => [node.name, node.parent]))
+	};
+}
+var GROUND_TIP_RATIO = .05;
+var SYMMETRY_TOLERANCE = .02;
+/** B.7 非人形通道泛化说明（archetype ≠ humanoid 时进 report；通道实现在后续里程碑） */
+function generalizationNotes(archetype) {
+	return [
+		`archetype=${archetype}：非人形骨架，动作分析通道按 B.7 泛化口径执行——分析关节集 AS = {root, head（若有）, spine 中位骨（若有）, 每条 limb 的首/中/末骨}（limb > 8 取位移方差 Top-8，AS 上限 27）。`,
+		"能量权重按链位（与 J15 表同源）：root 0.2 / spine 0.3 / head 1.0 / limb 首 0.6 / 中 0.8 / 末（tip）1.0；tail 同 limb 口径。",
+		"heading 回退序：① 左右对称 leg 且有 head 按原式；② 有 head 取 pos(head)−pos(root) 投影 XZ；③ 根骨骼世界四元数 × (0,0,1)。",
+		"接触检测泛化为「贴地肢链 tip」：tip rest 高度与全部 limb tip 最低高度差 < 0.05H 的 limb 视为腿（映射 role 仅供展示）；无贴地 limb 时 contact 置 null + warning。",
+		"amplitude 末端 = 非贴地 limb 的 tips + head；强度档位阈值按人形运动校准，非人形仅作横向参考。",
+		"本版本 analyze 通道尚未切换到泛化实现（仍按 J15/Top-15 口径分析），映射文件先落工程，通道切换在后续里程碑交付。"
+	];
+}
+var SCHEMA_NOTE = [
+	"kinemesh-bones.json schema v2（写 <资产目录>/kinemesh-bones.json；工具确定性消费）：",
+	"{",
+	"  \"_meta\": { \"archetype\": \"humanoid | quadruped | winged | multiped | chain | custom\", \"convention\": \"可选\", \"by\": \"ai\", \"notes\": \"可选\" },",
+	"  \"root\": \"非 humanoid 必填（humanoid 忽略）\",",
+	"  \"head\": \"按需\",",
+	"  \"spine\": [\"Spine_01\", \"Spine_02\"],",
+	"  \"limbs\": [ { \"role\": \"leg | arm | wing | tail\", \"tag\": \"fl（自由短标签，仅展示）\", \"bones\": [\"Leg_FL_1\", \"Leg_FL_2\"], \"tip\": \"Foot_FL\" } ],",
+	"  \"bones\": { \"Head_01\": \"head\", \"Hand_L\": \"hand-l\" }",
+	"}",
+	"humanoid：只需 bones 简写（CORE15+EXTRA id：hips / spine / head / upperarm-l|r / lowerarm-l|r / hand-l|r /",
+	"upperleg-l|r / lowerleg-l|r / foot-l|r / toe-l|r / neck / chest，side 必须显式，一个 id 一根骨骼）；",
+	"非 humanoid：root 必填，head/spine/limbs 按需，bones 字段忽略；limbs[].bones 按 链首→tip 逐级父子相连，tip = 末节。"
+].join("\n");
+function buildSkeletonReport(scene, options) {
+	const shots = options.shots ?? "auto";
+	const mapping = options.mapping ?? null;
+	const { nodes } = collectSkeletonSet(scene);
+	const notes = [];
+	const byName = new Map(nodes.map((node) => [node.name, node]));
+	const fileParts = mapping?.parts ?? /* @__PURE__ */ new Map();
+	const dictCandidates = [];
+	for (const node of nodes) {
+		if (fileParts.get(node.name) !== void 0) continue;
+		const match = matchCanonical(node.name);
+		if (match !== null) dictCandidates.push({
+			node,
+			match
+		});
+	}
+	const groups = /* @__PURE__ */ new Map();
+	for (const { node, match } of dictCandidates) {
+		const coreId = coreIdOf(match.canonical, match.side);
+		if (coreId === null) {
+			notes.push(`「${node.name}」命中 ${match.canonical} 但缺 side，工具不做几何猜测，留待映射文件补。`);
+			continue;
+		}
+		const group = groups.get(coreId) ?? [];
+		group.push({
+			node,
+			how: match.how
+		});
+		groups.set(coreId, group);
+	}
+	const partByNode = /* @__PURE__ */ new Map();
+	for (const [boneName, part] of fileParts) {
+		const node = byName.get(boneName);
+		if (node === void 0) continue;
+		partByNode.set(node, {
+			partGuess: part,
+			confidence: "high",
+			source: "file"
+		});
+	}
+	for (const [coreId, group] of groups) {
+		if (group.length === 1) {
+			partByNode.set(group[0].node, {
+				partGuess: coreId,
+				confidence: group[0].how === "exact" ? "high" : "medium",
+				source: "dict"
+			});
+			continue;
+		}
+		const sorted = [...group].sort((a, b) => a.node.restWorldPos[1] - b.node.restWorldPos[1] || a.node.dfsIndex - b.node.dfsIndex);
+		const kept = sorted[Math.floor((sorted.length - 1) / 2)];
+		partByNode.set(kept.node, {
+			partGuess: coreId,
+			confidence: kept.how === "exact" ? "high" : "medium",
+			source: "dict"
+		});
+		const dropped = sorted.filter((entry) => entry !== kept).map((entry) => `「${entry.node.name}」`);
+		notes.push(`「${kept.node.name}」与 ${dropped.join("、")} 同命中 ${coreId}：按 rest 高度中位保留「${kept.node.name}」，其余未映射。`);
+	}
+	const bones = nodes.map((node) => {
+		const part = partByNode.get(node);
+		return {
+			name: node.name,
+			parent: node.parent,
+			depth: node.depth,
+			children: [...node.children],
+			restWorldPos: node.restWorldPos,
+			partGuess: part?.partGuess ?? null,
+			confidence: part?.confidence ?? null,
+			source: part?.source ?? null
+		};
+	});
+	const convention = detectConvention(nodes.map((node) => node.name));
+	const coreIds = new Set(CORE15_IDS);
+	const mappedEntries = bones.filter((entry) => entry.source !== null);
+	const coreHit = new Set(mappedEntries.map((entry) => entry.partGuess).filter((part) => part !== null && coreIds.has(part))).size;
+	const unmapped = bones.filter((entry) => entry.partGuess === null).map((entry) => entry.name);
+	const height = sceneBoundsHeight(scene);
+	const leaves = bones.filter((entry) => entry.children.length === 0);
+	const minTipY = leaves.reduce((min, entry) => Math.min(min, entry.restWorldPos[1]), Number.POSITIVE_INFINITY);
+	const groundTips = leaves.length > 0 && height !== null && Number.isFinite(minTipY) ? leaves.filter((entry) => entry.restWorldPos[1] - minTipY < GROUND_TIP_RATIO * height).length : 0;
+	const xs = bones.map((entry) => entry.restWorldPos[0]).sort((a, b) => a - b);
+	const centerX = xs.length > 0 ? xs[Math.floor((xs.length - 1) / 2)] : 0;
+	let symmetryPairs = 0;
+	if (height !== null) {
+		const tolerance = SYMMETRY_TOLERANCE * height;
+		const paired = /* @__PURE__ */ new Set();
+		for (const entry of leaves) {
+			if (paired.has(entry.name)) continue;
+			const mirror = leaves.find((other) => !paired.has(other.name) && other !== entry && Math.abs(entry.restWorldPos[0] + other.restWorldPos[0] - 2 * centerX) <= tolerance && Math.abs(entry.restWorldPos[1] - other.restWorldPos[1]) <= tolerance && Math.abs(entry.restWorldPos[2] - other.restWorldPos[2]) <= tolerance);
+			if (mirror !== void 0) {
+				paired.add(entry.name);
+				paired.add(mirror.name);
+				symmetryPairs += 1;
+			}
+		}
+	}
+	const maxChainDepth = bones.reduce((max, entry) => Math.max(max, entry.depth), 0);
+	const mappedNames = new Set([...partByNode.keys()].map((node) => node.name));
+	const batchTargets = shots === "all" ? nodes.map((node) => ({
+		name: node.name,
+		dfsIndex: node.dfsIndex
+	})) : shots === "none" ? [] : unmapped.length > 0 && 15 - coreHit > 0 ? nodes.filter((node) => !mappedNames.has(node.name)).map((node) => ({
+		name: node.name,
+		dfsIndex: node.dfsIndex
+	})) : [];
+	const batchCount = Math.max(1, Math.ceil(batchTargets.length / 12));
+	const batches = [];
+	for (let i = 0; i < batchCount && batchTargets.length > 0; i += 1) {
+		const names = batchTargets.filter((target) => target.dfsIndex % batchCount === i).map((target) => target.name);
+		if (names.length === 0) continue;
+		const label = String(i + 1).padStart(2, "0");
+		batches.push({
+			batch: i + 1,
+			bones: names,
+			views: ["front", "side"],
+			mode: "skeleton",
+			frames: [0],
+			files: [`labels-front-${label}.png`, `labels-side-${label}.png`]
+		});
+	}
+	const archetype = mapping?.archetype ?? null;
+	return {
+		fileName: options.fileName,
+		boneCount: bones.length,
+		bones,
+		convention,
+		coverage: {
+			mapped: mappedEntries.length,
+			total: bones.length,
+			core: {
+				hit: coreHit,
+				total: 15
+			}
+		},
+		unmapped,
+		stats: {
+			limbChains: leaves.length,
+			groundTips,
+			symmetryPairs,
+			maxChainDepth
+		},
+		archetype,
+		boneMap: mapping === null ? null : {
+			source: mapping.source,
+			archetype: mapping.archetype,
+			mapped: mapping.parts.size
+		},
+		generalization: archetype !== null && archetype !== "humanoid" ? generalizationNotes(archetype) : null,
+		notes,
+		batches,
+		renderRecipe: {
+			frames: [0],
+			views: ["front", "side"],
+			mode: "skeleton",
+			shots,
+			note: "标注截图由既有 kinemesh_render 执行：frames [0]（rest 姿态）、viewPreset front/side、mode skeleton、相机拉远（distance ×2.2 近似正交）；PNG 命名 labels-<view>-<batch 两位>.png。AI 读图时对照本报告的 restWorldPos/层级 与图中骨骼位置定案，结论写 <资产目录>/kinemesh-bones.json。"
+		},
+		schemaNote: SCHEMA_NOTE,
+		constants: {
+			CONVENTION_MIN,
+			LABELS_PER_SHOT: 12
+		}
+	};
+}
+function skeletonReportJson(report) {
+	return `${JSON.stringify(report, null, 2)}\n`;
+}
+function buildSkeletonDigest(report) {
+	const facts = [];
+	facts.push(`约定识别：${report.convention.convention}（指纹命中 ${report.convention.matched}/${report.convention.total}，score ${report.convention.score.toFixed(2)}，阈值 ${report.constants.CONVENTION_MIN}）`);
+	const sourceText = report.boneMap === null ? "无映射文件，来源字典查表" : `映射文件 ${report.boneMap.source}（archetype ${report.boneMap.archetype}）`;
+	facts.push(`映射覆盖：${report.coverage.mapped}/${report.coverage.total} 根骨骼（CORE15 ${report.coverage.core.hit}/15，${sourceText}）`);
+	if (report.unmapped.length > 0) {
+		const shown = report.unmapped.slice(0, 10).join("、");
+		const more = report.unmapped.length > 10 ? ` 等 ${report.unmapped.length} 根` : "";
+		facts.push(`未映射骨骼 ${report.unmapped.length} 根：${shown}${more}（完整清单见 skeleton-report.json）`);
+	}
+	if (report.generalization !== null) facts.push(`非人形骨架（${report.archetype}）：通道泛化说明与结构统计见 skeleton-report.json；强度档位按人形校准，非人形仅作横向参考。`);
+	facts.push(`CORE15 缺口 ${15 - report.coverage.core.hit} 个：① 读 skeleton-report.json，先判 archetype（人形/四足/带翼/多足/链形/自定义，参考结构统计 limbChains/groundTips/symmetryPairs）——人形按名称/层级/rest 坐标对应部位，非人形给出 root/head/脊柱/肢链 → 写 <资产目录>/kinemesh-bones.json（schema 见 report 尾注）；② 命名不透明时以 shots:"all" 重跑取标注截图再定案 → 重跑 analyze`);
+	return {
+		fileName: report.fileName,
+		boneCount: report.boneCount,
+		convention: report.convention,
+		coverage: report.coverage,
+		unmapped: report.unmapped,
+		stats: report.stats,
+		archetype: report.archetype,
+		boneMap: report.boneMap,
+		batches: report.batches,
+		renderRecipe: report.renderRecipe,
+		facts,
+		reportFile: "skeleton-report.json"
+	};
+}
+//#endregion
+//#region
 function expandHome$1(input) {
 	if (input === "~") return (0, node_os.homedir)();
 	if (input.startsWith("~/") || input.startsWith("~\\")) return node_path.default.join((0, node_os.homedir)(), input.slice(2));
 	return input;
 }
 /**
+* 映射文件发现 + 对骨架校验（M7 B.5，analyze 与 skeleton 共用）：
+* boneMap 参数 > 资产同目录 kinemesh-bones.json > cwd > 无；显式路径不存在 → KinemeshError
+* （存在性校验，不再静默成功）；JSON/schema/骨骼名/肢链链不合法 → 三段式 KinemeshError。
+*/
+async function resolveBonesMapping(explicitPath, assetDir, scene) {
+	const loaded = await loadBonesFile({
+		explicitPath,
+		assetDir,
+		cwd: process.cwd()
+	});
+	if (loaded === null) return null;
+	const { parentOf } = collectSkeletonSet(scene);
+	return checkBonesAgainstSkeleton(loaded.data, loaded.source, parentOf);
+}
+/**
 * 三出口共用的 analyze 执行 runner：加载场景（M6f 起走 path+mtime 进程内缓存）→ 身高归一 →
-* vocab 发现 → analyzeClip（单 clip 或 '*' 批量）→ 落盘。抛 KinemeshError（无动画 / clip 缺失 /
-* morph-only / 参数越界 / 词表非法等），由各出口转成自己的错误口径（tools errorPayload / CLI fail /
-* MCP errorResult）。
+* vocab 发现 → 映射文件发现（M7）→ analyzeClip（单 clip 或 '*' 批量）→ 落盘。抛 KinemeshError（无动画 /
+* clip 缺失 / morph-only / 参数越界 / 词表或映射文件非法等），由各出口转成自己的错误口径
+* （tools errorPayload / CLI fail / MCP errorResult）。
 */
 async function runAnalyze(data, fileName, params, context = {}) {
 	const { scene } = context.absPath ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) } : await loadModelScene(data, fileName);
+	const bonesMapping = await resolveBonesMapping(params.boneMap, context.assetDir, scene);
 	const normalization = resolveNormalization(params.normalize ?? "height", sceneBoundsHeight(scene));
 	const vocab = await loadVocab({
 		explicitPath: params.vocab,
@@ -32370,7 +33223,8 @@ async function runAnalyze(data, fileName, params, context = {}) {
 		detail: params.detail,
 		curvesFor: params.curvesFor,
 		loopMode: params.loopMode,
-		vocab
+		vocab,
+		boneMap: bonesMapping
 	});
 	const specified = params.out !== void 0 && params.out.trim() !== "";
 	const dir = specified ? node_path.default.resolve(expandHome$1(params.out.trim())) : node_path.default.join((0, node_os.tmpdir)(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
@@ -32387,12 +33241,44 @@ async function runAnalyze(data, fileName, params, context = {}) {
 	}
 	const batch = analysis.batch === true;
 	const warnings = batch ? [...new Set((analysis.summary.clips ?? []).flatMap((entry) => [...entry.summary.warnings, ...entry.summary.normalize.warnings]))] : [.../* @__PURE__ */ new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
+	if (bonesMapping !== null && bonesMapping.archetype !== "humanoid") warnings.push(`映射文件 archetype=${bonesMapping.archetype}：非人形泛化通道未在本版本实装，本次 joints 解析按常规链（字典查表 / Top-15 回退）执行；映射文件已入库，通道切换后即生效。`);
 	return {
 		ok: true,
 		dir,
 		files,
 		summaryDigest: batch ? analysis.digest : analysis.digest,
 		...warnings.length > 0 ? { warnings } : {},
+		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
+	};
+}
+/**
+* 三出口共用的 skeleton 执行 runner：加载场景（进程内缓存，与 analyze 同源）→ 映射文件发现与
+* 校验 → skeleton-report（字典查表 + 映射文件叠加 partGuess、convention、覆盖统计、结构统计、
+* B.4 标注截图批次配方）→ 落盘 skeleton-report.json。抛 KinemeshError（映射文件路径/schema 非法），
+* 由各出口转成自己的错误口径。
+*/
+async function runSkeleton(data, fileName, params, context = {}) {
+	const { scene } = context.absPath ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) } : await loadModelScene(data, fileName);
+	const report = buildSkeletonReport(scene, {
+		fileName,
+		mapping: await resolveBonesMapping(params.boneMap, context.assetDir, scene),
+		shots: params.shots ?? "auto"
+	});
+	const specified = params.out !== void 0 && params.out.trim() !== "";
+	const dir = specified ? node_path.default.resolve(expandHome$1(params.out.trim())) : node_path.default.join((0, node_os.tmpdir)(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
+	const content = skeletonReportJson(report);
+	const target = node_path.default.join(dir, "skeleton-report.json");
+	await (0, node_fs_promises.mkdir)(node_path.default.dirname(target), { recursive: true });
+	await (0, node_fs_promises.writeFile)(target, content, "utf8");
+	return {
+		ok: true,
+		dir,
+		files: [{
+			name: "skeleton-report.json",
+			bytes: Buffer.byteLength(content, "utf8"),
+			what: "骨骼清单/convention/映射覆盖/未映射清单/结构统计/标注截图批次配方/schema 尾注"
+		}],
+		digest: buildSkeletonDigest(report),
 		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
 	};
 }
@@ -32411,10 +33297,20 @@ var USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       --detail <name>          summary / standard / full（缺省 standard；full=+全部关节曲线）
       --curves-for <joints>    指定关节加出 motion-curves/<joint>.csv（逗号分隔，如 L.Hand,R.Hand）
       --sample-fps <n>         采样率 1–60（缺省 15）
+      --smooth <n>             能量平滑窗口（采样帧，缺省 5）
+      --joints <joints>        关节 id/骨骼名清单（逗号分隔，如 L.Hand,R.Foot）；缺省 auto
       --loop-mode <name>       strict / pose-only（bestLoopRange 口径，缺省 strict）
       --normalize <name>       height / none（缺省 height，数值单位为身高倍数）
+      --bone-map <file>        kinemesh-bones.json 映射文件路径（缺省按 资产同目录 > 工作区 发现；
+                               joints=auto 时解析顺序：映射文件 > 字典查表 > Top-15 回退）
       --out <dir>              中间文件输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
       --vocab <file>           kinemesh-vocab.json 词汇表路径（缺省按 资产同目录 > 工作区 > builtin 发现）
+
+  kinemesh skeleton <file> [选项]
+      骨架识别与映射：stdout 返回 {ok,dir,files,digest}（skeleton-report.json 落盘）。
+      --shots <name>           标注截图批次 auto / none / all（缺省 auto：CORE15 有缺口才出批次清单）
+      --bone-map <file>        kinemesh-bones.json 映射文件路径（缺省按 资产同目录 > 工作区 发现）
+      --out <dir>              输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
 
   kinemesh render <file> [选项]
       按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
@@ -32601,6 +33497,7 @@ async function runAnalyzeCli(fileArg, flags) {
 	const range = rangeFlag(flags, "range");
 	if (range === null) return 1;
 	const curvesFor = flags["curves-for"] === void 0 ? void 0 : flags["curves-for"].split(",").map((token) => token.trim()).filter((token) => token !== "");
+	const joints = flags.joints === void 0 ? void 0 : flags.joints.split(",").map((token) => token.trim()).filter((token) => token !== "");
 	const loaded = await readModel(fileArg);
 	if (loaded === null) return 1;
 	const params = {
@@ -32609,10 +33506,13 @@ async function runAnalyzeCli(fileArg, flags) {
 		sampleFps: numberFlag(flags, "sample-fps"),
 		detail,
 		curvesFor: curvesFor === void 0 || curvesFor.length === 0 ? void 0 : curvesFor,
+		joints: joints === void 0 || joints.length === 0 ? void 0 : joints,
 		loopMode,
 		normalize,
+		smooth: numberFlag(flags, "smooth"),
 		out: flags.out,
-		vocab: flags.vocab === void 0 ? void 0 : expandHome(flags.vocab)
+		vocab: flags.vocab === void 0 ? void 0 : expandHome(flags.vocab),
+		boneMap: flags["bone-map"] === void 0 ? void 0 : expandHome(flags["bone-map"])
 	};
 	try {
 		emit(await runAnalyze(loaded.data, node_path.default.basename(loaded.abs), params, {
@@ -32623,6 +33523,31 @@ async function runAnalyzeCli(fileArg, flags) {
 	} catch (error) {
 		if (error instanceof KinemeshError) return fail(error.message, error.guidance, `分析 ${loaded.abs}`);
 		return fail(reasonOf(error), "确认模型能被 info 解析后重试；必要时缩小参数范围（降低 --sample-fps / 换 --clip）。", `分析 ${loaded.abs}`);
+	}
+}
+async function runSkeletonCli(fileArg, flags) {
+	const shots = enumFlag(flags, "shots", [
+		"auto",
+		"none",
+		"all"
+	], "--shots 取 auto / none / all（缺省 auto）。");
+	if (shots === null) return 1;
+	const loaded = await readModel(fileArg);
+	if (loaded === null) return 1;
+	const params = {
+		shots,
+		boneMap: flags["bone-map"] === void 0 ? void 0 : expandHome(flags["bone-map"]),
+		out: flags.out
+	};
+	try {
+		emit(await runSkeleton(loaded.data, node_path.default.basename(loaded.abs), params, {
+			assetDir: node_path.default.dirname(loaded.abs),
+			absPath: loaded.abs
+		}));
+		return 0;
+	} catch (error) {
+		if (error instanceof KinemeshError) return fail(error.message, error.guidance, `识别 ${loaded.abs} 的骨架`);
+		return fail(reasonOf(error), "确认模型能被 info 解析后重试。", `识别 ${loaded.abs} 的骨架`);
 	}
 }
 async function main(argv) {
@@ -32637,11 +33562,12 @@ async function main(argv) {
 	}
 	if (command === "info") return runInfo(positional[0]);
 	if (command === "analyze") return runAnalyzeCli(positional[0], flags);
+	if (command === "skeleton") return runSkeletonCli(positional[0], flags);
 	if (command === "render") return runRender(positional[0], flags);
 	process.stderr.write(`${JSON.stringify({
 		ok: false,
 		what: `未知命令「${command}」。`,
-		guidance: "可用命令：info <file> / analyze <file> [选项] / render <file> [选项]；--help 看全部。",
+		guidance: "可用命令：info <file> / analyze <file> [选项] / skeleton <file> [选项] / render <file> [选项]；--help 看全部。",
 		step: "解析命令行"
 	})}\n`);
 	return 2;

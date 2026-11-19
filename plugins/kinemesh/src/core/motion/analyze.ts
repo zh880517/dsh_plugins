@@ -24,6 +24,7 @@ import {
   type MotionSummary,
 } from './report.js';
 import type { VocabEntry } from './vocab.js';
+import type { BonesMapping } from '../analyze/bone-map.js';
 
 export interface AnalyzeOptions {
   /** 缺省第一个 clip；'*' 批量分析全部 clips（M6f 实装，§6.7 批量语义） */
@@ -45,6 +46,8 @@ export interface AnalyzeOptions {
   curvesFor?: string[];
   /** vocab 词条（M6d，§6.6.3）：决策表前按序匹配；summary.vocab 回显 source 与条目数 */
   vocab?: { source: string; entries: VocabEntry[] };
+  /** 骨架映射文件（M7 §7.4，B.5 校验产物）：joints=auto 解析链最高优先；summary.boneMap 回显 */
+  boneMap?: BonesMapping | null;
 }
 
 export interface MotionArtifact {
@@ -88,6 +91,7 @@ function analyzeOneClip(scene: CanonicalScene, options: AnalyzeOptions): MotionA
     sampleFps: options.sampleFps,
     joints: options.joints,
     range: options.range,
+    boneMap: options.boneMap,
   };
   const sample = sampleClip(scene, sampleOptions);
   const scale = options.scale !== undefined && options.scale > 0 ? options.scale : 1;
@@ -127,6 +131,10 @@ function analyzeOneClip(scene: CanonicalScene, options: AnalyzeOptions): MotionA
     loopSentence: `循环 ${loopCheck.verdict}`,
     loopFact: loopFactSentence(loopCheck),
     vocab: options.vocab && { source: options.vocab.source, entries: options.vocab.entries.length },
+    boneMap:
+      options.boneMap === undefined || options.boneMap === null
+        ? undefined
+        : { source: options.boneMap.source, archetype: options.boneMap.archetype, mapped: options.boneMap.parts.size },
   });
   const recipe = keyframesFile(keyframes).renderRecipe;
   const digest: MotionDigest = {
