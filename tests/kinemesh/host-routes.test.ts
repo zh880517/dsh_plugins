@@ -345,9 +345,13 @@ describe('POST /kinemesh/analyze 附带 digest（M6e 发送带 digest）', () =>
 
   it('无 digest / digest 为字符串 → 消息保持 M3 原样，不附加 digest 段', async () => {
     const { route, followups } = setup({ agents: { s1: {}, s2: {} } });
-    await invoke(route, 'POST', '/kinemesh/analyze', { path: 'a.fbx', sessionId: 's1', clip: 'Run', frame: 0 });
+    // 静态态发送的线上形态（review Important #1）：clip:null + digest:null → 正文「无动画/静态」且无 digest 段
+    await invoke(route, 'POST', '/kinemesh/analyze', { path: 'a.fbx', sessionId: 's1', clip: null, frame: null, digest: null });
     await invoke(route, 'POST', '/kinemesh/analyze', { path: 'b.fbx', sessionId: 's2', digest: 'junk' });
-    expect(textOf(followups[0]!)).not.toContain('【动作分析 digest】');
+    expect(followups).toHaveLength(2);
+    const first = textOf(followups[0]!);
+    expect(first).not.toContain('【动作分析 digest】');
+    expect(first).toContain('无动画/静态');
     expect(textOf(followups[1]!)).not.toContain('【动作分析 digest】');
   });
 });

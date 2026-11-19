@@ -46721,6 +46721,14 @@ function formatDigestHeadline(digest) {
 	if (typeof digest.loopCheck?.verdict === "string" && digest.loopCheck.verdict !== "") parts.push(digest.loopCheck.verdict);
 	return parts.join(" · ");
 }
+/**
+* 发送时随消息附带的 digest：静态态（未选 clip，消息正文写「无动画/静态」）不附——
+* 此时 analysis 数据可能是缺省第一个 clip 的，附上去会和正文互斥（review Important #1）。
+*/
+function pickSendDigest(clip, analysis) {
+	if (clip === "" || analysis === null) return null;
+	return analysis.summaryDigest ?? null;
+}
 var previewSession = {
 	listeners: /* @__PURE__ */ new Set(),
 	state: {
@@ -47075,6 +47083,7 @@ function PreviewPane(props) {
 		setSending(true);
 		setSent(null);
 		try {
+			const digestAttached = pickSendDigest(clip, analysis.data);
 			const response = await fetch(resolveEndpoint("kinemesh/analyze"), {
 				method: "POST",
 				headers: {
@@ -47088,13 +47097,13 @@ function PreviewPane(props) {
 					frame,
 					view: viewerRef.current.getViewState(),
 					note: props.note ?? null,
-					digest: analysis.data?.summaryDigest ?? null
+					digest: digestAttached
 				})
 			});
 			const body = await response.json().catch(() => null);
 			if (body?.ok !== true) throw new Error(body?.error?.message ?? `HTTP ${response.status}`);
 			previewSession.markUsed(props.sessionId);
-			setSent(analysis.data !== null ? "已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。" : "已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。");
+			setSent(digestAttached !== null ? "已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。" : "已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。");
 			props.onSendSuccess?.();
 		} catch (cause) {
 			setSent(cause instanceof Error ? cause.message : String(cause));
@@ -47114,7 +47123,7 @@ function PreviewPane(props) {
 			end: Math.max(end, start)
 		};
 	}, [analysis.data]);
-	const digestHeadline = formatDigestHeadline(analysis.data?.summaryDigest ?? null);
+	const digestHeadline = clip === "" ? "" : formatDigestHeadline(analysis.data?.summaryDigest ?? null);
 	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-toolbar" }, showPathInput && /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement("input", {
 		className: "kinemesh-input",
 		value: pathInput,
@@ -47366,6 +47375,7 @@ exports.formatDigestHeadline = formatDigestHeadline;
 exports.frameToPercent = frameToPercent;
 exports.inject = inject;
 exports.normalizeEnergySeries = normalizeEnergySeries;
+exports.pickSendDigest = pickSendDigest;
 exports.segmentColor = segmentColor;
 exports.shouldShowPreviewTab = shouldShowPreviewTab;
     })(module, module.exports, require);

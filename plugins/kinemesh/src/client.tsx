@@ -173,6 +173,15 @@ export function formatDigestHeadline(digest: DigestSummary | null | undefined): 
   return parts.join(' · ');
 }
 
+/**
+ * 发送时随消息附带的 digest：静态态（未选 clip，消息正文写「无动画/静态」）不附——
+ * 此时 analysis 数据可能是缺省第一个 clip 的，附上去会和正文互斥（review Important #1）。
+ */
+export function pickSendDigest(clip: string, analysis: { summaryDigest: DigestSummary } | null): DigestSummary | null {
+  if (clip === '' || analysis === null) return null;
+  return analysis.summaryDigest ?? null;
+}
+
 // ———————— host /kinemesh/analysis 的返回体（与 src/host.ts PreviewAnalysis 对齐） ————————
 
 interface AnalysisPayload {
@@ -557,6 +566,8 @@ function PreviewPane(props: {
     setSending(true);
     setSent(null);
     try {
+      // 静态态（clip === ''）不附 digest：analysis 缓存是缺省第一个 clip 的，附上会与正文「无动画/静态」互斥
+      const digestAttached = pickSendDigest(clip, analysis.data);
       const response = await fetch(resolveEndpoint('kinemesh/analyze'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -567,7 +578,7 @@ function PreviewPane(props: {
           frame,
           view: viewerRef.current.getViewState(),
           note: props.note ?? null,
-          digest: analysis.data?.summaryDigest ?? null,
+          digest: digestAttached,
         }),
       });
       const body = (await response.json().catch(() => null)) as { ok?: boolean; error?: { message?: string } } | null;
@@ -576,7 +587,7 @@ function PreviewPane(props: {
       }
       previewSession.markUsed(props.sessionId);
       setSent(
-        analysis.data !== null
+        digestAttached !== null
           ? '已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。'
           : '已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。',
       );
@@ -605,7 +616,8 @@ function PreviewPane(props: {
     return { start, end: Math.max(end, start) };
   }, [analysis.data]);
 
-  const digestHeadline = formatDigestHeadline(analysis.data?.summaryDigest ?? null);
+  // chip 与发送口径一致：静态态（clip === ''）不显示、不附 digest
+  const digestHeadline = clip === '' ? '' : formatDigestHeadline(analysis.data?.summaryDigest ?? null);
 
   return (
     <React.Fragment>

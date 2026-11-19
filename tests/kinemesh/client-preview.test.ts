@@ -6,6 +6,7 @@ import {
   formatDigestHeadline,
   frameToPercent,
   normalizeEnergySeries,
+  pickSendDigest,
   segmentColor,
   shouldShowPreviewTab,
 } from '../../plugins/kinemesh/src/client.js';
@@ -91,5 +92,19 @@ describe('digest 摘要文案（发送 chip）', () => {
     expect(formatDigestHeadline(undefined)).toBe('');
     expect(formatDigestHeadline({})).toBe('');
     expect(formatDigestHeadline({ clip: { name: 'Idle' } })).toContain('Idle');
+  });
+});
+
+describe('发送 digest 挑选（review Important #1：静态态不附错配 digest）', () => {
+  const analysis = { summaryDigest: { clip: { name: 'Walk' }, segments: [{ frameStart: 0, frameEnd: 7 }] } };
+
+  it('静态态（clip === ""）不附 digest——analysis 缓存是缺省第一个 clip 的，附上会与正文「无动画/静态」互斥', () => {
+    expect(pickSendDigest('', analysis)).toBeNull();
+    expect(pickSendDigest('', null)).toBeNull();
+  });
+
+  it('选定 clip 时附当前 analysis 的 summaryDigest；无分析数据时不附', () => {
+    expect(pickSendDigest('Walk', analysis)).toBe(analysis.summaryDigest);
+    expect(pickSendDigest('Walk', null)).toBeNull();
   });
 });
