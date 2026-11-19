@@ -524,7 +524,7 @@ kinemesh_analyze(path, {
 - 注册条目 `{name:'conversation.view', id:'kinemesh-preview', order:20, label:「模型预览」}`；
 - **出现条件（实际口径回写）**：本会话「用过 kinemesh」= 会话模型表非空——只有 HTTP 路由
   写这张表：预览加载（`GET /kinemesh/model`）、面板信息（`GET /kinemesh/info`）与「发送给
-  AI 分析」（`POST /kinemesh/analysis`）处理成功即 record；**Agent 工具直调（DSH 工具 /
+  AI 分析」（`POST /kinemesh/analyze`）处理成功即 record；**Agent 工具直调（DSH 工具 /
   MCP / CLI）不经路由、不进会话表**——页签数据口径限于 HTTP 路由 + 预览加载，为已知口径
   （拉平需把 `exec.agent.id` 接进会话表，见总审遗留项）；
 - 会话身份与数据：header utilities 槽捕获 sessionId（`dsh:<sessionId>`，aiworkflow 同款口径）；
@@ -557,7 +557,8 @@ kinemesh_analyze(path, {
 
 #### 6.10.4 边界
 
-- 列表按 sessionId 隔离；工具调用与页面加载都记入同一张会话表；
+- 列表按 sessionId 隔离；会话表记录口径见 §6.10.1（HTTP 路由 + 预览加载；Agent 工具直调
+  不进表，见总审遗留项）；
 - 页签文案与页面文本走 locale 服务（zh/en locale 文件已有）；
 - 不做跨会话历史列表（会话日志才是事实源；要做也是后续从会话日志回放，非 v1）。
 
