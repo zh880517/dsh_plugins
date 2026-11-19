@@ -16,7 +16,7 @@ import {
   buildTwoClipCubeGltf,
   type HumanoidRig,
 } from '../support/kinemesh-rig-fixtures.js';
-import { buildMorphOnlyGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
+import { buildAnimatedCubeGltf, buildBinaryFbx, buildMorphOnlyGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
 import { analyzeClip } from '../../plugins/kinemesh/src/core/motion/analyze.js';
 import { clearSceneCache, getCachedScene, sceneCacheSize } from '../../plugins/kinemesh/src/core/scene-cache.js';
 import { sceneToInfo } from '../../plugins/kinemesh/src/core/analyze/scene-info.js';
@@ -253,6 +253,28 @@ describe('M6f · 场景缓存（core/scene-cache.ts，path+mtime）', () => {
     await runAnalyze(buffer, 'cache-run.glb', { clip: '*', out: path.join(workDir, 'cache-run-out') }, context);
     expect(sceneCacheSize()).toBe(2);
   });
+  it('info 与 analyze 共享缓存：同一 FBX 先 info 再 analyze，第二次命中（条目数不变）', async () => {
+    clearSceneCache();
+    const fbx = path.join(workDir, 'cache-info-analyze.fbx');
+    await writeFile(fbx, Buffer.from(buildBinaryFbx()));
+    // info：FBX 无 fastInfo → entry.load 在 Node 构造场景（§6.2 最贵路径）→ 入缓存
+    const info = await toolExecute('kinemesh_info')({ path: fbx });
+    expect(info.ok).toBe(true);
+    expect(sceneCacheSize()).toBe(1);
+    // analyze：同路径同 mtime → 命中 info 已入缓存的实例，不新增条目
+    const analyze = await toolExecute('kinemesh_analyze')({ path: fbx, out: path.join(workDir, 'cache-info-analyze-out') });
+    expect(analyze.ok).toBe(true);
+    expect(sceneCacheSize()).toBe(1);
+  });
+
+  it('glTF fastInfo 不进缓存（纯 JSON 快速路径没有场景可缓存）', async () => {
+    clearSceneCache();
+    const glb = path.join(workDir, 'cache-fastinfo.glb');
+    await writeFile(glb, Buffer.from(encodeGlb(buildAnimatedCubeGltf())));
+    const info = await toolExecute('kinemesh_info')({ path: glb });
+    expect(info.ok).toBe(true);
+    expect(sceneCacheSize()).toBe(0);
+  });
 });
 
 describe('M6f · 缓存复用安全：采样后 rest 姿态已恢复（A.1 必经步骤的回归测试）', () => {
@@ -281,7 +303,7 @@ interface RegisteredTool {
   execute: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
-function analyzeExecute(): RegisteredTool['execute'] {
+function toolExecute(name: 'kinemesh_analyze' | 'kinemesh_info'): RegisteredTool['execute'] {
   const registered = new Map<string, RegisteredTool>();
   const ctx = {
     tools: {
@@ -292,14 +314,14 @@ function analyzeExecute(): RegisteredTool['execute'] {
     },
   };
   registerTools(ctx);
-  const tool = registered.get('kinemesh_analyze');
-  if (tool === undefined) throw new Error('kinemesh_analyze 没有注册');
+  const tool = registered.get(name);
+  if (tool === undefined) throw new Error(`${name} 没有注册`);
   return tool.execute;
 }
 
 describe('M6f · 工具层：clip:"*" 批量落盘 <clip>/ 分桶 + digest.clips[] 逐 clip', () => {
   it('execute({clip:"*"}) → files 按 Walk//Jump 分桶、summaryDigest.clips[] 逐 clip', async () => {
-    const execute = analyzeExecute();
+    const execute = toolExecute('kinemesh_analyze');
     const outDir = path.join(workDir, 'tool-batch-out');
     const result = await execute({ path: twoClipGlb, clip: '*', out: outDir });
     expect(result.ok).toBe(true);
@@ -321,7 +343,7 @@ describe('M6f · 工具层：clip:"*" 批量落盘 <clip>/ 分桶 + digest.clips
   it('morph-only 资产 clip:"*"：三段式拒绝（批量路径的自愈口径）', async () => {
     const morphGlb = path.join(workDir, 'tool-batch-morph.glb');
     await writeFile(morphGlb, Buffer.from(encodeGlb(buildMorphOnlyGltf())));
-    const execute = analyzeExecute();
+    const execute = toolExecute('kinemesh_analyze');
     const result = await execute({ path: morphGlb, clip: '*' });
     expect(result.ok).toBe(false);
     expect(String(result.what)).toContain('形态动画');
@@ -330,7 +352,7 @@ describe('M6f · 工具层：clip:"*" 批量落盘 <clip>/ 分桶 + digest.clips
   });
 
   it('execute({clip, range}) → summaryDigest.clip 标注 range；非法 range 三段式', async () => {
-    const execute = analyzeExecute();
+    const execute = toolExecute('kinemesh_analyze');
     const outDir = path.join(workDir, 'tool-range-out');
     const result = await execute({ path: twoClipGlb, clip: 'Walk', range: [0, 0.25], out: outDir });
     expect(result.ok).toBe(true);

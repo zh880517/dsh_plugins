@@ -4,7 +4,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
-import { analyzeModel, loadModelScene } from './core/analyze-file.js';
+import { analyzeModelCached, loadModelScene } from './core/analyze-file.js';
 import { sceneBoundsHeight } from './core/analyze/scene-info.js';
 import { analyzeClip, type MotionDigest } from './core/motion/analyze.js';
 import { resolveNormalization } from './core/motion/normalize.js';
@@ -321,7 +321,8 @@ function infoTool(): AgentTool {
       const loaded = await readModelFile(given);
       if (!loaded.ok) return loaded.payload;
       try {
-        const report = await analyzeModel(loaded.data, path.basename(loaded.abs));
+        // M6f：info 的场景构造路径（FBX/OBJ 无 fastInfo）走 path+mtime 进程内缓存
+        const report = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
         return { ok: true, ...report };
       } catch (error) {
         if (error instanceof KinemeshError) {

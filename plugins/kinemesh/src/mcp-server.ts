@@ -7,7 +7,7 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { analyzeModel } from './core/analyze-file.js';
+import { analyzeModelCached } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
 import { runAnalyze } from './tools.js';
@@ -64,7 +64,8 @@ server.tool(
   async ({ path: rawPath }) => {
     try {
       const loaded = await readModelFile(rawPath);
-      const report: InfoReport = await analyzeModel(loaded.data, path.basename(loaded.abs));
+      // M6f：info 的场景构造路径（FBX/OBJ 无 fastInfo）走 path+mtime 进程内缓存
+      const report: InfoReport = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...report }, null, 2) }] };
     } catch (error) {
       return errorResult(error, `读取 ${rawPath} 的模型信息`);

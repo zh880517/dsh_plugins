@@ -2,6 +2,7 @@
 import { sceneToInfo } from './analyze/scene-info.js';
 import { KinemeshError } from './errors.js';
 import { detectFormat, unknownFormatError } from './registry.js';
+import { getCachedScene } from './scene-cache.js';
 import type { CanonicalScene, FormatEntry, InfoReport } from './types.js';
 
 /** 性能预算（设计文档 §10 的默认值）：超过按「文件过大」报错并给减负指引 */
@@ -26,6 +27,25 @@ export async function analyzeModel(data: ArrayBuffer, fileName: string): Promise
   const entry = detectFormat(headBytes(data), fileName);
   if (entry === null) throw unknownFormatError(fileName);
   return analyzeWith(entry, data, fileName);
+}
+
+/**
+ * info 提取的缓存变体（M6f review 补接线，§6.2）：glTF 有 fastInfo → 纯 JSON 快速路径
+ * （不构造场景、不进缓存）；无 fastInfo 的格式（FBX / OBJ，registry 里只有 glTF 有 fastInfo）
+ * 的 entry.load 是 Node 端构造场景的最贵路径 → 走 path+mtime 进程内缓存。
+ * sceneToInfo 只读（traverse + Box3，不改节点变换），复用缓存实例安全。
+ */
+export async function analyzeModelCached(absPath: string, data: ArrayBuffer, fileName: string): Promise<InfoReport> {
+  await checkBudget(data, fileName);
+  const entry = detectFormat(headBytes(data), fileName);
+  if (entry === null) throw unknownFormatError(fileName);
+  if (entry.fastInfo !== undefined) return entry.fastInfo(data, fileName);
+  const scene = await getCachedScene(absPath, () => entry.load(data, { fileName }));
+  return sceneToInfo(scene, {
+    fileName,
+    fileSize: data.byteLength,
+    expectsAnimation: entry.hasAnimation,
+  });
 }
 
 /**

@@ -4,7 +4,7 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { analyzeModel } from './core/analyze-file.js';
+import { analyzeModelCached } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
 import { runAnalyze, type AnalyzeToolParams } from './tools.js';
@@ -116,7 +116,8 @@ async function runInfo(fileArg: string | undefined): Promise<number> {
   const loaded = await readModel(fileArg);
   if (loaded === null) return 1;
   try {
-    const report = await analyzeModel(loaded.data, path.basename(loaded.abs));
+    // M6f：info 的场景构造路径（FBX/OBJ 无 fastInfo）走 path+mtime 进程内缓存
+    const report = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
     emit({ ok: true, ...report });
     return 0;
   } catch (error) {

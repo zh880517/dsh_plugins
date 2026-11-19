@@ -29641,6 +29641,29 @@ function extensionOf(fileName) {
 }
 //#endregion
 //#region
+var cache = /* @__PURE__ */ new Map();
+/** stat 不可用时（文件在读后被删等竞态）退化为「永不命中」的键，不吞掉 load 本身的报错 */
+async function mtimeOf(path) {
+	try {
+		return (await stat(path)).mtimeMs;
+	} catch {
+		return -1;
+	}
+}
+/**
+* 取缓存场景：命中（同路径同 mtime）直接返回同一实例，未命中才调 load 并入缓存。
+* load 抛错不进缓存；文件变化（mtime 变）自然产生新键、旧实例被替换。
+*/
+async function getCachedScene(path, load) {
+	const key = `${path}\u0000${await mtimeOf(path)}`;
+	const hit = cache.get(key);
+	if (hit !== void 0) return hit;
+	const scene = await load();
+	cache.set(key, scene);
+	return scene;
+}
+//#endregion
+//#region
 /** 性能预算（设计文档 §10 的默认值）：超过按「文件过大」报错并给减负指引 */
 var MAX_FILE_BYTES = 536870912;
 var DETECT_HEAD_BYTES = 1024;
@@ -29654,6 +29677,23 @@ async function analyzeModel(data, fileName) {
 	const entry = detectFormat(headBytes(data), fileName);
 	if (entry === null) throw unknownFormatError(fileName);
 	return analyzeWith(entry, data, fileName);
+}
+/**
+* info 提取的缓存变体（M6f review 补接线，§6.2）：glTF 有 fastInfo → 纯 JSON 快速路径
+* （不构造场景、不进缓存）；无 fastInfo 的格式（FBX / OBJ，registry 里只有 glTF 有 fastInfo）
+* 的 entry.load 是 Node 端构造场景的最贵路径 → 走 path+mtime 进程内缓存。
+* sceneToInfo 只读（traverse + Box3，不改节点变换），复用缓存实例安全。
+*/
+async function analyzeModelCached(absPath, data, fileName) {
+	await checkBudget(data, fileName);
+	const entry = detectFormat(headBytes(data), fileName);
+	if (entry === null) throw unknownFormatError(fileName);
+	if (entry.fastInfo !== void 0) return entry.fastInfo(data, fileName);
+	return sceneToInfo(await getCachedScene(absPath, () => entry.load(data, { fileName })), {
+		fileName,
+		fileSize: data.byteLength,
+		expectsAnimation: entry.hasAnimation
+	});
 }
 /**
 * 动作分析（M6d）专用：完整加载路径拿 CanonicalScene（glTF 不走快速路径——快速路径只有 min/max，
@@ -32218,29 +32258,6 @@ function round(value) {
 }
 //#endregion
 //#region
-var cache = /* @__PURE__ */ new Map();
-/** stat 不可用时（文件在读后被删等竞态）退化为「永不命中」的键，不吞掉 load 本身的报错 */
-async function mtimeOf(path) {
-	try {
-		return (await stat(path)).mtimeMs;
-	} catch {
-		return -1;
-	}
-}
-/**
-* 取缓存场景：命中（同路径同 mtime）直接返回同一实例，未命中才调 load 并入缓存。
-* load 抛错不进缓存；文件变化（mtime 变）自然产生新键、旧实例被替换。
-*/
-async function getCachedScene(path, load) {
-	const key = `${path}\u0000${await mtimeOf(path)}`;
-	const hit = cache.get(key);
-	if (hit !== void 0) return hit;
-	const scene = await load();
-	cache.set(key, scene);
-	return scene;
-}
-//#endregion
-//#region
 var MAX_FRAMES = 64;
 var PAGE_TIMEOUT_MS = 6e4;
 async function renderScreenshots(request) {
@@ -32629,7 +32646,7 @@ function infoTool() {
 			try {
 				return {
 					ok: true,
-					...await analyzeModel(loaded.data, path.basename(loaded.abs))
+					...await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs))
 				};
 			} catch (error) {
 				if (error instanceof KinemeshError) return errorPayload(error.message, error.guidance, `读取 ${loaded.abs} 的模型信息`);
