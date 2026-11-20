@@ -44769,17 +44769,6 @@ void main() {
 		module.exports = {};
 	})))();
 	Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY;
-	Object.values({
-		hips: .2,
-		spine: .3,
-		head: 1,
-		UpperArm: .7,
-		LowerArm: .9,
-		Hand: 1.2,
-		UpperLeg: .5,
-		LowerLeg: .7,
-		Foot: 1
-	}).reduce((sum, w) => sum + w, 0);
 	//#endregion
 	//#region plugins/kinemesh/src/core/analyze/humanoid.ts
 	var CATEGORIES = [
@@ -44853,7 +44842,7 @@ void main() {
 		"chest"
 	];
 	/**
-	* 前缀表（B.1，循环剥到不再匹配；开放于 vocab 同款扩展文件的机制留后续）。
+	* 前缀表（B.1，循环剥到不再匹配；vocab 扩展文件（kinemesh-vocab.json）的 prefixes 字段追加项目级前缀）。
 	* 剥除条件：前缀后紧跟分隔符/结尾，或前缀自带分隔符结尾（armature|）——防止 blockhead 这类词误剥。
 	*/
 	var PREFIXES = [
@@ -44878,15 +44867,17 @@ void main() {
 	function tokenize(lower) {
 		return lower.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(SEPARATOR_SPLIT).flatMap((token) => token === "" ? [] : token.split(/(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])/)).filter((token) => token !== "");
 	}
-	/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀 → 去 side/纯数字 token */
-	function normalizeBoneName(rawName) {
+	/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀（内置 + vocab 扩展） →
+	*  去 side/纯数字 token。extraPrefixes 来自 kinemesh-vocab.json 的 prefixes 字段（已小写化）。 */
+	function normalizeBoneName(rawName, extraPrefixes = []) {
 		const lower = rawName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
 		const side = sideOf(lower);
+		const allPrefixes = extraPrefixes.length === 0 ? PREFIXES : [.../* @__PURE__ */ new Set([...PREFIXES, ...extraPrefixes])];
 		let stripped = lower;
 		let looped = true;
 		while (looped) {
 			looped = false;
-			for (const prefix of PREFIXES) {
+			for (const prefix of allPrefixes) {
 				if (!stripped.startsWith(prefix)) continue;
 				const rest = stripped.slice(prefix.length);
 				if (!(rest === "" || /[a-z0-9]/.test(prefix.slice(-1)) === false || SEPARATOR_SPLIT.test(rest[0] ?? ""))) continue;
@@ -45009,8 +45000,8 @@ void main() {
 	* 再按表序对全名做子串兜底；两轮都落空返回 null（缺口回退 AI，红线不做模糊匹配）。
 	* 表序保证 Mixamo ForeArm→lowerarm 先于 Arm→upperarm、UpLeg→upperleg 先于 Leg→lowerleg 语义。
 	*/
-	function matchCanonical(rawName) {
-		const normalized = normalizeBoneName(rawName);
+	function matchCanonical(rawName, extraPrefixes = []) {
+		const normalized = normalizeBoneName(rawName, extraPrefixes);
 		const tokens = normalized.tokens;
 		for (let start = 0; start < tokens.length; start += 1) for (let end = tokens.length; end > start; end -= 1) {
 			const run = tokens.slice(start, end).join("");
@@ -45057,10 +45048,10 @@ void main() {
 		}
 	];
 	/** score = 指纹命中骨数 / 总骨数；convention = argmax 且 ≥ CONVENTION_MIN，否则 custom（B.3） */
-	function detectConvention(boneNames) {
+	function detectConvention(boneNames, extraPrefixes = []) {
 		const counts = /* @__PURE__ */ new Map();
 		for (const name of boneNames) {
-			const normalized = normalizeBoneName(name);
+			const normalized = normalizeBoneName(name, extraPrefixes);
 			for (const fingerprint of FINGERPRINTS) if (fingerprint.hit(normalized.raw, normalized.tokens)) {
 				counts.set(fingerprint.id, (counts.get(fingerprint.id) ?? 0) + 1);
 				break;

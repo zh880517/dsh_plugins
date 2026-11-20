@@ -442,7 +442,8 @@ null（字段恒在）。阈值常量与强度档位同管理：内置、随输�
   `{"term": "dodge", "when": {"airborne": false, "rootSpeedMin": 1.2, "headingTurnMin": 45}}`；
   `when` 支持 `anyOf` 数组（任一子条件组命中即可）；新增 `action` 字段——`label`（缺省，打词条）/
   `suppress`（命中则本段 guess 置 other）/ `demote`（命中则降级为 gesture）——项目可用它压制误报
-  （如「walk 误报 turn」的特定资产）；
+  （如「walk 误报 turn」的特定资产）。顶层对象形式还可带 `"prefixes": ["myns:"]`（B.1 项目级
+  骨骼名前缀扩展，analyze 的字典查表与 skeleton-report 共用）；
 - **闭环**：用户使用反馈 → Agent 记忆（DSH 里是 OpenViking）→ Agent 在用户工程里维护该文件 →
   下次 analyze 确定性消费。summary 回显 `vocab: {source: "builtin"|"路径", entries: N}` 以便审计
   「这次的 guess 用了哪套词」。
@@ -478,7 +479,7 @@ kinemesh_analyze(path, {
 - `clip:"*"` 批量：summary 变 `clips[]` 数组、digest 逐 clip 内联；中间文件按 clip 分子目录
   `<dir>/<clip>/`；单 clip 输出结构不变（向后兼容）；
 - `kinemesh_render` 帧号口径一致（frame = t×30），分析结果直接给 render 复现画面；
-- CLI：`kinemesh.js analyze <file> [--clip …] [--detail full] [--curves-for RightForeArm]…`；
+- CLI：`kinemesh.cjs analyze <file> [--clip …] [--detail full] [--curves-for RightForeArm]…`；
   MCP/DSH 同名同参（zod/JSON Schema 投影，与现有两工具同一套 core 入参）；
 - 无动画资产调 analyze → 三段式自愈（同 render 无 clip 的口径）。
 
@@ -823,7 +824,7 @@ viewer 的 setTime 走同一求值链路）。
 
 | # | 条件 | label | guess |
 |---|---|---|---|
-| 1 | airRatio > 0.5 | airborne | 段内 hips 净升 ≥ 0.05H → `jump`；否则 `fall` |
+| 1 | airRatio > 0.5 | airborne | 段内 hips 最高 − 段首 ≥ 0.05H（hipsRise）→ `jump`；否则 `fall`（落回原高的跳跃仍判 jump） |
 | 2 | rootSpeed ≥ 1.2 H/s | contact-move | `run` |
 | 3 | rootSpeed ≥ 0.3 ∧ bodyDir = back | contact-move | `backpedal`（倒退走） |
 | 4 | rootSpeed ≥ 0.3 ∧ bodyDir ∈ {left, right} | contact-move | `strafe-l` / `strafe-r`（侧移） |
@@ -837,8 +838,9 @@ viewer 的 setTime 走同一求值链路）。
 | 12 | 前一段 guess ∈ {strike-punch, strike-kick, jump, spin} ∧ meanE < 0.5×前段 meanE | action | `recover` |
 | 13 | 兜底 | action | `gesture` |
 
-vocab 文件条目按序**插在表前**（term/when 自定义，when 只能引用本附录通道/特征值），first-match 不变；
-summary 回显生效条目数与词表来源。
+vocab 条目按序匹配（when 只能引用本附录通道/特征值）：`label` 用词条替换该段 guess、
+`suppress` 置 other、`demote` 降级 gesture——**label（idle/contact-move 等）恒由表内行判定**，
+词条只作用于 guess（与把词条插在表前 first-match 等价）；summary 回显生效条目数与词表来源。
 
 依据:自定（全部条件只引用已产出量，无隐藏输入）。
 
@@ -901,7 +903,8 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
   `cx = 40 + (x − minx)·s`、`cy = 40 + (z − minz)·s`（纵横比保持，居中）。
 - 元素顺序：浅色网格十字（中心线 + 边框）→ 路径 polyline（主题色）→ 每采样帧 r=2 圆点
   （fill = 五档强度色）→ 起点空心圆 r=6 → 终点实心方 8×8 → 起点 heading 箭头（长 24px）。
-- **无文本**（免 locale）；单文件 ≤ 32KB；帧多时圆点按 stride 抽稀到 ≤ 600 个，路径不抽稀。
+- **无可见文本**（免 locale）；单文件 ≤ 32KB；帧多时圆点按 stride 抽稀到 ≤ 600 个；路径超 32KB
+  预算时按 2 的幂步长抽稀（终点恒保留，`<desc>` 元数据标注抽稀倍率——非可见文本，不违「无文本」）。
 
 依据:自定。
 
@@ -932,6 +935,7 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
 | SPIN_TH | 270° | A.7/A.8 |
 | 强度档位表 | §6.6.2 五档 | A.9 |
 | KEYFRAME_MAX / KEYFRAME_DEDUP | 8 / 0.3s | A.11 |
+| TRAJECTORY_MAX_DOTS / TRAJECTORY_MAX_BYTES | 600 / 32768 | A.13 |
 | LABELS_PER_SHOT | 12 | B.4 |
 | CONVENTION_MIN | 0.5 | B.3 |
 

@@ -154,7 +154,9 @@ function buildPoses(sample: SampleResult, channels: FrameChannels, scale: number
       refY = r[k * 3 + 1]!;
       refZ = r[k * 3 + 2]!;
     }
-    const theta = -(endpoint ? headingEnd : channels.heading[k] ?? 0) * DEG2RAD;
+    // A.10/A.5：姿势转 −heading(k)——本算子（x'=dx·cosT−dz·sinT）代入 T=+heading 即为绕 Y 旋转
+    // −heading（与 channels.sectorOf 同约定）；heading=0 时为恒等，带转身的片段才显现差异。
+    const theta = (endpoint ? headingEnd : channels.heading[k] ?? 0) * DEG2RAD;
     const cos = Math.cos(theta);
     const sin = Math.sin(theta);
     for (let j = 0; j < jointCount; j += 1) {

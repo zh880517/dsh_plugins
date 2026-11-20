@@ -1,7 +1,7 @@
-// 词汇表文件机制（design.md §6.6.3 / A.8）：guess 词表的「由 AI 根据记忆调整」落地方式。
+// 词汇表文件机制（design.md §6.6.3 / A.8 / B.1）：guess 词表与前缀扩展的「由 AI 根据记忆调整」落地方式。
 // 工具保持确定性、不学习；可调整的是数据——kinemesh-vocab.json 由 Agent 在用户工程里维护，
-// analyze 确定性消费。匹配逻辑（matchVocab）纯函数无 IO；loadVocab 是唯一用 fs 的入口，
-// 只被工具层（tools.ts / cli.ts / mcp-server.ts）调用，describe 只吃 entries 数据。
+// analyze/skeleton 确定性消费。匹配逻辑（matchVocab）纯函数无 IO；本文件的 loadVocab 与
+// scene-cache.ts 是 core 里仅有的 fs 入口，只被工具层（tools.ts / cli.ts / mcp-server.ts）调用。
 //
 // 条目 schema（when 只允许引用 A.8 段特征，防幻觉口径——字段集见 WHEN_KEYS）：
 //   {
@@ -10,6 +10,7 @@
 //          ——或—— { "anyOf": [ {…}, {…} ] }（任一子条件组命中即可）
 //     "action": "label" | "suppress" | "demote"   // 缺省 label
 //   }
+// 顶层对象形式可带 "prefixes": ["myns:"]（B.1 项目级前缀扩展，字典查表剥前缀用）。
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { KinemeshError, reasonOf } from '../errors.js';
@@ -73,6 +74,8 @@ export interface LoadedVocab {
   /** 词表来源：文件路径或 'builtin'（summary.vocab 回显，可审计「这次 guess 用了哪套词」） */
   source: string;
   entries: VocabEntry[];
+  /** B.1 前缀扩展（顶层 "prefixes" 字段，统一小写；builtin / 顶层数组形式为空数组） */
+  prefixes: string[];
 }
 
 /** 约定文件名（资产同目录 / cwd 自动发现的文件名，§6.6.3） */
@@ -129,32 +132,56 @@ export function matchVocab(features: VocabFeatures, entries: VocabEntry[]): { te
   return null;
 }
 
-// ———————— 解析与发现（loadVocab 是 core 里唯一带 fs 的入口，仅工具层调用） ————————
+// ———————— 解析与发现（loadVocab 与 scene-cache.ts 是 core 里仅有的 fs 入口，仅工具层调用） ————————
 
-/** JSON 文本 → 词条数组；结构错误抛 KinemeshError（错在哪 + 正确姿势） */
-export function parseVocab(text: string, sourcePath: string): VocabEntry[] {
+/** 词表文件全量解析产物：词条 + B.1 前缀扩展 */
+export interface ParsedVocab {
+  entries: VocabEntry[];
+  prefixes: string[];
+}
+
+/** JSON 文本 → { entries, prefixes }；结构错误抛 KinemeshError（错在哪 + 正确姿势） */
+export function parseVocabFile(text: string, sourcePath: string): ParsedVocab {
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch (error) {
     throw new KinemeshError(
       `词表文件 JSON 解析失败：${sourcePath}（${reasonOf(error)}）。`,
-      `${VOCAB_FILE_NAME} 必须是合法 JSON：顶层为词条数组，或 {"entries": [...]}；逐条检查逗号/引号后重跑。`,
+      `${VOCAB_FILE_NAME} 必须是合法 JSON：顶层为词条数组，或 {"entries": [...], "prefixes": [...]}；逐条检查逗号/引号后重跑。`,
     );
   }
-  const rawEntries =
-    Array.isArray(data)
-      ? data
-      : typeof data === 'object' && data !== null && Array.isArray((data as { entries?: unknown }).entries)
-        ? (data as { entries: unknown[] }).entries
-        : null;
+  if (Array.isArray(data)) return { entries: data.map((raw, index) => validateEntry(raw, sourcePath, index)), prefixes: [] };
+  if (typeof data !== 'object' || data === null) {
+    throw new KinemeshError(
+      `词表文件结构不对：${sourcePath} 的顶层既不是数组也不是对象。`,
+      `顶层用词条数组或 {"entries": [...], "prefixes": [...]}；每条形如 {"term": "dodge", "when": {...}, "action": "label"}。`,
+    );
+  }
+  const record = data as Record<string, unknown>;
+  const rawEntries = Array.isArray(record.entries) ? record.entries : null;
   if (rawEntries === null) {
     throw new KinemeshError(
       `词表文件结构不对：${sourcePath} 的顶层既不是数组也没有 entries 数组。`,
-      `顶层用词条数组或 {"entries": [...]}；每条形如 {"term": "dodge", "when": {...}, "action": "label"}。`,
+      `顶层用词条数组或 {"entries": [...], "prefixes": [...]}；每条形如 {"term": "dodge", "when": {...}, "action": "label"}。`,
     );
   }
-  return rawEntries.map((raw, index) => validateEntry(raw, sourcePath, index));
+  let prefixes: string[] = [];
+  if (record.prefixes !== undefined) {
+    if (!Array.isArray(record.prefixes) || record.prefixes.some((item) => typeof item !== 'string' || item.trim() === '')) {
+      throw new KinemeshError(
+        `词表文件 prefixes 字段非法：${sourcePath}（必须是全非空字符串数组）。`,
+        `"prefixes": ["myns:", "rig_"]——项目级骨骼名前缀，字典查表（B.1）剥前缀时与内置表合并使用。`,
+      );
+    }
+    prefixes = (record.prefixes as string[]).map((item) => item.trim().toLowerCase());
+  }
+  return { entries: rawEntries.map((raw, index) => validateEntry(raw, sourcePath, index)), prefixes };
+}
+
+/** 兼容入口：只取词条（等价 parseVocabFile(...).entries） */
+export function parseVocab(text: string, sourcePath: string): VocabEntry[] {
+  return parseVocabFile(text, sourcePath).entries;
 }
 
 function validateEntry(raw: unknown, sourcePath: string, index: number): VocabEntry {
@@ -265,7 +292,8 @@ export async function loadVocab(options: LoadVocabOptions = {}): Promise<LoadedV
   for (const candidate of candidates) {
     const text = await readFile(candidate, 'utf8').catch(() => null);
     if (text === null) continue;
-    return { source: path.resolve(candidate), entries: parseVocab(text, candidate) };
+    const parsed = parseVocabFile(text, candidate);
+    return { source: path.resolve(candidate), entries: parsed.entries, prefixes: parsed.prefixes };
   }
-  return { source: 'builtin', entries: [] };
+  return { source: 'builtin', entries: [], prefixes: [] };
 }

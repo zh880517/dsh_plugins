@@ -102,6 +102,8 @@ export interface SampleOptions {
    * 非 humanoid 映射在本版本不进采样关节集（泛化通道后续里程碑）。
    */
   boneMap?: BonesMapping | null;
+  /** vocab 扩展前缀（B.1：kinemesh-vocab.json 的 prefixes 字段，字典查表前剥项目级前缀用） */
+  vocabPrefixes?: string[];
 }
 
 // ———————— J15 + Toe 解析计划（附录 A.0 顺序即输出顺序） ————————
@@ -342,7 +344,7 @@ function buildAnchors(joints: SampledJoint[]): SampleAnchors {
   return anchors;
 }
 
-function resolveHumanoidJoints(root: THREE.Object3D): JointResolution | null {
+function resolveHumanoidJoints(root: THREE.Object3D, extraPrefixes: readonly string[] = []): JointResolution | null {
   const names: string[] = [];
   root.traverse((obj) => {
     if (obj !== root && obj.name !== '') names.push(obj.name);
@@ -355,7 +357,7 @@ function resolveHumanoidJoints(root: THREE.Object3D): JointResolution | null {
   const slots = new Map<string, THREE.Object3D>();
   root.traverse((obj) => {
     if (obj === root || obj.name === '') return;
-    const match = matchCanonical(obj.name);
+    const match = matchCanonical(obj.name, extraPrefixes);
     if (!match) return;
     const kind = CANONICAL_KIND[match.canonical];
     if (kind === undefined) return; // neck 等 EXTRA 部位不进 J15 槽位
@@ -649,7 +651,7 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
     const resolution =
       requested === 'auto'
         ? (resolveMappedJoints(root, options.boneMap) ??
-          resolveHumanoidJoints(root) ??
+          resolveHumanoidJoints(root, options.vocabPrefixes) ??
           resolveTop15Joints(root, times, evaluateAt))
         : resolveExplicitJoints(root, requested);
     const { joints, jointObjects } = resolution;

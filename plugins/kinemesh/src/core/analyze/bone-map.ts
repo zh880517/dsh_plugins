@@ -65,7 +65,7 @@ export interface NormalizedName {
 }
 
 /**
- * 前缀表（B.1，循环剥到不再匹配；开放于 vocab 同款扩展文件的机制留后续）。
+ * 前缀表（B.1，循环剥到不再匹配；vocab 扩展文件（kinemesh-vocab.json）的 prefixes 字段追加项目级前缀）。
  * 剥除条件：前缀后紧跟分隔符/结尾，或前缀自带分隔符结尾（armature|）——防止 blockhead 这类词误剥。
  */
 const PREFIXES = ['mixamorig', 'bip001', 'bip01', 'bip', 'j_bip_c', 'j_sec_c', 'def_c', 'armature|', 'block'];
@@ -83,18 +83,20 @@ function tokenize(lower: string): string[] {
     .filter((token) => token !== '');
 }
 
-/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀 → 去 side/纯数字 token */
-export function normalizeBoneName(rawName: string): NormalizedName {
+/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀（内置 + vocab 扩展） →
+ *  去 side/纯数字 token。extraPrefixes 来自 kinemesh-vocab.json 的 prefixes 字段（已小写化）。 */
+export function normalizeBoneName(rawName: string, extraPrefixes: readonly string[] = []): NormalizedName {
   // CamelCase 边界先按原始大小写插入分隔，再统一小写
   const spaced = rawName.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
   const lower = spaced.toLowerCase();
   const side = sideOf(lower);
   // 剥前缀（循环剥到不再匹配）
+  const allPrefixes = extraPrefixes.length === 0 ? PREFIXES : [...new Set([...PREFIXES, ...extraPrefixes])];
   let stripped = lower;
   let looped = true;
   while (looped) {
     looped = false;
-    for (const prefix of PREFIXES) {
+    for (const prefix of allPrefixes) {
       if (!stripped.startsWith(prefix)) continue;
       const rest = stripped.slice(prefix.length);
       const boundary = rest === '' || /[a-z0-9]/.test(prefix.slice(-1)) === false || SEPARATOR_SPLIT.test(rest[0] ?? '');
@@ -152,8 +154,8 @@ export interface CanonicalMatch {
  * 再按表序对全名做子串兜底；两轮都落空返回 null（缺口回退 AI，红线不做模糊匹配）。
  * 表序保证 Mixamo ForeArm→lowerarm 先于 Arm→upperarm、UpLeg→upperleg 先于 Leg→lowerleg 语义。
  */
-export function matchCanonical(rawName: string): CanonicalMatch | null {
-  const normalized = normalizeBoneName(rawName);
+export function matchCanonical(rawName: string, extraPrefixes: readonly string[] = []): CanonicalMatch | null {
+  const normalized = normalizeBoneName(rawName, extraPrefixes);
   const tokens = normalized.tokens;
   // 精确匹配：起点按 token 序，连接串按最长优先；命中即返回（表序由 SYNONYMS 数组序保证）
   for (let start = 0; start < tokens.length; start += 1) {
@@ -205,10 +207,10 @@ const FINGERPRINTS: Array<{ id: Exclude<Convention, 'custom'>; hit: (raw: string
 ];
 
 /** score = 指纹命中骨数 / 总骨数；convention = argmax 且 ≥ CONVENTION_MIN，否则 custom（B.3） */
-export function detectConvention(boneNames: string[]): ConventionDetection {
+export function detectConvention(boneNames: string[], extraPrefixes: readonly string[] = []): ConventionDetection {
   const counts = new Map<Convention, number>();
   for (const name of boneNames) {
-    const normalized = normalizeBoneName(name);
+    const normalized = normalizeBoneName(name, extraPrefixes);
     for (const fingerprint of FINGERPRINTS) {
       if (fingerprint.hit(normalized.raw, normalized.tokens)) {
         counts.set(fingerprint.id, (counts.get(fingerprint.id) ?? 0) + 1);

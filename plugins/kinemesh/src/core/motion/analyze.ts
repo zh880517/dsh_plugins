@@ -38,6 +38,8 @@ export interface AnalyzeOptions {
   /** 身高归一分母（analyze 入口由 normalize 决定；缺省 1 = raw） */
   scale?: number;
   normalizeMode?: 'height' | 'none';
+  /** 归一化告警透传（A.14：H ≤ 0 降级 none 的 warning 由出口的 resolveNormalization 产出） */
+  normalizeWarnings?: string[];
   /** 循环区间扫描口径（A.10）：strict（缺省）四分量打分；pose-only 去掉位移/朝向项（root-motion 循环用）。verdict 恒 strict */
   loopMode?: LoopMode;
   /** summary 只出 summary.json；standard 加 frames/segments/keyframes/trajectory；full 再加全部关节曲线（M6d） */
@@ -48,6 +50,8 @@ export interface AnalyzeOptions {
   vocab?: { source: string; entries: VocabEntry[] };
   /** 骨架映射文件（M7 §7.4，B.5 校验产物）：joints=auto 解析链最高优先；summary.boneMap 回显 */
   boneMap?: BonesMapping | null;
+  /** vocab 扩展前缀（B.1）：kinemesh-vocab.json 的 prefixes 字段，透传给 sample 的字典查表 */
+  vocabPrefixes?: string[];
 }
 
 export interface MotionArtifact {
@@ -92,6 +96,7 @@ function analyzeOneClip(scene: CanonicalScene, options: AnalyzeOptions): MotionA
     joints: options.joints,
     range: options.range,
     boneMap: options.boneMap,
+    vocabPrefixes: options.vocabPrefixes,
   };
   const sample = sampleClip(scene, sampleOptions);
   const scale = options.scale !== undefined && options.scale > 0 ? options.scale : 1;
@@ -112,7 +117,7 @@ function analyzeOneClip(scene: CanonicalScene, options: AnalyzeOptions): MotionA
   const normalize = {
     mode: options.normalizeMode ?? (scale === 1 ? 'none' : 'height'),
     scale,
-    warnings: [] as string[],
+    warnings: options.normalizeWarnings ?? [],
   };
   const summary = buildSummary({
     clipName: sample.clipName,

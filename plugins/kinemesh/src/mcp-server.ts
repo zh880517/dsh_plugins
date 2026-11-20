@@ -83,7 +83,11 @@ server.tool(
     path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
     clip: z.string().optional().describe('动画片段名或 "*"（批量分析全部 clips，先 kinemesh_info 查）；缺省第一个 clip'),
     out: z.string().optional().describe('中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/'),
-    range: z.tuple([z.number(), z.number()]).optional().describe('[t0, t1] 秒切片（0 ≤ t0 < t1 ≤ 片段时长）；帧号仍按全片口径，结果可直接喂 kinemesh_render'),
+    range: z
+      .tuple([z.number(), z.number()])
+      .refine(([t0, t1]) => t0 < t1, { message: 'range 需要 t0 < t1（[t0, t1] 秒切片）' })
+      .optional()
+      .describe('[t0, t1] 秒切片（0 ≤ t0 < t1 ≤ 片段时长）；帧号仍按全片口径，结果可直接喂 kinemesh_render'),
     sampleFps: z.number().int().optional().describe('采样率 1–60，缺省 15（越界由分析层给三段式自愈指引）'),
     joints: z.union([z.literal('auto'), z.array(z.string())]).optional().describe('"auto"（缺省）或关节 id / 骨骼名清单'),
     detail: z.enum(['summary', 'standard', 'full']).optional().describe('summary=只出 summary.json；standard=+frames/segments/keyframes/trajectory；full=+全部关节曲线；缺省 standard'),

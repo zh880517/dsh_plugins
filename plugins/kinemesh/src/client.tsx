@@ -54,6 +54,23 @@ const ZH_TEXTS: Record<string, string> = {
   'page.open': '打开',
   'list.animated': '动画',
   'timeline.hint': '强度曲线（点击/拖动定位帧）；色带=分段 guess，半透明=循环区间',
+  'pane.load': '加载',
+  'pane.loading': '加载中…',
+  'pane.staticClip': '（静态）',
+  'pane.placeholderLoading': '加载模型中…',
+  'pane.placeholderPath': '输入模型文件路径并点「加载」。加载后可拖转、拖帧、播放，或直接发给 AI 分析。',
+  'pane.placeholderPage': '从左侧选择模型。加载后可拖转、拖帧、播放，或直接发给 AI 分析。',
+  'pane.play': '播放',
+  'pane.pause': '暂停',
+  'pane.digestChipTitle': '发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）',
+  'pane.sentWithDigest': '已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。',
+  'pane.sentNoDigest': '已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。',
+  'pane.footHint': '「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。',
+  'pane.send': '发送给 AI 分析',
+  'pane.sending': '发送中…',
+  'dialog.title': '动析 · 3D 预览',
+  'dialog.subtitle': '拖转视角；截图与 AI 分析用同一套构图',
+  'dialog.close': '关闭',
 };
 const EN_TEXTS: Record<string, string> = {
   'tab.preview': 'Model preview',
@@ -64,6 +81,23 @@ const EN_TEXTS: Record<string, string> = {
   'page.open': 'Open',
   'list.animated': 'anim',
   'timeline.hint': 'Energy curve (click/drag to scrub); band = segment guess, translucent = loop range',
+  'pane.load': 'Load',
+  'pane.loading': 'Loading…',
+  'pane.staticClip': '(static)',
+  'pane.placeholderLoading': 'Loading model…',
+  'pane.placeholderPath': 'Type a model file path and click Load. Then drag to orbit, scrub frames, play, or send to AI.',
+  'pane.placeholderPage': 'Pick a model on the left. Then drag to orbit, scrub frames, play, or send to AI.',
+  'pane.play': 'Play',
+  'pane.pause': 'Pause',
+  'pane.digestChipTitle': 'The motion-analysis digest (segments / loopCheck / keyframe recipe) will be attached when sending',
+  'pane.sentWithDigest': 'Sent to AI: message includes the motion-analysis digest (segments/loopCheck/keyframe recipe).',
+  'pane.sentNoDigest': 'Sent to AI: it will call kinemesh_render to capture this viewpoint and analyze the image.',
+  'pane.footHint': 'Send hands the current path, clip, frame, viewpoint and motion digest (if any) to this session\u2019s AI.',
+  'pane.send': 'Send to AI',
+  'pane.sending': 'Sending…',
+  'dialog.title': 'Kinemesh · 3D preview',
+  'dialog.subtitle': 'Drag to orbit; screenshots and AI analysis share the same framing',
+  'dialog.close': 'Close',
 };
 
 type Translate = (key: string) => string;
@@ -586,11 +620,7 @@ function PreviewPane(props: {
         throw new Error(body?.error?.message ?? `HTTP ${response.status}`);
       }
       previewSession.markUsed(props.sessionId);
-      setSent(
-        digestAttached !== null
-          ? '已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。'
-          : '已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。',
-      );
+      setSent(digestAttached !== null ? translate('pane.sentWithDigest') : translate('pane.sentNoDigest'));
       props.onSendSuccess?.();
     } catch (cause) {
       setSent(cause instanceof Error ? cause.message : String(cause));
@@ -600,8 +630,8 @@ function PreviewPane(props: {
   };
 
   const loopFrames = React.useMemo<{ start: number; end: number } | null>(() => {
+    // digest 的 bestLoopRange 已是 30fps 帧号（report.buildSummary 出口换算），直接使用
     const range = analysis.data?.summaryDigest?.loopCheck?.bestLoopRange ?? null;
-    const frames = analysis.data?.frames ?? [];
     if (
       range === null ||
       typeof range !== 'object' ||
@@ -610,8 +640,8 @@ function PreviewPane(props: {
     ) {
       return null;
     }
-    const start = frames[range.frameStart];
-    const end = frames[range.frameEnd];
+    const start = range.frameStart;
+    const end = range.frameEnd;
     if (start === undefined || end === undefined) return null;
     return { start, end: Math.max(end, start) };
   }, [analysis.data]);
@@ -628,19 +658,19 @@ function PreviewPane(props: {
             <input
               className="kinemesh-input"
               value={pathInput}
-              placeholder="模型文件路径（.fbx / .glb / .gltf / .obj）"
+              placeholder={translate('page.openPath')}
               onChange={(event) => setPathInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') void load();
               }}
             />
             <button type="button" className="kinemesh-btn" onClick={() => void load()} disabled={state.phase === 'loading'}>
-              {state.phase === 'loading' ? '加载中…' : '加载'}
+              {state.phase === 'loading' ? translate('pane.loading') : translate('pane.load')}
             </button>
           </React.Fragment>
         )}
         <select className="kinemesh-select" value={clip} onChange={(event) => applyClip(event.target.value)} disabled={state.clips.length === 0}>
-          <option value="">（静态）</option>
+          <option value="">{translate('pane.staticClip')}</option>
           {state.clips.map((name) => (
             <option key={name} value={name}>
               {name}
@@ -665,10 +695,10 @@ function PreviewPane(props: {
         {state.phase !== 'ready' && (
           <div className="kinemesh-placeholder">
             {state.phase === 'loading'
-              ? '加载模型中…'
+              ? translate('pane.placeholderLoading')
               : showPathInput
-                ? '输入模型文件路径并点「加载」。加载后可拖转、拖帧、播放，或直接发给 AI 分析。'
-                : '从左侧选择模型。加载后可拖转、拖帧、播放，或直接发给 AI 分析。'}
+                ? translate('pane.placeholderPath')
+                : translate('pane.placeholderPage')}
           </div>
         )}
       </div>
@@ -685,7 +715,7 @@ function PreviewPane(props: {
       )}
       <div className="kinemesh-controls">
         <button type="button" className="kinemesh-btn" onClick={togglePlay} disabled={state.phase !== 'ready' || clip === ''}>
-          {playing ? '暂停' : '播放'}
+          {playing ? translate('pane.pause') : translate('pane.play')}
         </button>
         <input
           className="kinemesh-slider"
@@ -703,16 +733,14 @@ function PreviewPane(props: {
       <div className="kinemesh-readout">
         <span className="kinemesh-chip">{viewText}</span>
         {digestHeadline !== '' && (
-          <span className="kinemesh-chip" title="发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）">
+          <span className="kinemesh-chip" title={translate('pane.digestChipTitle')}>
             {`digest ${digestHeadline}`}
           </span>
         )}
         <span>{`time = frame / ${RENDER_FPS}`}</span>
       </div>
       <div className="kinemesh-foot">
-        <span className="kinemesh-sub">
-          「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。
-        </span>
+        <span className="kinemesh-sub">{translate('pane.footHint')}</span>
         <span className="kinemesh-spacer" />
         <button
           type="button"
@@ -721,7 +749,7 @@ function PreviewPane(props: {
           onClick={() => void send()}
           disabled={state.phase !== 'ready' || sending || props.sessionId === ''}
         >
-          {sending ? '发送中…' : '发送给 AI 分析'}
+          {sending ? translate('pane.sending') : translate('pane.send')}
         </button>
       </div>
     </React.Fragment>
@@ -735,12 +763,12 @@ function PreviewDialog({ onClose }: { onClose: () => void }): React.ReactElement
     <React.Fragment>
       <Styles />
       <div className="kinemesh-backdrop" onClick={onClose} role="presentation">
-        <div className="kinemesh-dialog" role="dialog" aria-label="动析 3D 预览" onClick={(event) => event.stopPropagation()}>
+        <div className="kinemesh-dialog" role="dialog" aria-label={translate('dialog.title')} onClick={(event) => event.stopPropagation()}>
           <header className="kinemesh-head">
-            <span className="kinemesh-title">动析 · 3D 预览</span>
-            <span className="kinemesh-sub">拖转视角；截图与 AI 分析用同一套构图</span>
+            <span className="kinemesh-title">{translate('dialog.title')}</span>
+            <span className="kinemesh-sub">{translate('dialog.subtitle')}</span>
             <span className="kinemesh-spacer" />
-            <button type="button" className="kinemesh-iconbtn" onClick={onClose} aria-label="关闭">
+            <button type="button" className="kinemesh-iconbtn" onClick={onClose} aria-label={translate('dialog.close')}>
               ✕
             </button>
           </header>

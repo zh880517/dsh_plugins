@@ -61,9 +61,50 @@ const DIR_WORDS = [
   'forward-left',
 ] as const;
 
-/** wrap(θ) = ((θ + 180) mod 360) − 180，值域 [−180, 180)（A.4） */
+/** wrap(θ) = ((θ + 180) mod 360) − 180，值域 (−180, 180]（A.4：恰为 ±180° 时取 +180） */
 export function wrapDegrees(theta: number): number {
-  return ((((theta + 180) % 360) + 360) % 360) - 180;
+  const wrapped = ((((theta + 180) % 360) + 360) % 360) - 180;
+  return wrapped === -180 ? 180 : wrapped;
+}
+
+/**
+ * A.6 接触去抖（纯函数，单测直测）：翻转需连续 DEBOUNCE_FRAMES 帧成立才生效
+ * （生效帧 = 翻转第一帧，回填整段 run）；凑不满的抖动一律保持当前状态——
+ * 输出永远按生效后的 state 生成，不透出原始抖动（review 回归：旧实现 out=raws.slice()
+ * 会把被拒的翻转原样留在输出里）。
+ */
+export function debounceContact(raws: boolean[]): boolean[] {
+  const n = raws.length;
+  const out = new Array<boolean>(n);
+  if (n === 0) return out;
+  let state = raws[0]!;
+  out[0] = state;
+  let runStart = -1;
+  let runValue = false;
+  let runLength = 0;
+  for (let k = 1; k < n; k += 1) {
+    if (raws[k] === state) {
+      runStart = -1;
+      runLength = 0;
+      out[k] = state;
+      continue;
+    }
+    if (runStart >= 0 && raws[k] === runValue) runLength += 1;
+    else {
+      runValue = raws[k]!;
+      runStart = k;
+      runLength = 1;
+    }
+    if (runLength >= DEBOUNCE_FRAMES) {
+      for (let i = runStart; i <= k; i += 1) out[i] = runValue;
+      state = runValue;
+      runStart = -1;
+      runLength = 0;
+    } else {
+      out[k] = state;
+    }
+  }
+  return out;
 }
 
 function norm3(x: number, y: number, z: number): number {
@@ -318,34 +359,8 @@ export function computeChannels(sample: SampleResult, options: ChannelsOptions =
       }
       return false;
     };
-    const debounced = (side: 'L' | 'R'): boolean[] => {
-      const raws = Array.from({ length: n }, (_, k) => rawContact(side, k));
-      const out = raws.slice();
-      let state = raws[0]!;
-      let runStart = -1;
-      let runValue = false;
-      let runLength = 0;
-      for (let k = 1; k < n; k += 1) {
-        if (raws[k] !== state) {
-          if (runStart >= 0 && raws[k] === runValue) runLength += 1;
-          else {
-            runValue = raws[k]!;
-            runStart = k;
-            runLength = 1;
-          }
-          if (runLength >= DEBOUNCE_FRAMES) {
-            for (let i = runStart; i <= k; i += 1) out[i] = runValue;
-            state = runValue;
-            runStart = -1;
-            runLength = 0;
-          }
-        } else {
-          runStart = -1;
-          runLength = 0;
-        }
-      }
-      return out;
-    };
+    const debounced = (side: 'L' | 'R'): boolean[] =>
+      debounceContact(Array.from({ length: n }, (_, k) => rawContact(side, k)));
     const left = debounced('L');
     const right = debounced('R');
     for (let k = 0; k < n; k += 1) {

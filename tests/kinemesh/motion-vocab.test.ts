@@ -107,7 +107,7 @@ describe('M6d · loadVocab 发现顺序与解析校验', () => {
 
     // 全都没有 → builtin
     const builtin = await loadVocab({ assetDir: emptyAsset, cwd: path.join(home, 'nope') });
-    expect(builtin).toEqual({ source: 'builtin', entries: [] });
+    expect(builtin).toEqual({ source: 'builtin', entries: [], prefixes: [] });
   });
 
   it('JSON 非法 / 结构不对 / 条目非法 → KinemeshError（错在哪 + 正确姿势）', async () => {

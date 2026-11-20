@@ -318,7 +318,7 @@ export function formatDigestSection(digest: unknown): string {
     const range = raw.loopCheck?.bestLoopRange;
     const rangeText =
       range !== null && typeof range === 'object'
-        ? `，bestLoopRange 采样帧 ${String(range.frameStart)}–${String(range.frameEnd)}`
+        ? `，bestLoopRange 帧 ${String(range.frameStart)}–${String(range.frameEnd)}（30fps 口径，可喂 kinemesh_render）`
         : '';
     body.push(`循环检测：${verdict}${rangeText}`);
   }

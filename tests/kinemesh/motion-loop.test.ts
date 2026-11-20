@@ -9,11 +9,13 @@ import type * as THREE from 'three';
 import { analyzeClip } from '../../plugins/kinemesh/src/core/motion/analyze.js';
 import {
   buildHumanoidRig,
+  buildLinearWalkClip,
   buildLoopJerkClip,
   buildLoopPerfectClip,
   buildLoopPoseOnlyClip,
   buildNoReturnClip,
   buildRigScene,
+  buildYawDriftClip,
 } from '../support/kinemesh-rig-fixtures.js';
 
 function run(clip: THREE.AnimationClip, options: Parameters<typeof analyzeClip>[1] = {}) {
@@ -101,9 +103,9 @@ describe('M6c · root-motion 步伐循环 + loopMode pose-only（A.10）', () =>
     expect(result.summary.loopCheck!.verdict).toBe('return-only');
   });
 
-  it('bestLoopRange 找到循环体：周期帧对（j−i = 15 采样帧）、score ≈ 0', () => {
+  it('bestLoopRange 找到循环体：周期帧对（30fps 帧号口径，1s = 30 帧）、score ≈ 0', () => {
     const range = result.summary.loopCheck!.bestLoopRange!;
-    expect(range.frameEnd - range.frameStart).toBe(15); // 摆动周期 1s = 15 采样帧
+    expect(range.frameEnd - range.frameStart).toBe(30); // 摆动周期 1s = 30 帧@30fps（15 采样行）
     expect(range.score).toBeLessThan(1e-3);
     expect(range.components.poseRMS).toBeCloseTo(0, 6);
     expect(range.components.velSeam).toBeCloseTo(0, 6);
@@ -115,21 +117,21 @@ describe('M6c · root-motion 步伐循环 4s + loopMode pose-only（loop-seam �
   // loop-seam 两帧（bestLoopRange i/j ×30fps 口径）得以进关键帧——验收「keyframes 含 loop-seam」。
   const result = run(buildLoopPoseOnlyClip(buildHumanoidRig(), { duration: 4 }), { loopMode: 'pose-only' });
 
-  it('bestLoopRange 为整周期帧对（j−i 为 15 采样帧的倍数）、score = 0', () => {
+  it('bestLoopRange 为整周期帧对（30fps 帧号差为 30 的倍数）、score = 0', () => {
     const range = result.summary.loopCheck!.bestLoopRange!;
     expect(range.frameEnd - range.frameStart).toBeGreaterThan(0);
-    expect((range.frameEnd - range.frameStart) % 15).toBe(0); // 姿势逐位相同的帧对必为整周期
+    expect((range.frameEnd - range.frameStart) % 30).toBe(0); // 姿势逐位相同的帧对必为整周期（1s = 30 帧）
     expect(range.score).toBeLessThan(1e-3);
   });
 
-  it('keyframes 含 loop-seam（A.11 优先级 4，两帧 = bestLoopRange i/j）', () => {
+  it('keyframes 含 loop-seam（A.11 优先级 4，两帧 = bestLoopRange 的 30fps 帧号）', () => {
     const { summary } = result;
     const range = summary.loopCheck!.bestLoopRange!;
     const seamFrames = summary.keyframes.filter((entry) => entry.reason === 'loop-seam');
     expect(seamFrames.length).toBeGreaterThan(0);
-    // loop-seam 帧号 = bestLoopRange 采样帧 × 2（30fps 口径）
+    // summary 出口的 bestLoopRange 已是 30fps 帧号（report.buildSummary 换算），可直接喂 kinemesh_render
     for (const entry of seamFrames) {
-      expect([range.frameStart * 2, range.frameEnd * 2]).toContain(entry.frame);
+      expect([range.frameStart, range.frameEnd]).toContain(entry.frame);
     }
   });
 });
@@ -196,5 +198,38 @@ describe('M6c · 不归位（no-return：crouch 后保持，姿态本体不回�
   it('facts 循环句为 no-return 释义', () => {
     expect(result.summary.facts.some((fact) => fact.startsWith('循环检测：no-return——'))).toBe(true);
     expect(result.summary.facts.some((fact) => fact.includes('不归位'))).toBe(true);
+  });
+});
+
+describe('M6c 回归 · 小角度偏航（P(t) 转 −heading 的符号，review 阻断 #1）', () => {
+  // 身体姿态恒定、hips 匀速偏航 8°（< 10° 朝向阈值）：姿势判定应完全剥离朝向。
+  // 符号反了（转 +heading）会把残留旋转放大成 2×8°，poseRMS 虚高、poseMatch 被误杀。
+  const result = run(buildYawDriftClip(buildHumanoidRig()));
+
+  it('poseRMS ≈ 0（P 剥离朝向后首尾同姿）、poseMatch = true', () => {
+    const check = result.summary.loopCheck!;
+    expect(check.components.headingDiff).toBeCloseTo(8, 1);
+    expect(check.components.poseRMS).toBeLessThan(0.005);
+    expect(check.components.maxJoint).toBeLessThan(0.01);
+    expect(check.poseMatch).toBe(true);
+  });
+
+  it('verdict 不因符号误差掉到 no-return（速度 seam 断裂 → loop-pose-only 或 velocity 项可过）', () => {
+    const check = result.summary.loopCheck!;
+    expect(check.verdict).not.toBe('no-return');
+    expect(check.positionMatch).toBe(true);
+  });
+});
+
+describe('M6c 回归 · 端点关键帧用 t=duration 精确帧号（A.0 虚拟点 / A.11 #5）', () => {
+  // duration 2.1s 不落 15fps 采样网格（末行 t=2.0667 → 62 帧，端点 = round(2.1×30) = 63 帧）
+  const result = run(buildLinearWalkClip(buildHumanoidRig(), { duration: 2.1 }));
+
+  it('endpoints 终点帧 = 63（t=duration 精确口径），起点 0 由 energy-peak 候选先占（同帧去重）', () => {
+    const { summary } = result;
+    expect(summary.clip.frames).toBe(63);
+    const endpoints = summary.keyframes.filter((entry) => entry.reason === 'endpoints');
+    expect(endpoints.map((entry) => entry.frame)).toEqual([63]);
+    expect(summary.keyframes.some((entry) => entry.frame === 0)).toBe(true);
   });
 });

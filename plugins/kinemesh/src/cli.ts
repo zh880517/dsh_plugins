@@ -1,6 +1,6 @@
-// CLI 入口（M4）：`node kinemesh.js info <file>` / `render <file> …` / `analyze <file> …`（M6d）。
+// CLI 入口（M4）：`node kinemesh.cjs info <file>` / `render` / `analyze` / `skeleton`（M6d/M7）。
 // 契约（设计文档 §5.2）：stdout 出 JSON、图片落盘、非零退出码 + stderr 报错（Agent 解析友好）。
-// 构建成单文件 CJS（skill/cli/kinemesh.js，three.js 全内联；playwright 保持外部依赖）。
+// 构建成单文件 CJS（skill/cli/kinemesh.cjs，three.js 全内联；playwright 保持外部依赖）。
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';

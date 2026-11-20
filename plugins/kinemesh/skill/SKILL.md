@@ -5,7 +5,7 @@ description: 3D 模型/动画资源分析与截图 CLI。当任务涉及游戏�
 
 # kinemesh（动析）CLI
 
-面向 AI Agent 的 3D 模型/动画资源分析与截图工具。本目录自包含：`cli/kinemesh.js` 是单文件
+面向 AI Agent 的 3D 模型/动画资源分析与截图工具。本目录自包含：`cli/kinemesh.cjs` 是单文件
 bundle（three.js 全内联），免 npm install，任何有 shell + Node ≥ 18 的环境直接 `node` 运行。
 
 ## 何时用
@@ -26,10 +26,10 @@ npm i playwright && npx playwright install chromium
 ## 命令格式
 
 ```bash
-node <本目录>/cli/kinemesh.js info <file>
-node <本目录>/cli/kinemesh.js analyze <file> [选项]
-node <本目录>/cli/kinemesh.js skeleton <file> [选项]
-node <本目录>/cli/kinemesh.js render <file> [选项]
+node <本目录>/cli/kinemesh.cjs info <file>
+node <本目录>/cli/kinemesh.cjs analyze <file> [选项]
+node <本目录>/cli/kinemesh.cjs skeleton <file> [选项]
+node <本目录>/cli/kinemesh.cjs render <file> [选项]
 ```
 
 `info`：输出模型结构信息 JSON——动画片段（名称/时长/通道数/根运动）、骨骼（数量/最大深度/是否人形）、

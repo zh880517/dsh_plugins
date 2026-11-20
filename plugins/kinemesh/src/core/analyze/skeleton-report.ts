@@ -179,6 +179,8 @@ export interface BuildSkeletonOptions {
   mapping: BonesMapping | null;
   /** 'auto'（缺省，CORE15 有缺口才出批次）/ 'none' / 'all' */
   shots?: 'auto' | 'none' | 'all';
+  /** vocab 扩展前缀（B.1：kinemesh-vocab.json 的 prefixes 字段，工具层传入） */
+  extraPrefixes?: string[];
 }
 
 export function buildSkeletonReport(scene: CanonicalScene, options: BuildSkeletonOptions): SkeletonReport {
@@ -194,7 +196,7 @@ export function buildSkeletonReport(scene: CanonicalScene, options: BuildSkeleto
   for (const node of nodes) {
     const filePart = fileParts.get(node.name);
     if (filePart !== undefined) continue;
-    const match = matchCanonical(node.name);
+    const match = matchCanonical(node.name, options.extraPrefixes);
     if (match !== null) dictCandidates.push({ node, match });
   }
   // 字典按 core id 分组（带侧 canonical 缺 side 的记 note 且回 AI 兜底）
@@ -245,7 +247,7 @@ export function buildSkeletonReport(scene: CanonicalScene, options: BuildSkeleto
   });
 
   // ————— 约定识别（B.3）与映射覆盖 —————
-  const convention = detectConvention(nodes.map((node) => node.name));
+  const convention = detectConvention(nodes.map((node) => node.name), options.extraPrefixes);
   const coreIds = new Set(CORE15_IDS as readonly string[]);
   const mappedEntries = bones.filter((entry) => entry.source !== null);
   const coreHit = new Set(mappedEntries.map((entry) => entry.partGuess).filter((part) => part !== null && coreIds.has(part))).size;

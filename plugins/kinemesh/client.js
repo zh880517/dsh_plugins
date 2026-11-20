@@ -46229,17 +46229,6 @@ function detectObj(head, fileName) {
 	module.exports = {};
 })))();
 Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY;
-Object.values({
-	hips: .2,
-	spine: .3,
-	head: 1,
-	UpperArm: .7,
-	LowerArm: .9,
-	Hand: 1.2,
-	UpperLeg: .5,
-	LowerLeg: .7,
-	Foot: 1
-}).reduce((sum, w) => sum + w, 0);
 //#endregion
 //#region
 var CATEGORIES = [
@@ -46313,7 +46302,7 @@ var EXTRA_IDS = [
 	"chest"
 ];
 /**
-* 前缀表（B.1，循环剥到不再匹配；开放于 vocab 同款扩展文件的机制留后续）。
+* 前缀表（B.1，循环剥到不再匹配；vocab 扩展文件（kinemesh-vocab.json）的 prefixes 字段追加项目级前缀）。
 * 剥除条件：前缀后紧跟分隔符/结尾，或前缀自带分隔符结尾（armature|）——防止 blockhead 这类词误剥。
 */
 var PREFIXES = [
@@ -46338,15 +46327,17 @@ var SIDE_TOKENS = /* @__PURE__ */ new Set([
 function tokenize(lower) {
 	return lower.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(SEPARATOR_SPLIT).flatMap((token) => token === "" ? [] : token.split(/(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])/)).filter((token) => token !== "");
 }
-/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀 → 去 side/纯数字 token */
-function normalizeBoneName(rawName) {
+/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀（内置 + vocab 扩展） →
+*  去 side/纯数字 token。extraPrefixes 来自 kinemesh-vocab.json 的 prefixes 字段（已小写化）。 */
+function normalizeBoneName(rawName, extraPrefixes = []) {
 	const lower = rawName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
 	const side = sideOf(lower);
+	const allPrefixes = extraPrefixes.length === 0 ? PREFIXES : [.../* @__PURE__ */ new Set([...PREFIXES, ...extraPrefixes])];
 	let stripped = lower;
 	let looped = true;
 	while (looped) {
 		looped = false;
-		for (const prefix of PREFIXES) {
+		for (const prefix of allPrefixes) {
 			if (!stripped.startsWith(prefix)) continue;
 			const rest = stripped.slice(prefix.length);
 			if (!(rest === "" || /[a-z0-9]/.test(prefix.slice(-1)) === false || SEPARATOR_SPLIT.test(rest[0] ?? ""))) continue;
@@ -46469,8 +46460,8 @@ var SYNONYMS = [
 * 再按表序对全名做子串兜底；两轮都落空返回 null（缺口回退 AI，红线不做模糊匹配）。
 * 表序保证 Mixamo ForeArm→lowerarm 先于 Arm→upperarm、UpLeg→upperleg 先于 Leg→lowerleg 语义。
 */
-function matchCanonical(rawName) {
-	const normalized = normalizeBoneName(rawName);
+function matchCanonical(rawName, extraPrefixes = []) {
+	const normalized = normalizeBoneName(rawName, extraPrefixes);
 	const tokens = normalized.tokens;
 	for (let start = 0; start < tokens.length; start += 1) for (let end = tokens.length; end > start; end -= 1) {
 		const run = tokens.slice(start, end).join("");
@@ -46517,10 +46508,10 @@ var FINGERPRINTS = [
 	}
 ];
 /** score = 指纹命中骨数 / 总骨数；convention = argmax 且 ≥ CONVENTION_MIN，否则 custom（B.3） */
-function detectConvention(boneNames) {
+function detectConvention(boneNames, extraPrefixes = []) {
 	const counts = /* @__PURE__ */ new Map();
 	for (const name of boneNames) {
-		const normalized = normalizeBoneName(name);
+		const normalized = normalizeBoneName(name, extraPrefixes);
 		for (const fingerprint of FINGERPRINTS) if (fingerprint.hit(normalized.raw, normalized.tokens)) {
 			counts.set(fingerprint.id, (counts.get(fingerprint.id) ?? 0) + 1);
 			break;
@@ -46945,7 +46936,24 @@ var ZH_TEXTS = {
 	"page.openPath": "模型文件路径（.fbx / .glb / .gltf / .obj）",
 	"page.open": "打开",
 	"list.animated": "动画",
-	"timeline.hint": "强度曲线（点击/拖动定位帧）；色带=分段 guess，半透明=循环区间"
+	"timeline.hint": "强度曲线（点击/拖动定位帧）；色带=分段 guess，半透明=循环区间",
+	"pane.load": "加载",
+	"pane.loading": "加载中…",
+	"pane.staticClip": "（静态）",
+	"pane.placeholderLoading": "加载模型中…",
+	"pane.placeholderPath": "输入模型文件路径并点「加载」。加载后可拖转、拖帧、播放，或直接发给 AI 分析。",
+	"pane.placeholderPage": "从左侧选择模型。加载后可拖转、拖帧、播放，或直接发给 AI 分析。",
+	"pane.play": "播放",
+	"pane.pause": "暂停",
+	"pane.digestChipTitle": "发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）",
+	"pane.sentWithDigest": "已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。",
+	"pane.sentNoDigest": "已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。",
+	"pane.footHint": "「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。",
+	"pane.send": "发送给 AI 分析",
+	"pane.sending": "发送中…",
+	"dialog.title": "动析 · 3D 预览",
+	"dialog.subtitle": "拖转视角；截图与 AI 分析用同一套构图",
+	"dialog.close": "关闭"
 };
 var EN_TEXTS = {
 	"tab.preview": "Model preview",
@@ -46955,7 +46963,24 @@ var EN_TEXTS = {
 	"page.openPath": "Model file path (.fbx / .glb / .gltf / .obj)",
 	"page.open": "Open",
 	"list.animated": "anim",
-	"timeline.hint": "Energy curve (click/drag to scrub); band = segment guess, translucent = loop range"
+	"timeline.hint": "Energy curve (click/drag to scrub); band = segment guess, translucent = loop range",
+	"pane.load": "Load",
+	"pane.loading": "Loading…",
+	"pane.staticClip": "(static)",
+	"pane.placeholderLoading": "Loading model…",
+	"pane.placeholderPath": "Type a model file path and click Load. Then drag to orbit, scrub frames, play, or send to AI.",
+	"pane.placeholderPage": "Pick a model on the left. Then drag to orbit, scrub frames, play, or send to AI.",
+	"pane.play": "Play",
+	"pane.pause": "Pause",
+	"pane.digestChipTitle": "The motion-analysis digest (segments / loopCheck / keyframe recipe) will be attached when sending",
+	"pane.sentWithDigest": "Sent to AI: message includes the motion-analysis digest (segments/loopCheck/keyframe recipe).",
+	"pane.sentNoDigest": "Sent to AI: it will call kinemesh_render to capture this viewpoint and analyze the image.",
+	"pane.footHint": "Send hands the current path, clip, frame, viewpoint and motion digest (if any) to this session’s AI.",
+	"pane.send": "Send to AI",
+	"pane.sending": "Sending…",
+	"dialog.title": "Kinemesh · 3D preview",
+	"dialog.subtitle": "Drag to orbit; screenshots and AI analysis share the same framing",
+	"dialog.close": "Close"
 };
 /** 页面/页签文本的兜底翻译（locale 服务不可用时直接用中文） */
 var fallbackTranslate = (key) => ZH_TEXTS[key] ?? key;
@@ -47411,7 +47436,7 @@ function PreviewPane(props) {
 			const body = await response.json().catch(() => null);
 			if (body?.ok !== true) throw new Error(body?.error?.message ?? `HTTP ${response.status}`);
 			previewSession.markUsed(props.sessionId);
-			setSent(digestAttached !== null ? "已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。" : "已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。");
+			setSent(digestAttached !== null ? translate("pane.sentWithDigest") : translate("pane.sentNoDigest"));
 			props.onSendSuccess?.();
 		} catch (cause) {
 			setSent(cause instanceof Error ? cause.message : String(cause));
@@ -47421,10 +47446,9 @@ function PreviewPane(props) {
 	};
 	const loopFrames = react.useMemo(() => {
 		const range = analysis.data?.summaryDigest?.loopCheck?.bestLoopRange ?? null;
-		const frames = analysis.data?.frames ?? [];
 		if (range === null || typeof range !== "object" || typeof range.frameStart !== "number" || typeof range.frameEnd !== "number") return null;
-		const start = frames[range.frameStart];
-		const end = frames[range.frameEnd];
+		const start = range.frameStart;
+		const end = range.frameEnd;
 		if (start === void 0 || end === void 0) return null;
 		return {
 			start,
@@ -47435,7 +47459,7 @@ function PreviewPane(props) {
 	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-toolbar" }, showPathInput && /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement("input", {
 		className: "kinemesh-input",
 		value: pathInput,
-		placeholder: "模型文件路径（.fbx / .glb / .gltf / .obj）",
+		placeholder: translate("page.openPath"),
 		onChange: (event) => setPathInput(event.target.value),
 		onKeyDown: (event) => {
 			if (event.key === "Enter") load();
@@ -47445,12 +47469,12 @@ function PreviewPane(props) {
 		className: "kinemesh-btn",
 		onClick: () => void load(),
 		disabled: state.phase === "loading"
-	}, state.phase === "loading" ? "加载中…" : "加载")), /* @__PURE__ */ react.createElement("select", {
+	}, state.phase === "loading" ? translate("pane.loading") : translate("pane.load"))), /* @__PURE__ */ react.createElement("select", {
 		className: "kinemesh-select",
 		value: clip,
 		onChange: (event) => applyClip(event.target.value),
 		disabled: state.clips.length === 0
-	}, /* @__PURE__ */ react.createElement("option", { value: "" }, "（静态）"), state.clips.map((name) => /* @__PURE__ */ react.createElement("option", {
+	}, /* @__PURE__ */ react.createElement("option", { value: "" }, translate("pane.staticClip")), state.clips.map((name) => /* @__PURE__ */ react.createElement("option", {
 		key: name,
 		value: name
 	}, name))), /* @__PURE__ */ react.createElement("select", {
@@ -47466,7 +47490,7 @@ function PreviewPane(props) {
 	}, sent), /* @__PURE__ */ react.createElement("div", {
 		className: "kinemesh-stage",
 		ref: hostRef
-	}, state.phase !== "ready" && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-placeholder" }, state.phase === "loading" ? "加载模型中…" : showPathInput ? "输入模型文件路径并点「加载」。加载后可拖转、拖帧、播放，或直接发给 AI 分析。" : "从左侧选择模型。加载后可拖转、拖帧、播放，或直接发给 AI 分析。")), state.phase === "ready" && clip !== "" && analysis.data !== null && /* @__PURE__ */ react.createElement(MotionTimeline, {
+	}, state.phase !== "ready" && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-placeholder" }, state.phase === "loading" ? translate("pane.placeholderLoading") : showPathInput ? translate("pane.placeholderPath") : translate("pane.placeholderPage"))), state.phase === "ready" && clip !== "" && analysis.data !== null && /* @__PURE__ */ react.createElement(MotionTimeline, {
 		frames: analysis.data.frames,
 		energy: analysis.data.energy,
 		segments: analysis.data.segments,
@@ -47479,7 +47503,7 @@ function PreviewPane(props) {
 		className: "kinemesh-btn",
 		onClick: togglePlay,
 		disabled: state.phase !== "ready" || clip === ""
-	}, playing ? "暂停" : "播放"), /* @__PURE__ */ react.createElement("input", {
+	}, playing ? translate("pane.pause") : translate("pane.play")), /* @__PURE__ */ react.createElement("input", {
 		className: "kinemesh-slider",
 		type: "range",
 		min: 0,
@@ -47489,14 +47513,14 @@ function PreviewPane(props) {
 		disabled: state.phase !== "ready" || clip === ""
 	}), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-frame" }, "f", frame, " / f", Math.max(state.maxFrame, 0))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), digestHeadline !== "" && /* @__PURE__ */ react.createElement("span", {
 		className: "kinemesh-chip",
-		title: "发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）"
-	}, `digest ${digestHeadline}`), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, "「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
+		title: translate("pane.digestChipTitle")
+	}, `digest ${digestHeadline}`), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("pane.footHint")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
 		type: "button",
 		className: "kinemesh-btn",
 		"data-primary": "true",
 		onClick: () => void send(),
 		disabled: state.phase !== "ready" || sending || props.sessionId === ""
-	}, sending ? "发送中…" : "发送给 AI 分析")));
+	}, sending ? translate("pane.sending") : translate("pane.send"))));
 }
 function PreviewDialog({ onClose }) {
 	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", {
@@ -47506,13 +47530,13 @@ function PreviewDialog({ onClose }) {
 	}, /* @__PURE__ */ react.createElement("div", {
 		className: "kinemesh-dialog",
 		role: "dialog",
-		"aria-label": "动析 3D 预览",
+		"aria-label": translate("dialog.title"),
 		onClick: (event) => event.stopPropagation()
-	}, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-head" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, "动析 · 3D 预览"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, "拖转视角；截图与 AI 分析用同一套构图"), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
+	}, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-head" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, translate("dialog.title")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("dialog.subtitle")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
 		type: "button",
 		className: "kinemesh-iconbtn",
 		onClick: onClose,
-		"aria-label": "关闭"
+		"aria-label": translate("dialog.close")
 	}, "✕")), /* @__PURE__ */ react.createElement(PreviewPane, {
 		sessionId: connection?.sessionId ?? "",
 		note: connection?.draft ?? null,

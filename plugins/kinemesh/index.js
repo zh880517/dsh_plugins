@@ -23035,8 +23035,9 @@ function intensityLevel(mean, peak) {
 	return LEVEL_RANK[byMean] >= LEVEL_RANK[byPeak] ? byMean : byPeak;
 }
 /**
-* 能量权重表（A.3，J15）：末端关节权重高、躯干低；左右同权。Σw = 11.5。
-* Toe 只作足点/打击肢端候选，不在权重表里（weight = 0，不进能量与 Σw）。
+* 能量权重表（A.3，J15）：末端关节权重高、躯干低；左右同权。
+* J15 全集 Σw = 11.5（躯干 1.5 + 左右成对肢链 2×5.0）；实际计算按解析到的关节子集求和
+* （channels.ts），不使用预合计常量。Toe 只作足点/打击肢端候选，不在权重表里（weight = 0）。
 */
 var JOINT_WEIGHTS = {
 	hips: .2,
@@ -23049,7 +23050,6 @@ var JOINT_WEIGHTS = {
 	LowerLeg: .7,
 	Foot: 1
 };
-Object.values(JOINT_WEIGHTS).reduce((sum, w) => sum + w, 0);
 /** 约定识别判定的最低指纹分（B.3）：score ≥ 0.5 才认该约定，否则 custom */
 var CONVENTION_MIN = .5;
 //#endregion
@@ -23181,7 +23181,7 @@ function coreIdOf(canonical, side) {
 	return canonical;
 }
 /**
-* 前缀表（B.1，循环剥到不再匹配；开放于 vocab 同款扩展文件的机制留后续）。
+* 前缀表（B.1，循环剥到不再匹配；vocab 扩展文件（kinemesh-vocab.json）的 prefixes 字段追加项目级前缀）。
 * 剥除条件：前缀后紧跟分隔符/结尾，或前缀自带分隔符结尾（armature|）——防止 blockhead 这类词误剥。
 */
 var PREFIXES = [
@@ -23206,15 +23206,17 @@ var SIDE_TOKENS = /* @__PURE__ */ new Set([
 function tokenize(lower) {
 	return lower.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(SEPARATOR_SPLIT).flatMap((token) => token === "" ? [] : token.split(/(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])/)).filter((token) => token !== "");
 }
-/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀 → 去 side/纯数字 token */
-function normalizeBoneName(rawName) {
+/** B.1 名称归一：lowercase → side 识别（复用 humanoid.ts 口径）→ 剥前缀（内置 + vocab 扩展） →
+*  去 side/纯数字 token。extraPrefixes 来自 kinemesh-vocab.json 的 prefixes 字段（已小写化）。 */
+function normalizeBoneName(rawName, extraPrefixes = []) {
 	const lower = rawName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
 	const side = sideOf(lower);
+	const allPrefixes = extraPrefixes.length === 0 ? PREFIXES : [.../* @__PURE__ */ new Set([...PREFIXES, ...extraPrefixes])];
 	let stripped = lower;
 	let looped = true;
 	while (looped) {
 		looped = false;
-		for (const prefix of PREFIXES) {
+		for (const prefix of allPrefixes) {
 			if (!stripped.startsWith(prefix)) continue;
 			const rest = stripped.slice(prefix.length);
 			if (!(rest === "" || /[a-z0-9]/.test(prefix.slice(-1)) === false || SEPARATOR_SPLIT.test(rest[0] ?? ""))) continue;
@@ -23337,8 +23339,8 @@ var SYNONYMS = [
 * 再按表序对全名做子串兜底；两轮都落空返回 null（缺口回退 AI，红线不做模糊匹配）。
 * 表序保证 Mixamo ForeArm→lowerarm 先于 Arm→upperarm、UpLeg→upperleg 先于 Leg→lowerleg 语义。
 */
-function matchCanonical(rawName) {
-	const normalized = normalizeBoneName(rawName);
+function matchCanonical(rawName, extraPrefixes = []) {
+	const normalized = normalizeBoneName(rawName, extraPrefixes);
 	const tokens = normalized.tokens;
 	for (let start = 0; start < tokens.length; start += 1) for (let end = tokens.length; end > start; end -= 1) {
 		const run = tokens.slice(start, end).join("");
@@ -23385,10 +23387,10 @@ var FINGERPRINTS = [
 	}
 ];
 /** score = 指纹命中骨数 / 总骨数；convention = argmax 且 ≥ CONVENTION_MIN，否则 custom（B.3） */
-function detectConvention(boneNames) {
+function detectConvention(boneNames, extraPrefixes = []) {
 	const counts = /* @__PURE__ */ new Map();
 	for (const name of boneNames) {
-		const normalized = normalizeBoneName(name);
+		const normalized = normalizeBoneName(name, extraPrefixes);
 		for (const fingerprint of FINGERPRINTS) if (fingerprint.hit(normalized.raw, normalized.tokens)) {
 			counts.set(fingerprint.id, (counts.get(fingerprint.id) ?? 0) + 1);
 			break;
@@ -30363,9 +30365,47 @@ var DIR_WORDS = [
 	"left",
 	"forward-left"
 ];
-/** wrap(θ) = ((θ + 180) mod 360) − 180，值域 [−180, 180)（A.4） */
+/** wrap(θ) = ((θ + 180) mod 360) − 180，值域 (−180, 180]（A.4：恰为 ±180° 时取 +180） */
 function wrapDegrees(theta) {
-	return ((theta + 180) % 360 + 360) % 360 - 180;
+	const wrapped = ((theta + 180) % 360 + 360) % 360 - 180;
+	return wrapped === -180 ? 180 : wrapped;
+}
+/**
+* A.6 接触去抖（纯函数，单测直测）：翻转需连续 DEBOUNCE_FRAMES 帧成立才生效
+* （生效帧 = 翻转第一帧，回填整段 run）；凑不满的抖动一律保持当前状态——
+* 输出永远按生效后的 state 生成，不透出原始抖动（review 回归：旧实现 out=raws.slice()
+* 会把被拒的翻转原样留在输出里）。
+*/
+function debounceContact(raws) {
+	const n = raws.length;
+	const out = new Array(n);
+	if (n === 0) return out;
+	let state = raws[0];
+	out[0] = state;
+	let runStart = -1;
+	let runValue = false;
+	let runLength = 0;
+	for (let k = 1; k < n; k += 1) {
+		if (raws[k] === state) {
+			runStart = -1;
+			runLength = 0;
+			out[k] = state;
+			continue;
+		}
+		if (runStart >= 0 && raws[k] === runValue) runLength += 1;
+		else {
+			runValue = raws[k];
+			runStart = k;
+			runLength = 1;
+		}
+		if (runLength >= 2) {
+			for (let i = runStart; i <= k; i += 1) out[i] = runValue;
+			state = runValue;
+			runStart = -1;
+			runLength = 0;
+		} else out[k] = state;
+	}
+	return out;
 }
 function norm3$1(x, y, z) {
 	return Math.sqrt(x * x + y * y + z * z);
@@ -30581,32 +30621,7 @@ function computeChannels(sample, options = {}) {
 			}
 			return false;
 		};
-		const debounced = (side) => {
-			const raws = Array.from({ length: n }, (_, k) => rawContact(side, k));
-			const out = raws.slice();
-			let state = raws[0];
-			let runStart = -1;
-			let runValue = false;
-			let runLength = 0;
-			for (let k = 1; k < n; k += 1) if (raws[k] !== state) {
-				if (runStart >= 0 && raws[k] === runValue) runLength += 1;
-				else {
-					runValue = raws[k];
-					runStart = k;
-					runLength = 1;
-				}
-				if (runLength >= 2) {
-					for (let i = runStart; i <= k; i += 1) out[i] = runValue;
-					state = runValue;
-					runStart = -1;
-					runLength = 0;
-				}
-			} else {
-				runStart = -1;
-				runLength = 0;
-			}
-			return out;
-		};
+		const debounced = (side) => debounceContact(Array.from({ length: n }, (_, k) => rawContact(side, k)));
 		const left = debounced("L");
 		const right = debounced("R");
 		for (let k = 0; k < n; k += 1) {
@@ -30743,7 +30758,7 @@ function buildPoses(sample, channels, scale) {
 			refY = r[k * 3 + 1];
 			refZ = r[k * 3 + 2];
 		}
-		const theta = -(endpoint ? headingEnd : channels.heading[k] ?? 0) * DEG2RAD;
+		const theta = (endpoint ? headingEnd : channels.heading[k] ?? 0) * DEG2RAD;
 		const cos = Math.cos(theta);
 		const sin = Math.sin(theta);
 		for (let j = 0; j < jointCount; j += 1) {
@@ -30979,17 +30994,31 @@ function matchVocab(features, entries) {
 	};
 	return null;
 }
-/** JSON 文本 → 词条数组；结构错误抛 KinemeshError（错在哪 + 正确姿势） */
-function parseVocab(text, sourcePath) {
+/** JSON 文本 → { entries, prefixes }；结构错误抛 KinemeshError（错在哪 + 正确姿势） */
+function parseVocabFile(text, sourcePath) {
 	let data;
 	try {
 		data = JSON.parse(text);
 	} catch (error) {
-		throw new KinemeshError(`词表文件 JSON 解析失败：${sourcePath}（${reasonOf(error)}）。`, `${VOCAB_FILE_NAME} 必须是合法 JSON：顶层为词条数组，或 {"entries": [...]}；逐条检查逗号/引号后重跑。`);
+		throw new KinemeshError(`词表文件 JSON 解析失败：${sourcePath}（${reasonOf(error)}）。`, `${VOCAB_FILE_NAME} 必须是合法 JSON：顶层为词条数组，或 {"entries": [...], "prefixes": [...]}；逐条检查逗号/引号后重跑。`);
 	}
-	const rawEntries = Array.isArray(data) ? data : typeof data === "object" && data !== null && Array.isArray(data.entries) ? data.entries : null;
-	if (rawEntries === null) throw new KinemeshError(`词表文件结构不对：${sourcePath} 的顶层既不是数组也没有 entries 数组。`, `顶层用词条数组或 {"entries": [...]}；每条形如 {"term": "dodge", "when": {...}, "action": "label"}。`);
-	return rawEntries.map((raw, index) => validateEntry(raw, sourcePath, index));
+	if (Array.isArray(data)) return {
+		entries: data.map((raw, index) => validateEntry(raw, sourcePath, index)),
+		prefixes: []
+	};
+	if (typeof data !== "object" || data === null) throw new KinemeshError(`词表文件结构不对：${sourcePath} 的顶层既不是数组也不是对象。`, `顶层用词条数组或 {"entries": [...], "prefixes": [...]}；每条形如 {"term": "dodge", "when": {...}, "action": "label"}。`);
+	const record = data;
+	const rawEntries = Array.isArray(record.entries) ? record.entries : null;
+	if (rawEntries === null) throw new KinemeshError(`词表文件结构不对：${sourcePath} 的顶层既不是数组也没有 entries 数组。`, `顶层用词条数组或 {"entries": [...], "prefixes": [...]}；每条形如 {"term": "dodge", "when": {...}, "action": "label"}。`);
+	let prefixes = [];
+	if (record.prefixes !== void 0) {
+		if (!Array.isArray(record.prefixes) || record.prefixes.some((item) => typeof item !== "string" || item.trim() === "")) throw new KinemeshError(`词表文件 prefixes 字段非法：${sourcePath}（必须是全非空字符串数组）。`, `"prefixes": ["myns:", "rig_"]——项目级骨骼名前缀，字典查表（B.1）剥前缀时与内置表合并使用。`);
+		prefixes = record.prefixes.map((item) => item.trim().toLowerCase());
+	}
+	return {
+		entries: rawEntries.map((raw, index) => validateEntry(raw, sourcePath, index)),
+		prefixes
+	};
 }
 function validateEntry(raw, sourcePath, index) {
 	const where = `${sourcePath} 第 ${index + 1} 条`;
@@ -31047,14 +31076,17 @@ async function loadVocab(options = {}) {
 	for (const candidate of candidates) {
 		const text = await readFile(candidate, "utf8").catch(() => null);
 		if (text === null) continue;
+		const parsed = parseVocabFile(text, candidate);
 		return {
 			source: path.resolve(candidate),
-			entries: parseVocab(text, candidate)
+			entries: parsed.entries,
+			prefixes: parsed.prefixes
 		};
 	}
 	return {
 		source: "builtin",
-		entries: []
+		entries: [],
+		prefixes: []
 	};
 }
 //#endregion
@@ -31876,7 +31908,7 @@ function buildAnchors(joints) {
 	}
 	return anchors;
 }
-function resolveHumanoidJoints(root) {
+function resolveHumanoidJoints(root, extraPrefixes = []) {
 	const names = [];
 	root.traverse((obj) => {
 		if (obj !== root && obj.name !== "") names.push(obj.name);
@@ -31885,7 +31917,7 @@ function resolveHumanoidJoints(root) {
 	const slots = /* @__PURE__ */ new Map();
 	root.traverse((obj) => {
 		if (obj === root || obj.name === "") return;
-		const match = matchCanonical(obj.name);
+		const match = matchCanonical(obj.name, extraPrefixes);
 		if (!match) return;
 		const kind = CANONICAL_KIND[match.canonical];
 		if (kind === void 0) return;
@@ -32148,7 +32180,7 @@ function sampleClip(scene, options = {}) {
 			root.updateMatrixWorld(true);
 		};
 		const requested = options.joints ?? "auto";
-		const resolution = requested === "auto" ? resolveMappedJoints(root, options.boneMap) ?? resolveHumanoidJoints(root) ?? resolveTop15Joints(root, times, evaluateAt) : resolveExplicitJoints(root, requested);
+		const resolution = requested === "auto" ? resolveMappedJoints(root, options.boneMap) ?? resolveHumanoidJoints(root, options.vocabPrefixes) ?? resolveTop15Joints(root, times, evaluateAt) : resolveExplicitJoints(root, requested);
 		const { joints, jointObjects } = resolution;
 		const warnings = [];
 		if (prepared.morphIgnored > 0) warnings.push(`已忽略 ${prepared.morphIgnored} 条 morph/blend shape 轨道（骨骼运动分析不涉及形态动画）。`);
@@ -32343,6 +32375,7 @@ function pickKeyframes(channels, sample, segments, options = {}) {
 	const m = options.smooth !== void 0 ? Math.max(0, Math.floor(options.smooth / 2)) : 2;
 	const e = smoothSeries(channels.energy, m);
 	const candidates = [];
+	const frameOf = (entry) => entry.frame ?? channels.frames[entry.k] ?? entry.k * 30;
 	let globalPeak = 0;
 	for (let k = 1; k < n; k += 1) if (e[k] > e[globalPeak]) globalPeak = k;
 	candidates.push({
@@ -32374,6 +32407,7 @@ function pickKeyframes(channels, sample, segments, options = {}) {
 		reason: "loop-seam",
 		note: "循环接缝帧"
 	});
+	const rangeEnd = sample.range ? sample.range[1] : sample.duration;
 	candidates.push({
 		k: 0,
 		reason: "endpoints",
@@ -32381,6 +32415,7 @@ function pickKeyframes(channels, sample, segments, options = {}) {
 	});
 	candidates.push({
 		k: n - 1,
+		frame: Math.round(rangeEnd * 30),
 		reason: "endpoints",
 		note: "终点（动作结束）"
 	});
@@ -32388,14 +32423,17 @@ function pickKeyframes(channels, sample, segments, options = {}) {
 	const kept = [];
 	for (const candidate of candidates) {
 		if (kept.length >= 8) break;
-		if (!kept.some((entry) => Math.abs(entry.k - candidate.k) < dedupFrames)) kept.push(candidate);
+		if (!kept.some((entry) => Math.abs(frameOf(entry) - frameOf(candidate)) < dedupFrames)) kept.push(candidate);
 	}
-	return kept.map((entry) => ({
-		frame: channels.frames[entry.k] ?? entry.k * 30,
-		time: (channels.frames[entry.k] ?? entry.k) / 30,
-		reason: entry.reason,
-		note: entry.note
-	}));
+	return kept.map((entry) => {
+		const frame = frameOf(entry);
+		return {
+			frame,
+			time: frame / 30,
+			reason: entry.reason,
+			note: entry.note
+		};
+	});
 }
 function keyframesFile(keyframes) {
 	return {
@@ -32440,7 +32478,8 @@ function trajectoryFile(channels, sample, events) {
 function trajectoryJson(file) {
 	return `${JSON.stringify(file, null, 2)}\n`;
 }
-/** A.13：俯视图 SVG（手写轻量 SVG，无栅格化依赖；无文本；单文件 ≤ 32KB） */
+/** A.13：俯视图 SVG（手写轻量 SVG，无栅格化依赖；无可见文本；单文件 ≤ 32KB——
+* 超预算时路径按 2 的幂步长抽稀（终点恒保留）并以 desc 元数据标注） */
 function trajectorySvg(channels) {
 	const n = channels.frameCount;
 	const xs = channels.rootX;
@@ -32459,32 +32498,44 @@ function trajectorySvg(channels) {
 	const cx = (k) => 40 + ((xs[k] ?? 0) - minX) * scale;
 	const cy = (k) => 40 + ((zs[k] ?? 0) - minZ) * scale;
 	const f = (value) => value.toFixed(2);
-	const parts = ["<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 480 480\">"];
-	parts.push("<rect x=\"40\" y=\"40\" width=\"400\" height=\"400\" fill=\"none\" stroke=\"#e0e0e0\"/>");
-	parts.push("<line x1=\"240\" y1=\"40\" x2=\"240\" y2=\"440\" stroke=\"#e0e0e0\"/>");
-	parts.push("<line x1=\"40\" y1=\"240\" x2=\"440\" y2=\"240\" stroke=\"#e0e0e0\"/>");
-	const path = Array.from({ length: n }, (_, k) => `${f(cx(k))},${f(cy(k))}`).join(" ");
-	parts.push(`<polyline points="${path}" fill="none" stroke="#4a90d9" stroke-width="2"/>`);
-	const stride = Math.max(1, Math.ceil(n / 600));
-	for (let k = 0; k < n; k += stride) {
-		const level = channels.energyLevel[k] ?? "static";
-		parts.push(`<circle cx="${f(cx(k))}" cy="${f(cy(k))}" r="2" fill="${LEVEL_COLORS[level]}"/>`);
+	const build = (pathStride) => {
+		const parts = ["<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 480 480\">"];
+		if (pathStride > 1) parts.push(`<desc>trajectory path thinned by stride ${pathStride} (32KB budget)</desc>`);
+		parts.push("<rect x=\"40\" y=\"40\" width=\"400\" height=\"400\" fill=\"none\" stroke=\"#e0e0e0\"/>");
+		parts.push("<line x1=\"240\" y1=\"40\" x2=\"240\" y2=\"440\" stroke=\"#e0e0e0\"/>");
+		parts.push("<line x1=\"40\" y1=\"240\" x2=\"440\" y2=\"240\" stroke=\"#e0e0e0\"/>");
+		const path = [];
+		for (let k = 0; k < n; k += pathStride) path.push(`${f(cx(k))},${f(cy(k))}`);
+		path.push(`${f(cx(n - 1))},${f(cy(n - 1))}`);
+		parts.push(`<polyline points="${path.join(" ")}" fill="none" stroke="#4a90d9" stroke-width="2"/>`);
+		const stride = Math.max(1, Math.ceil(n / 600));
+		for (let k = 0; k < n; k += stride) {
+			const level = channels.energyLevel[k] ?? "static";
+			parts.push(`<circle cx="${f(cx(k))}" cy="${f(cy(k))}" r="2" fill="${LEVEL_COLORS[level]}"/>`);
+		}
+		parts.push(`<circle cx="${f(cx(0))}" cy="${f(cy(0))}" r="6" fill="#ffffff" stroke="#333333" stroke-width="2"/>`);
+		parts.push(`<rect x="${f(cx(n - 1) - 4)}" y="${f(cy(n - 1) - 4)}" width="8" height="8" fill="#333333"/>`);
+		const headingRad = (channels.heading[0] ?? 0) * Math.PI / 180;
+		const fx = Math.sin(headingRad);
+		const fz = Math.cos(headingRad);
+		const ax = cx(0);
+		const ay = cy(0);
+		const tipX = ax + 24 * fx;
+		const tipY = ay + 24 * fz;
+		const backX = ax + 17 * fx;
+		const backY = ay + 17 * fz;
+		parts.push(`<line x1="${f(ax)}" y1="${f(ay)}" x2="${f(tipX)}" y2="${f(tipY)}" stroke="#333333" stroke-width="2"/>`);
+		parts.push(`<polygon points="${f(tipX)},${f(tipY)} ${f(backX + 4 * fz)},${f(backY - 4 * fx)} ${f(backX - 4 * fz)},${f(backY + 4 * fx)}" fill="#333333"/>`);
+		parts.push("</svg>");
+		return `${parts.join("\n")}\n`;
+	};
+	let pathStride = 1;
+	let svg = build(pathStride);
+	while (svg.length > 32768 && pathStride < n) {
+		pathStride *= 2;
+		svg = build(pathStride);
 	}
-	parts.push(`<circle cx="${f(cx(0))}" cy="${f(cy(0))}" r="6" fill="#ffffff" stroke="#333333" stroke-width="2"/>`);
-	parts.push(`<rect x="${f(cx(n - 1) - 4)}" y="${f(cy(n - 1) - 4)}" width="8" height="8" fill="#333333"/>`);
-	const headingRad = (channels.heading[0] ?? 0) * Math.PI / 180;
-	const fx = Math.sin(headingRad);
-	const fz = Math.cos(headingRad);
-	const ax = cx(0);
-	const ay = cy(0);
-	const tipX = ax + 24 * fx;
-	const tipY = ay + 24 * fz;
-	const backX = ax + 17 * fx;
-	const backY = ay + 17 * fz;
-	parts.push(`<line x1="${f(ax)}" y1="${f(ay)}" x2="${f(tipX)}" y2="${f(tipY)}" stroke="#333333" stroke-width="2"/>`);
-	parts.push(`<polygon points="${f(tipX)},${f(tipY)} ${f(backX + 4 * fz)},${f(backY - 4 * fx)} ${f(backX - 4 * fz)},${f(backY + 4 * fx)}" fill="#333333"/>`);
-	parts.push("</svg>");
-	return `${parts.join("\n")}\n`;
+	return svg;
 }
 /** A.12 循环 facts 句：数值按 A.14 圆整（长度/速度 3 位、角度 1 位），阈值全精度在 components */
 function loopFactSentence(check) {
@@ -32577,7 +32628,9 @@ function buildSummary(input) {
 			KEYFRAME_MAX: 8,
 			KEYFRAME_DEDUP,
 			EVENTS_MAX: 32,
-			DIRECTION_STABLE_FRAMES: 3
+			DIRECTION_STABLE_FRAMES: 3,
+			INTENSITY_MEAN_TIERS: INTENSITY_LEVELS.slice(0, -1).map((tier) => tier.meanBelow),
+			INTENSITY_PEAK_TIERS: INTENSITY_LEVELS.slice(0, -1).map((tier) => tier.peakBelow)
 		},
 		clip: {
 			name: input.clipName,
@@ -32597,6 +32650,7 @@ function buildSummary(input) {
 			})),
 			declaredJoints: sample.declaredJoints
 		},
+		rootJoint: sample.joints.find((joint) => joint.id === "hips")?.objectName ?? sample.rootJoint?.name ?? null,
 		normalize: input.normalize,
 		clipStats: {
 			energy: {
@@ -32615,7 +32669,14 @@ function buildSummary(input) {
 		events: input.events,
 		segments: segmentsOut,
 		keyframes: input.keyframes,
-		loopCheck: input.loopCheck ?? null,
+		loopCheck: input.loopCheck ? {
+			...input.loopCheck,
+			bestLoopRange: input.loopCheck.bestLoopRange ? {
+				...input.loopCheck.bestLoopRange,
+				frameStart: channels.frames[input.loopCheck.bestLoopRange.frameStart] ?? input.loopCheck.bestLoopRange.frameStart,
+				frameEnd: channels.frames[input.loopCheck.bestLoopRange.frameEnd] ?? input.loopCheck.bestLoopRange.frameEnd
+			} : null
+		} : null,
 		vocab: input.vocab ?? {
 			source: "builtin",
 			entries: 0
@@ -32644,7 +32705,8 @@ function analyzeOneClip(scene, options) {
 		sampleFps: options.sampleFps,
 		joints: options.joints,
 		range: options.range,
-		boneMap: options.boneMap
+		boneMap: options.boneMap,
+		vocabPrefixes: options.vocabPrefixes
 	});
 	const scale = options.scale !== void 0 && options.scale > 0 ? options.scale : 1;
 	const channels = computeChannels(sample, { scale });
@@ -32664,7 +32726,7 @@ function analyzeOneClip(scene, options) {
 	const normalize = {
 		mode: options.normalizeMode ?? (scale === 1 ? "none" : "height"),
 		scale,
-		warnings: []
+		warnings: options.normalizeWarnings ?? []
 	};
 	const summary = buildSummary({
 		clipName: sample.clipName,
@@ -33126,7 +33188,7 @@ function buildSkeletonReport(scene, options) {
 	const dictCandidates = [];
 	for (const node of nodes) {
 		if (fileParts.get(node.name) !== void 0) continue;
-		const match = matchCanonical(node.name);
+		const match = matchCanonical(node.name, options.extraPrefixes);
 		if (match !== null) dictCandidates.push({
 			node,
 			match
@@ -33188,7 +33250,7 @@ function buildSkeletonReport(scene, options) {
 			source: part?.source ?? null
 		};
 	});
-	const convention = detectConvention(nodes.map((node) => node.name));
+	const convention = detectConvention(nodes.map((node) => node.name), options.extraPrefixes);
 	const coreIds = new Set(CORE15_IDS);
 	const mappedEntries = bones.filter((entry) => entry.source !== null);
 	const coreHit = new Set(mappedEntries.map((entry) => entry.partGuess).filter((part) => part !== null && coreIds.has(part))).size;
@@ -33408,7 +33470,9 @@ async function runAnalyze(data, fileName, params, context = {}) {
 		joints: params.joints,
 		smooth: params.smooth,
 		scale: normalization.scale,
-		normalizeMode: params.normalize ?? "height",
+		normalizeMode: normalization.mode,
+		normalizeWarnings: normalization.warnings,
+		vocabPrefixes: vocab.prefixes,
 		detail: params.detail,
 		curvesFor: params.curvesFor,
 		loopMode: params.loopMode,
@@ -33576,10 +33640,16 @@ function analyzeTool() {
 */
 async function runSkeleton(data, fileName, params, context = {}) {
 	const { scene } = context.absPath ? { scene: await getCachedScene(context.absPath, async () => (await loadModelScene(data, fileName)).scene) } : await loadModelScene(data, fileName);
+	const bonesMapping = await resolveBonesMapping(params.boneMap, context.assetDir, scene);
+	const vocab = await loadVocab({
+		assetDir: context.assetDir,
+		cwd: process.cwd()
+	});
 	const report = buildSkeletonReport(scene, {
 		fileName,
-		mapping: await resolveBonesMapping(params.boneMap, context.assetDir, scene),
-		shots: params.shots ?? "auto"
+		mapping: bonesMapping,
+		shots: params.shots ?? "auto",
+		extraPrefixes: vocab.prefixes
 	});
 	const specified = params.out !== void 0 && params.out.trim() !== "";
 	const dir = specified ? path.resolve(expandHome(params.out.trim())) : path.join(tmpdir(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
@@ -34109,7 +34179,7 @@ function formatDigestSection(digest) {
 	const verdict = typeof raw.loopCheck?.verdict === "string" ? raw.loopCheck.verdict : "";
 	if (verdict !== "") {
 		const range = raw.loopCheck?.bestLoopRange;
-		const rangeText = range !== null && typeof range === "object" ? `，bestLoopRange 采样帧 ${String(range.frameStart)}–${String(range.frameEnd)}` : "";
+		const rangeText = range !== null && typeof range === "object" ? `，bestLoopRange 帧 ${String(range.frameStart)}–${String(range.frameEnd)}（30fps 口径，可喂 kinemesh_render）` : "";
 		body.push(`循环检测：${verdict}${rangeText}`);
 	}
 	const facts = Array.isArray(raw.facts) ? raw.facts.filter((fact) => typeof fact === "string") : [];

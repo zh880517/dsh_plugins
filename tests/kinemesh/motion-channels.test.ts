@@ -1,7 +1,7 @@
 // M6a 派生通道（附录 A.2–A.6）与 frames.csv 序列化：合成已知答案动画逐项对答案，
 // 覆盖能量/档位/幅度/朝向/turnTotal/moveDir(Body)/接触去抖/topJoint/归一化。
 import { describe, expect, it } from 'vitest';
-import { computeChannels } from '../../plugins/kinemesh/src/core/motion/channels.js';
+import { computeChannels, debounceContact } from '../../plugins/kinemesh/src/core/motion/channels.js';
 import { intensityLevel } from '../../plugins/kinemesh/src/core/motion/constants.js';
 import { framesCsv } from '../../plugins/kinemesh/src/core/motion/report.js';
 import { resolveNormalization } from '../../plugins/kinemesh/src/core/motion/normalize.js';
@@ -257,5 +257,35 @@ describe('normalize（A.14：H ≤ 0 / 缺失 → 降级 none + warning）', () 
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings[0]).toContain('降级');
     }
+  });
+});
+
+describe('接触去抖（A.6 回归：被拒翻转不透出，review 阻断 #2）', () => {
+  it('单帧抖动被拒：输出保持当前状态', () => {
+    expect(debounceContact([true, true, false, true, true])).toEqual([true, true, true, true, true]);
+    expect(debounceContact([false, false, true, false, false])).toEqual([false, false, false, false, false]);
+  });
+
+  it('连续抖动（每次 1 帧）整段被拒', () => {
+    expect(debounceContact([true, false, true, false, true])).toEqual([true, true, true, true, true]);
+  });
+
+  it('连续 2 帧翻转生效，生效帧 = 翻转第一帧（回填整段 run）', () => {
+    expect(debounceContact([true, true, false, false, true, true])).toEqual([true, true, false, false, true, true]);
+    // 生效后接单帧抖动不再透出：F 生效段后的孤立 T、再孤立 F 都被压平
+    expect(debounceContact([true, true, false, false, true, false, true])).toEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it('片首的孤立首值被平滑成后续状态（初始 state 也要求连续 2 帧才翻转）', () => {
+    expect(debounceContact([false, true, true])).toEqual([false, true, true]);
+    expect(debounceContact([])).toEqual([]);
   });
 });

@@ -337,7 +337,7 @@ describe('POST /kinemesh/analyze 附带 digest（M6e 发送带 digest）', () =>
     expect(message).toContain('contact-move');
     expect(message).toContain('guess walk');
     expect(message).toContain('循环检测：loop-ok');
-    expect(message).toContain('bestLoopRange 采样帧 0–7');
+    expect(message).toContain('bestLoopRange 帧 0–7');
     expect(message).toContain('keyframeRender');
     expect(message).toContain('kinemesh_render');
     expect(message).toContain('azimuth 45°');

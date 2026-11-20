@@ -191,7 +191,9 @@ export async function runAnalyze(
     joints: params.joints,
     smooth: params.smooth,
     scale: normalization.scale,
-    normalizeMode: params.normalize ?? 'height',
+    normalizeMode: normalization.mode,
+    normalizeWarnings: normalization.warnings,
+    vocabPrefixes: vocab.prefixes,
     detail: params.detail,
     curvesFor: params.curvesFor,
     loopMode: params.loopMode,
@@ -377,10 +379,17 @@ export async function runSkeleton(
     : await loadModelScene(data, fileName);
   const { scene } = loadedScene;
   const bonesMapping = await resolveBonesMapping(params.boneMap, context.assetDir, scene);
+  // B.1 前缀扩展：skeleton 与 analyze 共用 kinemesh-vocab.json 的 prefixes 字段
+  // （发现只走 资产同目录 > cwd；§7.3 契约不给 skeleton 单设 vocab 参数）
+  const vocab = await loadVocab({
+    assetDir: context.assetDir,
+    cwd: process.cwd(),
+  });
   const report = buildSkeletonReport(scene, {
     fileName,
     mapping: bonesMapping,
     shots: params.shots ?? 'auto',
+    extraPrefixes: vocab.prefixes,
   });
   const specified = params.out !== undefined && params.out.trim() !== '';
   const dir = specified

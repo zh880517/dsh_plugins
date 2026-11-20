@@ -31,7 +31,9 @@ import {
   SAMPLE_FPS_MAX,
   SAMPLE_FPS_MIN,
   SAMPLE_COUNT_MAX,
+  TRAJECTORY_MAX_BYTES,
   TRAJECTORY_MAX_DOTS,
+  INTENSITY_LEVELS,
   TURN_TH,
   VEL_SEAM_TH,
   WALK_SPEED,
@@ -190,7 +192,10 @@ export function pickKeyframes(
   const n = channels.frameCount;
   const m = options.smooth !== undefined ? Math.max(0, Math.floor(options.smooth / 2)) : SMOOTH_M;
   const e = smoothSeries(channels.energy, m);
-  const candidates: Array<{ k: number; reason: string; note: string }> = [];
+  // 候选带可选 frame 覆盖：端点候选用 t=duration 精确帧号（A.0 虚拟点 / A.11 #5），不落采样网格
+  const candidates: Array<{ k: number; reason: string; note: string; frame?: number }> = [];
+  const frameOf = (entry: { k: number; frame?: number }): number =>
+    entry.frame ?? channels.frames[entry.k] ?? entry.k * RENDER_FPS;
 
   // 1 全片 Ê 峰值帧
   let globalPeak = 0;
@@ -220,23 +225,28 @@ export function pickKeyframes(
     if (k >= 0 && k < n) candidates.push({ k, reason: 'loop-seam', note: '循环接缝帧' });
   }
 
-  // 5 t=0 与 t=duration（端点）
+  // 5 t=0 与 t=duration（端点；终点用 t=duration 精确帧号——duration 不落采样网格时不偏早）
+  const rangeEnd = sample.range ? sample.range[1] : sample.duration;
   candidates.push({ k: 0, reason: 'endpoints', note: '起点（t=0）' });
-  candidates.push({ k: n - 1, reason: 'endpoints', note: '终点（动作结束）' });
+  candidates.push({ k: n - 1, frame: Math.round(rangeEnd * RENDER_FPS), reason: 'endpoints', note: '终点（动作结束）' });
 
+  // 去重按 30fps 帧距（A.11：帧距 < 0.3s = 9 帧视为重复）——不能按采样行号比（15fps 下会放大成 0.6s）
   const dedupFrames = KEYFRAME_DEDUP * RENDER_FPS;
-  const kept: Array<{ k: number; reason: string; note: string }> = [];
+  const kept: Array<{ k: number; reason: string; note: string; frame?: number }> = [];
   for (const candidate of candidates) {
     if (kept.length >= KEYFRAME_MAX) break;
-    const duplicate = kept.some((entry) => Math.abs(entry.k - candidate.k) < dedupFrames);
+    const duplicate = kept.some((entry) => Math.abs(frameOf(entry) - frameOf(candidate)) < dedupFrames);
     if (!duplicate) kept.push(candidate);
   }
-  return kept.map((entry) => ({
-    frame: channels.frames[entry.k] ?? entry.k * RENDER_FPS,
-    time: (channels.frames[entry.k] ?? entry.k) / RENDER_FPS,
-    reason: entry.reason,
-    note: entry.note,
-  }));
+  return kept.map((entry) => {
+    const frame = frameOf(entry);
+    return {
+      frame,
+      time: frame / RENDER_FPS,
+      reason: entry.reason,
+      note: entry.note,
+    };
+  });
 }
 
 export interface KeyframesFile {
@@ -309,7 +319,8 @@ export function trajectoryJson(file: TrajectoryFile): string {
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
-/** A.13：俯视图 SVG（手写轻量 SVG，无栅格化依赖；无文本；单文件 ≤ 32KB） */
+/** A.13：俯视图 SVG（手写轻量 SVG，无栅格化依赖；无可见文本；单文件 ≤ 32KB——
+ * 超预算时路径按 2 的幂步长抽稀（终点恒保留）并以 desc 元数据标注） */
 export function trajectorySvg(channels: FrameChannels): string {
   const n = channels.frameCount;
   const xs = channels.rootX;
@@ -330,39 +341,52 @@ export function trajectorySvg(channels: FrameChannels): string {
   const cy = (k: number): number => 40 + ((zs[k] ?? 0) - minZ) * scale;
   const f = (value: number): string => value.toFixed(2);
 
-  const parts: string[] = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 480">'];
-  // 浅色网格十字 + 边框
-  parts.push('<rect x="40" y="40" width="400" height="400" fill="none" stroke="#e0e0e0"/>');
-  parts.push('<line x1="240" y1="40" x2="240" y2="440" stroke="#e0e0e0"/>');
-  parts.push('<line x1="40" y1="240" x2="440" y2="240" stroke="#e0e0e0"/>');
-  // 路径折线（主题色，不抽稀）
-  const path = Array.from({ length: n }, (_, k) => `${f(cx(k))},${f(cy(k))}`).join(' ');
-  parts.push(`<polyline points="${path}" fill="none" stroke="#4a90d9" stroke-width="2"/>`);
-  // 每采样帧圆点（五档强度色；帧多时按 stride 抽稀到 ≤ 600）
-  const stride = Math.max(1, Math.ceil(n / TRAJECTORY_MAX_DOTS));
-  for (let k = 0; k < n; k += stride) {
-    const level = (channels.energyLevel[k] ?? 'static') as IntensityLevel;
-    parts.push(`<circle cx="${f(cx(k))}" cy="${f(cy(k))}" r="2" fill="${LEVEL_COLORS[level]}"/>`);
+  const build = (pathStride: number): string => {
+    const parts: string[] = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 480">'];
+    if (pathStride > 1) parts.push(`<desc>trajectory path thinned by stride ${pathStride} (32KB budget)</desc>`);
+    // 浅色网格十字 + 边框
+    parts.push('<rect x="40" y="40" width="400" height="400" fill="none" stroke="#e0e0e0"/>');
+    parts.push('<line x1="240" y1="40" x2="240" y2="440" stroke="#e0e0e0"/>');
+    parts.push('<line x1="40" y1="240" x2="440" y2="240" stroke="#e0e0e0"/>');
+    // 路径折线（主题色；超预算时按步长抽稀，终点恒在路径上）
+    const path: string[] = [];
+    for (let k = 0; k < n; k += pathStride) path.push(`${f(cx(k))},${f(cy(k))}`);
+    path.push(`${f(cx(n - 1))},${f(cy(n - 1))}`);
+    parts.push(`<polyline points="${path.join(' ')}" fill="none" stroke="#4a90d9" stroke-width="2"/>`);
+    // 每采样帧圆点（五档强度色；帧多时按 stride 抽稀到 ≤ 600）
+    const stride = Math.max(1, Math.ceil(n / TRAJECTORY_MAX_DOTS));
+    for (let k = 0; k < n; k += stride) {
+      const level = (channels.energyLevel[k] ?? 'static') as IntensityLevel;
+      parts.push(`<circle cx="${f(cx(k))}" cy="${f(cy(k))}" r="2" fill="${LEVEL_COLORS[level]}"/>`);
+    }
+    // 起点空心圆 / 终点实心方
+    parts.push(`<circle cx="${f(cx(0))}" cy="${f(cy(0))}" r="6" fill="#ffffff" stroke="#333333" stroke-width="2"/>`);
+    parts.push(`<rect x="${f(cx(n - 1) - 4)}" y="${f(cy(n - 1) - 4)}" width="8" height="8" fill="#333333"/>`);
+    // 起点 heading 箭头（长 24px）
+    const headingRad = (((channels.heading[0] ?? 0) * Math.PI) / 180);
+    const fx = Math.sin(headingRad);
+    const fz = Math.cos(headingRad);
+    const ax = cx(0);
+    const ay = cy(0);
+    const tipX = ax + 24 * fx;
+    const tipY = ay + 24 * fz;
+    const backX = ax + 17 * fx;
+    const backY = ay + 17 * fz;
+    parts.push(`<line x1="${f(ax)}" y1="${f(ay)}" x2="${f(tipX)}" y2="${f(tipY)}" stroke="#333333" stroke-width="2"/>`);
+    parts.push(
+      `<polygon points="${f(tipX)},${f(tipY)} ${f(backX + 4 * fz)},${f(backY - 4 * fx)} ${f(backX - 4 * fz)},${f(backY + 4 * fx)}" fill="#333333"/>`,
+    );
+    parts.push('</svg>');
+    return `${parts.join('\n')}\n`;
+  };
+
+  let pathStride = 1;
+  let svg = build(pathStride);
+  while (svg.length > TRAJECTORY_MAX_BYTES && pathStride < n) {
+    pathStride *= 2;
+    svg = build(pathStride);
   }
-  // 起点空心圆 / 终点实心方
-  parts.push(`<circle cx="${f(cx(0))}" cy="${f(cy(0))}" r="6" fill="#ffffff" stroke="#333333" stroke-width="2"/>`);
-  parts.push(`<rect x="${f(cx(n - 1) - 4)}" y="${f(cy(n - 1) - 4)}" width="8" height="8" fill="#333333"/>`);
-  // 起点 heading 箭头（长 24px）
-  const headingRad = (((channels.heading[0] ?? 0) * Math.PI) / 180);
-  const fx = Math.sin(headingRad);
-  const fz = Math.cos(headingRad);
-  const ax = cx(0);
-  const ay = cy(0);
-  const tipX = ax + 24 * fx;
-  const tipY = ay + 24 * fz;
-  const backX = ax + 17 * fx;
-  const backY = ay + 17 * fz;
-  parts.push(`<line x1="${f(ax)}" y1="${f(ay)}" x2="${f(tipX)}" y2="${f(tipY)}" stroke="#333333" stroke-width="2"/>`);
-  parts.push(
-    `<polygon points="${f(tipX)},${f(tipY)} ${f(backX + 4 * fz)},${f(backY - 4 * fx)} ${f(backX - 4 * fz)},${f(backY + 4 * fx)}" fill="#333333"/>`,
-  );
-  parts.push('</svg>');
-  return `${parts.join('\n')}\n`;
+  return svg;
 }
 
 // ———————— summary（§6.4 motion-summary.json） ————————
@@ -378,8 +402,8 @@ export function loopFactSentence(check: LoopCheck): string {
 
 export interface MotionSummary {
   calibVersion: string;
-  /** A.15 常数总表回显（可审计） */
-  constants: Record<string, number>;
+  /** A.15 常数总表回显（可审计；数组项为档位阈值序列） */
+  constants: Record<string, number | number[]>;
   clip: {
     name: string;
     duration: number;
@@ -397,6 +421,8 @@ export interface MotionSummary {
     joints: Array<{ id: string; objectName: string; weight: number }>;
     declaredJoints: string[];
   };
+  /** 根位移参照骨骼的实际骨骼名（A.5：rootPos=hips；缺 hips 时为回退根骨骼名，null=无） */
+  rootJoint: string | null;
   normalize: { mode: string; scale: number; warnings: string[] };
   clipStats: {
     energy: { mean: number; p50: number; p90: number; max: number };
@@ -567,6 +593,9 @@ export function buildSummary(input: SummaryInput): MotionSummary {
       KEYFRAME_DEDUP,
       EVENTS_MAX,
       DIRECTION_STABLE_FRAMES,
+      // §6.6.2 五档表（extreme = ≥ 末档值；Infinity 不可 JSON 化故不入表）
+      INTENSITY_MEAN_TIERS: INTENSITY_LEVELS.slice(0, -1).map((tier) => tier.meanBelow),
+      INTENSITY_PEAK_TIERS: INTENSITY_LEVELS.slice(0, -1).map((tier) => tier.peakBelow),
     },
     clip: {
       name: input.clipName,
@@ -582,6 +611,7 @@ export function buildSummary(input: SummaryInput): MotionSummary {
       joints: sample.joints.map((joint) => ({ id: joint.id, objectName: joint.objectName, weight: joint.weight })),
       declaredJoints: sample.declaredJoints,
     },
+    rootJoint: sample.joints.find((joint) => joint.id === 'hips')?.objectName ?? sample.rootJoint?.name ?? null,
     normalize: input.normalize,
     clipStats: {
       energy: { mean: meanE, p50: q(0.5), p90: q(0.9), max: maxE },
@@ -595,7 +625,23 @@ export function buildSummary(input: SummaryInput): MotionSummary {
     events: input.events,
     segments: segmentsOut,
     keyframes: input.keyframes,
-    loopCheck: input.loopCheck ?? null,
+    // bestLoopRange 内部是采样行号（loop.ts），summary/digest 出口统一换算成 30fps 帧号（A.10 口径，
+    // 可直接喂 kinemesh_render；客户端不再自行换算）
+    loopCheck: input.loopCheck
+      ? {
+          ...input.loopCheck,
+          bestLoopRange: input.loopCheck.bestLoopRange
+            ? {
+                ...input.loopCheck.bestLoopRange,
+                frameStart:
+                  channels.frames[input.loopCheck.bestLoopRange.frameStart] ??
+                  input.loopCheck.bestLoopRange.frameStart,
+                frameEnd:
+                  channels.frames[input.loopCheck.bestLoopRange.frameEnd] ?? input.loopCheck.bestLoopRange.frameEnd,
+              }
+            : null,
+        }
+      : null,
     vocab: input.vocab ?? { source: 'builtin', entries: 0 },
     ...(input.boneMap === undefined ? {} : { boneMap: input.boneMap }),
     facts,

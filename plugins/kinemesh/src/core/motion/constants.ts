@@ -74,8 +74,11 @@ export const LEVEL_COLORS: Record<IntensityLevel, string> = {
   extreme: '#9e0142',
 };
 
-/** trajectory SVG 采样圆点抽稀上限（A.13：帧多时按 stride 抽稀到 ≤ 600 个，路径不抽稀） */
+/** trajectory SVG 采样圆点抽稀上限（A.13：帧多时按 stride 抽稀到 ≤ 600 个） */
 export const TRAJECTORY_MAX_DOTS = 600;
+
+/** trajectory SVG 单文件字节上限（A.13：超限时路径按 2 的幂步长抽稀到 fit，SVG 内 desc 标注） */
+export const TRAJECTORY_MAX_BYTES = 32 * 1024;
 
 /**
  * 强度档位（§6.6.2，A.9）：mean 按「平均能量」列、peak 按「峰值能量」列各判一档，
@@ -114,8 +117,9 @@ export function intensityLevel(mean: number, peak: number): IntensityLevel {
 }
 
 /**
- * 能量权重表（A.3，J15）：末端关节权重高、躯干低；左右同权。Σw = 11.5。
- * Toe 只作足点/打击肢端候选，不在权重表里（weight = 0，不进能量与 Σw）。
+ * 能量权重表（A.3，J15）：末端关节权重高、躯干低；左右同权。
+ * J15 全集 Σw = 11.5（躯干 1.5 + 左右成对肢链 2×5.0）；实际计算按解析到的关节子集求和
+ * （channels.ts），不使用预合计常量。Toe 只作足点/打击肢端候选，不在权重表里（weight = 0）。
  */
 export const JOINT_WEIGHTS = {
   hips: 0.2,
@@ -128,9 +132,6 @@ export const JOINT_WEIGHTS = {
   LowerLeg: 0.7,
   Foot: 1.0,
 } as const;
-
-/** J15 权重合计（A.3）；实际 Σw 按解析到的关节子集求和 */
-export const JOINT_WEIGHTS_TOTAL = Object.values(JOINT_WEIGHTS).reduce((sum, w) => sum + w, 0);
 
 // ———————— M7 骨架映射（附录 B.3 / B.4，随 skeleton-report 回显） ————————
 

@@ -137,6 +137,28 @@ export function buildSpinClip(
   ]);
 }
 
+/**
+ * 小角度匀速偏航（回归：P(t)「转 −heading」的符号）：身体姿态恒定、hips 缓慢偏航 degrees 度。
+ * headingDiff = degrees < 10° 阈值时姿势判定应完全剥离朝向（poseRMS ≈ 0）；
+ * 符号反了会把残留旋转放大一倍（P 多转 2×degrees），poseMatch 被误杀成 no-return。
+ */
+export function buildYawDriftClip(
+  rig: HumanoidRig,
+  options: { degrees?: number; duration?: number } = {},
+): THREE.AnimationClip {
+  const degrees = options.degrees ?? 8;
+  const duration = options.duration ?? 2;
+  const quat = new THREE.Quaternion();
+  quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (degrees * Math.PI) / 180);
+  return new THREE.AnimationClip('YawDrift', duration, [
+    new THREE.QuaternionKeyframeTrack(
+      'Hips.quaternion',
+      [0, duration],
+      [0, 0, 0, 1, quat.x, quat.y, quat.z, quat.w],
+    ),
+  ]);
+}
+
 // ———————— 非人形链式 rig（motion-top15 回退） ————————
 
 export interface ChainRig {

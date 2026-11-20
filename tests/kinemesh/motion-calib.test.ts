@@ -26,7 +26,6 @@ import {
   HIPS_LOW_OFFSET,
   HEADING_TH,
   INTENSITY_LEVELS,
-  JOINT_WEIGHTS_TOTAL,
   KEYFRAME_DEDUP,
   KEYFRAME_MAX,
   KEYFRAME_SEGMENT_TOP,
@@ -49,6 +48,7 @@ import {
   STRIKE_DUR,
   STRIKE_PEAK,
   SPIN_TH,
+  TRAJECTORY_MAX_BYTES,
   TRAJECTORY_MAX_DOTS,
   TURN_TH,
   VEL_SEAM_TH,
@@ -95,7 +95,7 @@ const SNAPSHOTS: Record<string, ConstantsExpectations> = {
       DIRECTION_STABLE_FRAMES: 3,
       HIPS_LOW_OFFSET: 0.05,
       TRAJECTORY_MAX_DOTS: 600,
-      JOINT_WEIGHTS_TOTAL: 6.5,
+      TRAJECTORY_MAX_BYTES: 32768,
     },
     jump: {
       verdict: 'loop-perfect',
@@ -180,7 +180,7 @@ describe('A.16 校准快照 · A.15 常数总表', () => {
       DIRECTION_STABLE_FRAMES,
       HIPS_LOW_OFFSET,
       TRAJECTORY_MAX_DOTS,
-      JOINT_WEIGHTS_TOTAL,
+      TRAJECTORY_MAX_BYTES,
     };
     expect(actual).toEqual(expected);
   });
