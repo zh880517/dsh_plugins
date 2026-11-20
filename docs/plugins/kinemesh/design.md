@@ -605,7 +605,7 @@ kinemesh_analyze(path, {
 ### 7.3 交付物
 
 - **新工具 `kinemesh_skeleton(path, {shots?, boneMap?, out?})`**（三出口同名，第 4 个工具；
-  视角/分批固化进 renderRecipe 配方）：
+  视角/分批按 B.4 固化：shots:auto/all 直接渲染标注截图，renderRecipe 回显配方供降级手跑）：
   - `skeleton-report.json`：每骨 `{name, parent, depth, children, restWorldPos, partGuess,
     confidence, source: "dict"|null}` + 约定识别 `{convention, matched/total}` +
     结构统计 `{limbChains, groundTips, symmetryPairs, maxChainDepth}` +
@@ -638,9 +638,10 @@ kinemesh_analyze(path, {
 | M7d | 非人形通道泛化（B.7）+ archetype 映射消费 | 四足合成 rig：4 肢 tip 接触/腾空判定正确、heading=root→head、链位权重生效；蛇形 rig contact=null+warning |
 
 > 实际落地注记（M7 随 0.5.0 与 M6 同版发布；M7a–M7c 已交付，实现细节以 `core/analyze/bone-map.ts`、
-> `core/analyze/skeleton-report.ts` 与 `tests/kinemesh/` 为准）。两处设计未实装：
-> **B.4 文字精灵标注**未实装（renderer 无文字精灵机制，`--bone-labels` 不存在——skeleton-report 以
-> `renderRecipe.boneLabels` 指引替代：按批次清单用 `--mode skeleton` 出图、对照 report 坐标读图对位）；
+> `core/analyze/skeleton-report.ts` 与 `tests/kinemesh/` 为准）。**B.4 骨骼名标注截图已实装**
+> （`kinemesh_render` 的 `boneLabels` / CLI `--bone-labels` 画文字精灵 + `kinemesh_skeleton`
+> shots:auto/all 直接渲染 `labels-<view>-<两位批次>.png` 进 run 目录与 digest.shots；批次划分纯函数
+> 在 `core/analyze/label-batches.ts`，渲染复用 render 截图管线）。一处设计未实装：
 > **B.7 泛化通道**未实装（M7d 不在本版：映射文件的 archetype 字段校验与泛化说明已交付，
 > 通道切换留候选——非 humanoid 映射当前按常规链解析并附 warning）。
 
@@ -1058,7 +1059,12 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
   链形/自定义，参考结构统计 limbChains/groundTips/symmetryPairs）——人形按名称/层级/rest 坐标
   对应部位，非人形给出 root/head/脊柱/肢链 → 写 <资产目录>/kinemesh-bones.json（schema 见
   report 尾注）；② 命名不透明时以 shots:"all" 重跑取标注截图再定案 → 重跑 analyze」。
-- `kinemesh_render` 同步支持 `--bone-labels`（临时标注单批，调试用）。
+- `kinemesh_render` 支持 `boneLabels`（CLI `--bone-labels`）："auto"（缺省第 1 批）| 批次号整数 |
+  "all"（全部骨骼名，允许重叠，调试用）；与 mode:skeleton / bones-overlay 联用时在该批截图上画
+  骨骼名文字精灵（B.4；批次按**全骨架** stride 划分，B = ceil(骨骼总数/12)）。
+  `kinemesh_skeleton` 的 shots:auto/all 直接渲染标注截图（每批 × front/side，
+  `labels-<view>-<两位批次>.png` 落 run 目录、进 files[] 与 digest.shots；批次清单以 report 的
+  batches 为准直发骨骼名，不受全骨架批号偏移影响；缺 playwright 时降级只出 report + 三段式安装指引）。
 
 ### B.7 非人形通道泛化（archetype ≠ humanoid 时覆盖附录 A 对应定义）
 

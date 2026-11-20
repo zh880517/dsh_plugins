@@ -1,9 +1,10 @@
 // skeleton-report 组装（design.md §7.3 / 附录 B.3–B.7）：场景遍历出骨骼清单（名称/层级/rest 世界
 // 坐标）→ 字典查表与映射文件叠加 partGuess → convention 判定、映射覆盖统计、结构统计、
-// B.4 标注截图 stride 批次清单（只出渲染配方，渲染由 kinemesh_render 执行）。
+// B.4 标注截图批次清单（shots:auto/all 由工具层按批次真实渲染，renderRecipe 回显配方）。
 // 本模块吃 CanonicalScene（three）；bone-map.ts 保持纯逻辑，场景相关都在这里。
 import * as THREE from 'three';
 import { CONVENTION_MIN, LABELS_PER_SHOT } from '../motion/constants.js';
+import { strideLabelBatches } from './label-batches.js';
 import {
   CORE15_IDS,
   detectConvention,
@@ -134,8 +135,8 @@ export interface SkeletonReport {
     views: ['front', 'side'];
     mode: 'skeleton';
     shots: 'auto' | 'none' | 'all';
-    /** B.4 标注叠加的现状与协作口径：renderer 无文字精灵机制，--bone-labels 留后续里程碑 */
-    boneLabels: { renderParam: false; guidance: string };
+    /** B.4 标注叠加：renderParam=true 表示 kinemesh_render 的 boneLabels 参数可用 */
+    boneLabels: { renderParam: boolean; guidance: string };
     note: string;
   };
   /** 映射文件 schema 尾注（B.5，AI 写文件的唯一模板来源） */
@@ -287,9 +288,9 @@ export function buildSkeletonReport(scene: CanonicalScene, options: BuildSkeleto
   }
   const maxChainDepth = bones.reduce((max, entry) => Math.max(max, entry.depth), 0);
 
-  // ————— B.4 标注截图批次：第 i 批 = DFS 序号 ≡ i (mod B)，父子骨必然分属不同批 —————
+  // ————— B.4 标注截图批次：第 i 批 = DFS 序号 ≡ i (mod B)，父子骨必然分属不同批（label-batches.ts） —————
   const mappedNames = new Set([...partByNode.keys()].map((node) => node.name));
-  const batchTargets: Array<{ name: string; dfsIndex: number }> =
+  const batchTargets =
     shots === 'all'
       ? nodes.map((node) => ({ name: node.name, dfsIndex: node.dfsIndex }))
       : shots === 'none'
@@ -297,15 +298,15 @@ export function buildSkeletonReport(scene: CanonicalScene, options: BuildSkeleto
         : unmapped.length > 0 && 15 - coreHit > 0
           ? nodes.filter((node) => !mappedNames.has(node.name)).map((node) => ({ name: node.name, dfsIndex: node.dfsIndex }))
           : [];
-  const batchCount = Math.max(1, Math.ceil(batchTargets.length / LABELS_PER_SHOT));
   const batches: LabelBatch[] = [];
-  for (let i = 0; i < batchCount && batchTargets.length > 0; i += 1) {
-    const names = batchTargets.filter((target) => target.dfsIndex % batchCount === i).map((target) => target.name);
-    if (names.length === 0) continue;
+  const stride = strideLabelBatches(batchTargets);
+  for (let i = 0; i < stride.length; i += 1) {
+    const bones = stride[i]!;
+    if (bones.length === 0) continue;
     const label = String(i + 1).padStart(2, '0');
     batches.push({
       batch: i + 1,
-      bones: names,
+      bones,
       views: ['front', 'side'],
       mode: 'skeleton',
       frames: [0],
@@ -336,16 +337,17 @@ export function buildSkeletonReport(scene: CanonicalScene, options: BuildSkeleto
       mode: 'skeleton',
       shots,
       boneLabels: {
-        renderParam: false,
+        renderParam: true,
         guidance:
-          'kinemesh_render 尚无 --bone-labels 文字叠加参数（renderer 无文字精灵机制，留后续里程碑）：' +
-          '按本配方用 skeleton（或 bones-overlay）模式出图，AI 读图时对照本报告的 restWorldPos/层级 ' +
-          '把图中关节与骨骼名一一对应后定案。',
+          'shots:auto/all 已随本报告直接渲染标注截图（digest.shots 给路径）；单批调试可用 ' +
+          'kinemesh_render 的 boneLabels 参数（CLI --bone-labels，与 mode skeleton / bones-overlay 联用）：' +
+          '"auto"（第 1 批）| 批次号 | "all"（全部骨骼名）。注意 render 的批次按全骨架 stride 划分' +
+          '（B = ceil(骨骼总数/12)），与本报告（auto 只含未映射骨）可能不同批——对齐批号以本报告 batches[].bones 为准。',
       },
       note:
-        '标注截图由既有 kinemesh_render 执行：frames [0]（rest 姿态）、viewPreset front/side、mode skeleton、' +
-        '相机拉远（distance ×2.2 近似正交）；PNG 命名 labels-<view>-<batch 两位>.png。' +
-        'AI 读图时对照本报告的 restWorldPos/层级 与图中骨骼位置定案，结论写 <资产目录>/kinemesh-bones.json。',
+        '标注截图随本报告落盘：每批 × front/side，骨骼名文字标签画在关节旁（B.4 stride 分批防叠，' +
+        'LABELS_PER_SHOT=12，相机 distance×2.2 近似正交），AI 读图直接把标签名与关节对上后定案，' +
+        '结论写 <资产目录>/kinemesh-bones.json；缺 playwright 时本配方降级为手动 kinemesh_render 出图。',
     },
     schemaNote: SCHEMA_NOTE,
     constants: { CONVENTION_MIN, LABELS_PER_SHOT },
@@ -370,12 +372,20 @@ export interface SkeletonDigest {
   boneMap: SkeletonReport['boneMap'];
   batches: LabelBatch[];
   renderRecipe: SkeletonReport['renderRecipe'];
+  /** 已渲染标注截图的绝对路径（labels-<view>-<两位批次>.png）；无批次或渲染降级时为空 */
+  shots: string[];
+  /** 渲染降级说明（如缺 playwright 的三段式指引）；成功时缺省 */
+  shotsWarning?: string;
   /** 中文事实句：convention 句 + 映射句 + 未映射句 + 固定两级指引（B.6）+ 非人形 B.7 摘要 */
   facts: string[];
   reportFile: 'skeleton-report.json';
 }
 
-export function buildSkeletonDigest(report: SkeletonReport): SkeletonDigest {
+export function buildSkeletonDigest(
+  report: SkeletonReport,
+  shots: string[] = [],
+  shotsWarning?: string,
+): SkeletonDigest {
   const facts: string[] = [];
   facts.push(
     `约定识别：${report.convention.convention}（指纹命中 ${report.convention.matched}/${report.convention.total}，score ${report.convention.score.toFixed(2)}，阈值 ${report.constants.CONVENTION_MIN}）`,
@@ -398,6 +408,12 @@ export function buildSkeletonDigest(report: SkeletonReport): SkeletonDigest {
       `参考结构统计 limbChains/groundTips/symmetryPairs）——人形按名称/层级/rest 坐标对应部位，非人形给出 root/head/脊柱/肢链 → ` +
       `写 <资产目录>/kinemesh-bones.json（schema 见 report 尾注）；② 命名不透明时以 shots:"all" 重跑取标注截图再定案 → 重跑 analyze`,
   );
+  if (shots.length > 0) {
+    facts.push(`骨骼名标注截图已渲染 ${shots.length} 张（labels-<view>-<两位批次>.png，front/side × 每批，路径见 shots 字段）：读图直接把骨骼名对上关节。`);
+  }
+  if (shotsWarning !== undefined) {
+    facts.push(`标注截图未渲染：${shotsWarning}`);
+  }
   return {
     fileName: report.fileName,
     boneCount: report.boneCount,
@@ -409,6 +425,8 @@ export function buildSkeletonDigest(report: SkeletonReport): SkeletonDigest {
     boneMap: report.boneMap,
     batches: report.batches,
     renderRecipe: report.renderRecipe,
+    shots,
+    ...(shotsWarning === undefined ? {} : { shotsWarning }),
     facts,
     reportFile: 'skeleton-report.json',
   };

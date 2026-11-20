@@ -61,6 +61,7 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 | `--view-preset <name>` | front / side / back / three-quarter / orbit8（八方位连拍） |
 | `--azimuth/--elevation/--distance/--target x,y,z/--fov` | 自定义球坐标视角（与 preset 二选一） |
 | `--mode <name>` | default / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需） |
+| `--bone-labels <batch>` | 骨骼名文字标注（B.4，与 `--mode skeleton` / `bones-overlay` 联用）：`auto`（第 1 批）/ 批次号（1 起，stride 分批防叠）/ `all`（全部骨骼名，允许重叠，调试） |
 | `--width/--height` | 像素尺寸（缺省 1280×720） |
 | `--out-dir <dir>` | PNG 输出目录（缺省系统临时目录） |
 
@@ -140,10 +141,13 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
    结构统计（limbChains/groundTips/symmetryPairs/maxChainDepth）。你先读 report **判 archetype**
    （humanoid/quadruped/winged/multiped/chain/custom），人形按名称/层级/rest 坐标对应部位；
    非人形给 root/head/脊柱/肢链（role: leg|arm|wing|tail）。
-2. **第二级（读图，命名不透明才用）**：按 digest 批次清单（LABELS_PER_SHOT=12，stride 分批防叠）
-   用 `render` 的 `--mode skeleton`（或 bones-overlay）+ `--view-preset front/side --frames 0` 出图，
-   逐张对照 report 的 restWorldPos/层级把图中关节对上骨骼名，再定案。
-   （`--bone-labels` 文字叠加参数未实装——renderer 无文字精灵机制，读图靠 report 坐标对位。）
+2. **第二级（读图，命名不透明才用）**：`skeleton <file> --shots all`（缺省 auto＝CORE15 有缺口才出）
+   **直接产出标注截图** `labels-<view>-<两位批次>.png`（front/side × 每批，B.4 stride 分批防叠、
+   每批 ≤12 骨）——骨骼名文字标签已画在关节旁，逐张读图即可定案，不必对照坐标猜名。
+   需要 playwright + chromium；缺它时 skeleton 降级只出 report（digest.shotsWarning 给安装指引），
+   可按 digest 批次清单用 `render --mode skeleton --bone-labels <批号> --frames 0
+   --view-preset front|side` 手动出图（`--bone-labels` 批次按全骨架 stride 划分，与本报告
+   auto 批次可能不同批，对齐批号以 report 的 `batches[].bones` 为准）。
 3. **定案落盘**：把结论写 `<资产同目录>/kinemesh-bones.json`（schema 见 report 尾注；最小示例：）
 
 ```json

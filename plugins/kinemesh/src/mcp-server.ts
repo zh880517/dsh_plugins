@@ -130,8 +130,10 @@ server.tool(
 server.tool(
   'kinemesh_skeleton',
   '骨架识别与映射（本地只读）：产出 skeleton-report.json（每骨名称/层级/rest 世界坐标/partGuess/置信、convention 约定识别、' +
-    '映射覆盖统计、未映射清单、结构统计、标注截图批次配方与映射文件 schema 尾注），返回内联 digest + 两级兜底指引。' +
-    '标准命名 rig（Mixamo/Biped/UE/VRM/Rigify）字典查表直达；非标命名回退 AI 流程：读 report →（不透明再按批次清单出标注截图）→ ' +
+    '映射覆盖统计、未映射清单、结构统计、标注截图批次与映射文件 schema 尾注），返回内联 digest + 两级兜底指引。' +
+    'shots:auto（缺省，CORE15 有缺口才出）/ all 直接渲染骨骼名标注截图 labels-<view>-<两位批次>.png（front/side × 每批，' +
+    'B.4 stride 分批防叠；缺 playwright 时降级只出 report 并给安装指引）。' +
+    '标准命名 rig（Mixamo/Biped/UE/VRM/Rigify）字典查表直达；非标命名回退 AI 流程：读 report →（不透明再读标注截图）→ ' +
     '写 kinemesh-bones.json → 重跑 analyze 即确定性消费。工具只做字典查表与约定识别。',
   {
     path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
@@ -163,7 +165,8 @@ server.tool(
   'kinemesh_render',
   '按视角 + 帧号渲染模型截图，PNG 落盘返回绝对路径数组（再用读图工具逐张查看）。' +
     '视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8）；' +
-    '渲染模式 default / wireframe / skeleton / bones-overlay。截屏构图与 DSH「动析」预览面板一致。',
+    '渲染模式 default / wireframe / skeleton / bones-overlay。boneLabels 在 skeleton / bones-overlay 模式下' +
+    '给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板一致。',
   {
     path: z.string().describe('模型文件路径'),
     clip: z.string().optional().describe('动画片段名（先 kinemesh_info 查）；静态模型省略'),
@@ -171,11 +174,15 @@ server.tool(
     view: z.record(z.string(), z.unknown()).optional().describe('完整视角对象 {"camera":{"azimuth":45,"elevation":15,"distance":3.2,"target":[0,1,0],"fov":40}}'),
     viewPreset: z.string().optional().describe('front / side / back / three-quarter / orbit8；与 view 二选一'),
     mode: z.string().optional().describe('default / wireframe / skeleton / bones-overlay'),
+    boneLabels: z
+      .union([z.literal('auto'), z.literal('all'), z.number().int()])
+      .optional()
+      .describe('骨骼名文字标注（B.4，与 mode:skeleton / bones-overlay 联用）："auto"（第 1 批）| 批次号（1 起，stride 分批防叠）| "all"（全部骨骼名都画，允许重叠，调试用）'),
     width: z.number().int().optional().describe('宽度像素，缺省 1280'),
     height: z.number().int().optional().describe('高度像素，缺省 720'),
     out: z.string().optional().describe('PNG 输出目录；缺省系统临时目录'),
   },
-  async ({ path: rawPath, clip, frames, view, viewPreset, mode, width, height, out }) => {
+  async ({ path: rawPath, clip, frames, view, viewPreset, mode, boneLabels, width, height, out }) => {
     if (frames === undefined || frames.length === 0) {
       return errorResult(new KinemeshError('frames 为空：至少给一个帧号。', 'frames 是整数数组，例如 "frames": [30]；静态模型传 [0]。'), '渲染截图');
     }
@@ -189,6 +196,7 @@ server.tool(
         width,
         height,
         outDir: out === undefined ? undefined : expandHome(out),
+        boneLabels,
       });
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: true, images: result.images, count: result.images.length, warnings: result.warnings, hint: '用读图工具逐张查看后再给结论。' }, null, 2) }],

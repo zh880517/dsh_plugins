@@ -1,7 +1,7 @@
 // Host 半工具：kinemesh_info / kinemesh_analyze / kinemesh_render。
 // 与 aiworkflow 的 AgentTool 形状一致；报错按仓库约定给
 // 「错在哪 + 正确姿势 + 当前这一步」三段式（执行类工具的自愈文案）。
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { analyzeModelCached, loadModelScene } from './core/analyze-file.js';
@@ -11,7 +11,7 @@ import { resolveNormalization } from './core/motion/normalize.js';
 import { loadVocab } from './core/motion/vocab.js';
 import { getCachedScene } from './core/scene-cache.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
-import { renderScreenshots } from './core/render/screenshot.js';
+import { renderScreenshots, renderLabelScreenshots } from './core/render/screenshot.js';
 import {
   checkBonesAgainstSkeleton,
   loadBonesFile,
@@ -232,12 +232,7 @@ export async function runAnalyze(
         ),
       ]
     : [...new Set([...analysis.summary.warnings, ...analysis.summary.normalize.warnings])];
-  // M7：非人形映射文件的诚实提示——泛化通道未实装，本次采样关节集走常规链
-  if (bonesMapping !== null && bonesMapping.archetype !== 'humanoid') {
-    warnings.push(
-      `映射文件 archetype=${bonesMapping.archetype}：非人形泛化通道未在本版本实装，本次 joints 解析按常规链（字典查表 / Top-15 回退）执行；映射文件已入库，通道切换后即生效。`,
-    );
-  }
+  // B.7 非 humanoid 映射的泛化通道口径提示由 sample 层产出（info 不经过、analyze 必带），此处不再重复
   return {
     ok: true,
     dir,
@@ -370,8 +365,10 @@ export interface SkeletonRunResult {
   ok: true;
   dir: string;
   files: Array<{ name: string; bytes: number; what: string }>;
-  /** 内联 skeleton digest：convention / 覆盖统计 / 未映射清单 / 批次清单 / 两级指引 facts */
+  /** 内联 skeleton digest：convention / 覆盖统计 / 未映射清单 / 批次清单 / shots 截图路径 / 两级指引 facts */
   digest: SkeletonDigest;
+  /** 渲染过程警告（页面异常等；shots 降级说明在 digest.shotsWarning） */
+  warnings?: string[];
   /** 仅当输出落在系统临时目录时给出（读不到文件的自愈指引，§6.4） */
   hint?: string;
 }
@@ -379,8 +376,10 @@ export interface SkeletonRunResult {
 /**
  * 三出口共用的 skeleton 执行 runner：加载场景（进程内缓存，与 analyze 同源）→ 映射文件发现与
  * 校验 → skeleton-report（字典查表 + 映射文件叠加 partGuess、convention、覆盖统计、结构统计、
- * B.4 标注截图批次配方）→ 落盘 skeleton-report.json。抛 KinemeshError（映射文件路径/schema 非法），
- * 由各出口转成自己的错误口径。
+ * B.4 标注截图批次）→ 落盘 skeleton-report.json → shots:auto/all 按批次真实渲染标注截图
+ * （labels-<view>-<两位批次>.png 进同一 run 目录；复用 render 截图管线，缺 playwright 时
+ * 降级为只出 report + 三段式指引）。抛 KinemeshError（映射文件路径/schema 非法），由各出口
+ * 转成自己的错误口径。
  */
 export async function runSkeleton(
   data: ArrayBuffer,
@@ -413,17 +412,47 @@ export async function runSkeleton(
   const target = path.join(dir, 'skeleton-report.json');
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, content, 'utf8');
+  const files: SkeletonRunResult['files'] = [
+    {
+      name: 'skeleton-report.json',
+      bytes: Buffer.byteLength(content, 'utf8'),
+      what: '骨骼清单/convention/映射覆盖/未映射清单/结构统计/标注截图批次/schema 尾注',
+    },
+  ];
+  // ————— B.4 标注截图真实渲染：每批 × front/side，与 report 同目录；缺 playwright 降级只出 report —————
+  let shots: string[] = [];
+  let shotsWarning: string | undefined;
+  let warnings: string[] = [];
+  if (report.batches.length > 0) {
+    try {
+      const rendered = await renderLabelScreenshots({
+        data,
+        fileName,
+        batches: report.batches.map((batch) => ({ batch: batch.batch, bones: batch.bones })),
+        views: ['front', 'side'],
+        outDir: dir,
+      });
+      shots = rendered.images;
+      warnings = rendered.warnings;
+      for (const file of shots) {
+        const name = path.basename(file);
+        const size = await stat(file);
+        files.push({ name, bytes: size.size, what: `B.4 骨骼名标注截图（${name}，front/side × 批次，骨骼名画在关节旁）` });
+      }
+    } catch (error) {
+      // 降级口径与 render 出口一致：不吞 report，给三段式自愈指引（装 playwright 后重跑）
+      shotsWarning =
+        error instanceof KinemeshError
+          ? `${error.message} —— ${error.guidance}`
+          : `${reasonOf(error)} —— 确认模型能被 kinemesh_info 解析后重跑。`;
+    }
+  }
   return {
     ok: true,
     dir,
-    files: [
-      {
-        name: 'skeleton-report.json',
-        bytes: Buffer.byteLength(content, 'utf8'),
-        what: '骨骼清单/convention/映射覆盖/未映射清单/结构统计/标注截图批次配方/schema 尾注',
-      },
-    ],
-    digest: buildSkeletonDigest(report),
+    files,
+    digest: buildSkeletonDigest(report, shots, shotsWarning),
+    ...(warnings.length > 0 ? { warnings } : {}),
     ...(specified ? {} : { hint: '输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
   };
 }
@@ -434,9 +463,11 @@ function skeletonTool(record?: SessionModelRecorder): AgentTool {
     description:
       '骨架识别与映射（本地只读）：产出 skeleton-report.json（每骨名称/层级/rest 世界坐标/partGuess/置信、' +
       'convention 约定识别、映射覆盖统计、未映射清单、结构统计 limbChains/groundTips/symmetryPairs/maxChainDepth、' +
-      '标注截图批次配方与映射文件 schema 尾注），并返回内联 digest + 两级兜底指引。' +
+      '标注截图批次与映射文件 schema 尾注），并返回内联 digest + 两级兜底指引。' +
+      'shots:auto（缺省，CORE15 有缺口才出）/ all 直接渲染骨骼名标注截图 labels-<view>-<两位批次>.png' +
+      '（front/side × 每批，B.4 stride 分批防叠；缺 playwright 时降级只出 report 并给安装指引）。' +
       '标准命名 rig（Mixamo/Biped/UE/VRM/Rigify）字典查表直达；非标命名回退 AI 流程：读 report → ' +
-      '（命名不透明再按批次清单出标注截图）→ 写 kinemesh-bones.json → 重跑 analyze 即确定性消费。' +
+      '（命名不透明再读标注截图）→ 写 kinemesh-bones.json → 重跑 analyze 即确定性消费。' +
       '工具只做字典查表与约定识别，模糊匹配与几何启发不做。',
     parameters: {
       type: 'object',
@@ -445,7 +476,7 @@ function skeletonTool(record?: SessionModelRecorder): AgentTool {
         shots: {
           type: 'string',
           enum: ['auto', 'none', 'all'],
-          description: '标注截图批次：auto（缺省，CORE15 有缺口才出）/ none（只出 report）/ all（强制全量批次）',
+          description: '标注截图批次：auto（缺省，CORE15 有缺口才渲染）/ none（只出 report）/ all（全量批次渲染）',
         },
         boneMap: { type: 'string', description: '骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现' },
         out: { type: 'string', description: '中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/' },
@@ -526,7 +557,8 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
       '按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。' +
       '视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，' +
       'orbit8 = 八方位连拍）；渲染模式 default / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需）。' +
-      '截屏构图与 DSH「动析」预览面板完全一致。',
+      'boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，' +
+      '骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。',
     parameters: {
       type: 'object',
       properties: {
@@ -544,6 +576,15 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
         },
         viewPreset: { type: 'string', description: 'front / side / back / three-quarter / orbit8；与 view 二选一' },
         mode: { type: 'string', description: 'default / wireframe / skeleton / bones-overlay，缺省 default' },
+        boneLabels: {
+          anyOf: [
+            { type: 'string', enum: ['auto', 'all'] },
+            { type: 'integer', minimum: 1 },
+          ],
+          description:
+            '骨骼名文字标注（B.4，与 mode:skeleton / bones-overlay 联用）："auto"（第 1 批）| 批次号（1 起，stride 分批防叠）| ' +
+            '"all"（全部骨骼名都画，允许重叠，调试用）',
+        },
         width: { type: 'integer', description: '宽度像素，缺省 1280' },
         height: { type: 'integer', description: '高度像素，缺省 720' },
         out: { type: 'string', description: 'PNG 输出目录；缺省系统临时目录' },
@@ -561,6 +602,14 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
       const given = typeof args?.path === 'string' ? args.path : '';
       const loaded = await readModelFile(given);
       if (!loaded.ok) return loaded.payload;
+      // boneLabels：'auto' / 'all' / 批次号整数（1 起）；其余值按未给处理（schema 层已拦）
+      const boneLabelsRaw = args?.boneLabels;
+      const boneLabels =
+        boneLabelsRaw === 'auto' || boneLabelsRaw === 'all'
+          ? boneLabelsRaw
+          : typeof boneLabelsRaw === 'number' && Number.isInteger(boneLabelsRaw) && boneLabelsRaw >= 1
+            ? boneLabelsRaw
+            : undefined;
       try {
         const result = await renderScreenshots({
           data: loaded.data,
@@ -570,6 +619,7 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
           width: typeof args?.width === 'number' ? args.width : undefined,
           height: typeof args?.height === 'number' ? args.height : undefined,
           outDir: typeof args?.out === 'string' && args.out.trim() !== '' ? expandHome(args.out.trim()) : undefined,
+          boneLabels,
         });
         recordSessionModel(record, exec, loaded.abs);
         return {

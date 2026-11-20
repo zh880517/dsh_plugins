@@ -562,6 +562,79 @@ Connections:  {
 `;
 }
 
+// ———————————————————— 命名节点 rig（M7 B.4 骨骼名标注截图用） ————————————————————
+
+export interface NamedRigNodeSpec {
+  name: string;
+  parent: string | null;
+  local?: [number, number, number];
+}
+
+/**
+ * 命名节点链 rig + 未命名网格节点的 glTF JSON（B.4 标注截图管线用）：
+ * 命名节点进骨架清单/标注目标，未命名 mesh 只供包围盒；animNode 给定时附一条
+ * translation 动画（截图测试按静态渲染，动画不参与）。nodes 只列根 + 网格节点
+ * （全列成根会让 GLTFLoader 造出双份实例、骨架清单翻倍——见 skeleton 测试的同款注释）。
+ */
+export function buildNamedRigGltf(specs: NamedRigNodeSpec[], options: { animNode?: string } = {}): Record<string, unknown> {
+  const names = specs.map((spec) => spec.name);
+  const nodes = specs.map((spec) => {
+    const children = specs.filter((other) => other.parent === spec.name).map((other) => names.indexOf(other.name));
+    return {
+      name: spec.name,
+      ...(spec.local === undefined ? {} : { translation: spec.local }),
+      ...(children.length === 0 ? {} : { children }),
+    };
+  });
+  const positions = new Float32Array([
+    -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
+    -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+  ]);
+  const indices = new Uint16Array([
+    0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5, 0, 1, 5, 0, 5, 4, 3, 2, 6, 3, 6, 7,
+  ]);
+  const rest = specs.find((spec) => spec.name === options.animNode)?.local ?? ([0, 0, 0] as [number, number, number]);
+  const times = new Float32Array([0, 0.5]);
+  const translation = new Float32Array([rest[0], rest[1], rest[2], rest[0] + 0.4, rest[1], rest[2]]);
+  const layout = packSections(options.animNode === undefined ? [positions, indices] : [positions, indices, times, translation]);
+  const [pos, idx] = layout.sections;
+  const rootIndices = specs.map((spec, index) => (spec.parent === null ? index : -1)).filter((index) => index >= 0);
+  return {
+    asset: { version: '2.0', generator: 'kinemesh-fixtures' },
+    scene: 0,
+    scenes: [{ name: 'Scene', nodes: [...rootIndices, nodes.length] }],
+    nodes: [
+      ...nodes,
+      { mesh: 0, translation: [0, 0, 0] }, // 未命名网格节点：进包围盒，不进骨骼清单
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }] }],
+    materials: [{ name: 'BodyMat', pbrMetallicRoughness: { baseColorFactor: [0.8, 0.6, 0.4, 1] } }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 8, type: 'VEC3', min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
+      { bufferView: 1, componentType: 5123, count: 36, type: 'SCALAR' },
+      ...(options.animNode === undefined
+        ? []
+        : [
+            { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR', min: [0], max: [0.5] },
+            { bufferView: 3, componentType: 5126, count: 2, type: 'VEC3', min: [rest[0], rest[1], rest[2]], max: [rest[0] + 0.4, rest[1], rest[2]] },
+          ]),
+    ],
+    bufferViews: layout.sections.map((section) => ({ buffer: 0, byteOffset: section.offset, byteLength: section.byteLength })),
+    buffers: [{ byteLength: layout.byteLength, uri: dataUri(layout.bytes) }],
+    ...(options.animNode === undefined
+      ? {}
+      : {
+          animations: [
+            {
+              name: 'Idle',
+              samplers: [{ input: 2, output: 3 }],
+              channels: [{ sampler: 0, target: { node: names.indexOf(options.animNode), path: 'translation' } }],
+            },
+          ],
+        }),
+  };
+}
+
 // ———————————————————— 小工具 ————————————————————
 
 interface PackedSections {

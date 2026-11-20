@@ -29,6 +29,7 @@ import {
   buildSkeletonReport,
   collectSkeletonSet,
 } from '../../plugins/kinemesh/src/core/analyze/skeleton-report.js';
+import { strideLabelBatches } from '../../plugins/kinemesh/src/core/analyze/label-batches.js';
 import { sampleClip } from '../../plugins/kinemesh/src/core/motion/sample.js';
 import type { CanonicalScene } from '../../plugins/kinemesh/src/core/types.js';
 import { registerTools } from '../../plugins/kinemesh/src/tools.js';
@@ -126,9 +127,11 @@ describe('buildSkeletonReport · 字典全命中与 B.4 批次', () => {
     const digest = buildSkeletonDigest(report);
     expect(digest.facts.some((fact) => fact.includes('CORE15 缺口 0 个'))).toBe(true);
     expect(digest.facts.some((fact) => fact.includes('kinemesh-bones.json'))).toBe(true);
-    // B.4 标注协作口径：renderer 无文字叠加参数，--bone-labels 留后续里程碑（read 图靠 restWorldPos 对位）
-    expect(digest.renderRecipe.boneLabels.renderParam).toBe(false);
-    expect(digest.renderRecipe.boneLabels.guidance).toContain('restWorldPos');
+    // B.4 标注已实装：renderRecipe.boneLabels 指向 kinemesh_render 的 boneLabels 参数
+    // （纯 report 构造不经渲染，digest.shots 恒为空数组）
+    expect(digest.renderRecipe.boneLabels.renderParam).toBe(true);
+    expect(digest.renderRecipe.boneLabels.guidance).toContain('boneLabels');
+    expect(digest.shots).toEqual([]);
   });
 
   it('非标命名 rig：字典缺口 → AI 兜底指引 + 批次清单（≤12 单批全量）', () => {
@@ -159,6 +162,39 @@ describe('buildSkeletonReport · 字典全命中与 B.4 批次', () => {
     // shots=all：全量 30 骨仍 3 批；shots=none：不出批次
     expect(buildSkeletonReport(scene, { fileName: 'long.glb', shots: 'all' }).batches).toHaveLength(3);
     expect(buildSkeletonReport(scene, { fileName: 'long.glb', shots: 'none' }).batches).toEqual([]);
+  });
+
+  it('B.4 纯函数 strideLabelBatches：60 目标 → B=5 每批 12、批内保 DFS 序、≤12 单批全量', () => {
+    const targets = Array.from({ length: 60 }, (_, i) => ({ name: `b${String(i + 1).padStart(2, '0')}`, dfsIndex: i }));
+    const batches = strideLabelBatches(targets);
+    expect(batches).toHaveLength(5);
+    for (const batch of batches) expect(batch).toHaveLength(12);
+    // 第 i 批 = DFS 序号 ≡ i (mod 5)，批内保持 DFS 升序
+    expect(batches[0]).toEqual(targets.filter((_, i) => i % 5 === 0).map((target) => target.name));
+    expect(batches[4]).toEqual(targets.filter((_, i) => i % 5 === 4).map((target) => target.name));
+    // 父子骨（链式：相邻 DFS 序号互为父子）必然分属不同批
+    const batchOf = new Map(targets.map((target, i) => [target.name, i % 5]));
+    for (let i = 1; i < targets.length; i += 1) {
+      expect(batchOf.get(targets[i]!.name)).not.toBe(batchOf.get(targets[i - 1]!.name));
+    }
+    // 总数 ≤ 12：单批全量；空目标：无批次
+    expect(strideLabelBatches(targets.slice(0, 12))).toEqual([targets.slice(0, 12).map((target) => target.name)]);
+    expect(strideLabelBatches([])).toEqual([]);
+  });
+
+  it('B.4 report 级 60 骨链：5 批各 12，父子骨不同批（批号 1 起与 PNG 两位序号一致）', () => {
+    const report = buildSkeletonReport(buildLongChainScene(60), { fileName: 'long60.glb' });
+    expect(report.boneCount).toBe(60);
+    expect(report.batches).toHaveLength(5);
+    expect(report.batches.map((batch) => batch.bones.length)).toEqual([12, 12, 12, 12, 12]);
+    expect(report.batches.map((batch) => batch.batch)).toEqual([1, 2, 3, 4, 5]);
+    expect(report.batches[0]?.files).toEqual(['labels-front-01.png', 'labels-side-01.png']);
+    const batchOf = new Map<string, number>();
+    for (const batch of report.batches) for (const name of batch.bones) batchOf.set(name, batch.batch);
+    for (const bone of report.bones) {
+      if (bone.parent === null) continue;
+      expect(batchOf.get(bone.name)).not.toBe(batchOf.get(bone.parent));
+    }
   });
 
   it('shots=all 对全命中 rig 也出批次（17 骨 → 2 批 9/8）；多骨同槽按 rest 高度中位保留并注明', () => {
@@ -537,9 +573,17 @@ describe('kinemesh_skeleton · DSH 出口', () => {
     expect(digest.batches).toHaveLength(2);
     expect(digest.batches.map((batch) => batch.bones.length)).toEqual([7, 7]);
     expect(digest.facts.some((fact) => fact.includes('CORE15 缺口 15 个'))).toBe(true);
+    // B.4 已实装：有 playwright 的环境会真实渲染 2 批 × 2 视角标注截图（无则降级 shotsWarning）
+    const shots = (digest as { shots?: string[] }).shots ?? [];
+    if (shots.length > 0) {
+      expect(shots).toHaveLength(4);
+      expect(shots.every((file) => existsSync(file))).toBe(true);
+    } else {
+      expect((digest as { shotsWarning?: string }).shotsWarning).toContain('playwright');
+    }
     const quiet = await execute({ path: chainGlb, out: path.join(workDir, 'skel-chain-none'), shots: 'none' });
     expect((quiet.digest as { batches: unknown[] }).batches).toEqual([]);
-  });
+  }, 240_000);
 
   it('手写 kinemesh-bones.json（资产同目录自动发现）：skeleton 覆盖回显，analyze 确定性消费 bone-map', async () => {
     const bonesPath = path.join(chainDir, 'kinemesh-bones.json');
@@ -562,7 +606,6 @@ describe('kinemesh_skeleton · DSH 出口', () => {
     expect(digest.unmapped).toHaveLength(11);
     // auto：有缺口 → 出 1 批（11 ≤ 12 单批全量）
     expect(digest.batches).toHaveLength(1);
-
     const analyze = toolExecute('kinemesh_analyze');
     const outDir = path.join(workDir, 'analysis-mapped');
     const analysis = await analyze({ path: chainGlb, out: outDir, clip: 'Idle' });
@@ -581,7 +624,7 @@ describe('kinemesh_skeleton · DSH 出口', () => {
     expect(summary.jointBasis.declaredJoints).toHaveLength(12);
     expect(summary.boneMap).toMatchObject({ source: bonesPath, archetype: 'humanoid', mapped: 3 });
     expect(summary.warnings.some((warning) => warning.includes('motion-top15'))).toBe(false);
-  });
+  }, 240_000);
 
   it('坏 boneMap 路径 / 坏 JSON / schema 非法 → 三段式 KinemeshError（不再静默成功）', async () => {
     const analyze = toolExecute('kinemesh_analyze');

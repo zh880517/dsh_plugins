@@ -4,6 +4,7 @@
 // M3 的 DSH 预览面板直接复用 core/viewer/kinemesh-viewer.ts（同一模块，不经过本桥）。
 import { analyzeWith } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
+import { collectLabelTargets, strideLabelBatches } from './core/analyze/label-batches.js';
 import { detectFormat, unknownFormatError } from './core/registry.js';
 import { mountViewer, type ViewerHandle } from './core/viewer/kinemesh-viewer.js';
 import type { CanonicalScene } from './core/types.js';
@@ -16,16 +17,31 @@ interface LoadResult {
   durationSeconds: number;
 }
 
+/** B.4 骨骼名标注入参：批次号（1 起，与 skeleton-report 批号/PNG 序号一致）| 'auto'（第 1 批）|
+ *  'all'（全部骨骼名，允许重叠，调试用）| 显式骨骼名清单（skeleton 工具按 report 批次直发）| null（清除） */
+type BoneLabelsSpec = number | 'auto' | 'all' | string[] | null;
+
+interface BoneLabelsOutcome {
+  /** 实际画出的标签数（名字未命中骨架的不计） */
+  shown: number;
+  /** 该模型按全骨架 stride 划分的批数（B.4） */
+  batches: number;
+  /** 本次生效的批号（'all' 或 1 起整数；null = 无标签） */
+  batch: number | 'all' | null;
+}
+
 interface Bridge {
   load(b64: string, fileName: string): Promise<LoadResult | { ok: false; error: string }>;
   applyView(view: ViewState): void;
   seekFrame(frame: number): Promise<{ frame: number }>;
   frameInfo(): ReturnType<ViewerHandle['frameInfo']>;
   trackNames(): string[];
+  setBoneLabels(spec: BoneLabelsSpec): BoneLabelsOutcome;
   ready(): Promise<void>;
 }
 
 let viewer: ViewerHandle | null = null;
+let loadedScene: CanonicalScene | null = null;
 let bounds: { center: [number, number, number]; radius: number; clips: string[]; durationSeconds: number } = {
   center: [0, 0, 0],
   radius: 1,
@@ -55,6 +71,7 @@ async function load(b64: string, fileName: string): Promise<LoadResult | { ok: f
     const entry = detectFormat(head, fileName);
     if (entry === null) throw unknownFormatError(fileName);
     const scene: CanonicalScene = await entry.load(data, { fileName });
+    loadedScene = scene;
     getViewer().loadScene(scene);
     bounds = getViewer().sceneBounds();
     return {
@@ -67,6 +84,26 @@ async function load(b64: string, fileName: string): Promise<LoadResult | { ok: f
     const message = error instanceof KinemeshError ? error.helpText() : reasonOf(error);
     return { ok: false, error: message };
   }
+}
+
+function setBoneLabels(spec: BoneLabelsSpec): BoneLabelsOutcome {
+  if (spec === null || loadedScene === null) {
+    getViewer().setBoneLabels(null);
+    return { shown: 0, batches: 0, batch: null };
+  }
+  const targets = collectLabelTargets(loadedScene.object);
+  if (spec === 'all') {
+    return { shown: getViewer().setBoneLabels(targets.map((target) => target.name)), batches: strideLabelBatches(targets).length, batch: 'all' };
+  }
+  if (Array.isArray(spec)) {
+    // 显式骨骼名清单（skeleton 工具按 report 批次直发）：批号由调用方自知，回 null
+    return { shown: getViewer().setBoneLabels(spec), batches: strideLabelBatches(targets).length, batch: null };
+  }
+  // 批次号按全骨架 stride 划分（B = ceil(骨骼总数/12)）；'auto' = 第 1 批
+  const batches = strideLabelBatches(targets);
+  const batch = spec === 'auto' ? 1 : spec;
+  const bones = batches[batch - 1] ?? [];
+  return { shown: getViewer().setBoneLabels(bones), batches: batches.length, batch };
 }
 
 const bridge: Bridge = {
@@ -84,6 +121,9 @@ const bridge: Bridge = {
   },
   trackNames(): string[] {
     return getViewer().trackNames();
+  },
+  setBoneLabels(spec: BoneLabelsSpec): BoneLabelsOutcome {
+    return setBoneLabels(spec);
   },
   ready(): Promise<void> {
     return getViewer().ready();

@@ -4,8 +4,21 @@
 // 只能在浏览器里用（WebGL / OrbitControls）；Node 端不要 import 本文件。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { cameraFromPosition, cameraPosition, RENDER_FPS, type ViewState, type ViewMode } from '../viewstate.js';
+import {
+  cameraFromPosition,
+  cameraPosition,
+  DEFAULT_DISTANCE_FACTOR,
+  DEFAULT_FOV,
+  RENDER_FPS,
+  type ViewState,
+  type ViewMode,
+} from '../viewstate.js';
 import type { CanonicalScene } from '../types.js';
+
+/** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
+const LABEL_BASE_HEIGHT_PX = 720;
+const LABEL_FONT_PX = 14;
+const LABEL_OFFSET_PX = 6;
 
 export interface ViewerFrameInfo {
   clip: string | null;
@@ -32,6 +45,11 @@ export interface ViewerHandle {
   trackNames(): string[];
   /** 场景级信息（截图管线解析 ViewState 缺省值时用） */
   sceneBounds(): { center: [number, number, number]; radius: number; clips: string[]; durationSeconds: number };
+  /**
+   * B.4 骨骼名标注：给这些骨骼名建文字精灵（画在关节世界位置旁，随动画逐帧跟随）；
+   * null / 空数组 = 清除。返回实际建标签数（名字未命中骨架的不计）。
+   */
+  setBoneLabels(bones: string[] | null): number;
   resize(width: number, height: number): void;
   /** 首帧渲染完成 */
   ready(): Promise<void>;
@@ -78,6 +96,9 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   let activeAction: THREE.AnimationAction | null = null;
   let skeletons: THREE.SkeletonHelper[] = [];
   let bounds = { center: [0, 0, 0] as [number, number, number], radius: 1, clips: [] as string[], durationSeconds: 0 };
+  // B.4 骨骼名标注：文字精灵清单（target = 命名的骨架对象；世界位置每帧回贴）
+  let labelSprites: Array<{ sprite: THREE.Sprite; target: THREE.Object3D; offsetY: number }> = [];
+  let namedObjects = new Map<string, THREE.Object3D>();
 
   let clipName: string | null = null;
   let frame = 0;
@@ -102,6 +123,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       mixer.setTime(frame / RENDER_FPS);
     }
     controls.update();
+    positionBoneLabels();
     renderer.render(scene, camera);
     if (firstFrameResolve !== null) {
       firstFrameResolve();
@@ -112,6 +134,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   renderer.setAnimationLoop(renderLoop);
 
   function clearModel(): void {
+    clearBoneLabels();
     if (model === null) return;
     scene.remove(model);
     model.traverse((child) => {
@@ -161,6 +184,11 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         }
       });
       scene.add(model);
+      // B.4 标注的目标索引：名字 → 对象（重名取首个命中；换模型即作废重建）
+      namedObjects = new Map<string, THREE.Object3D>();
+      model.traverse((child) => {
+        if (child.name !== '' && !namedObjects.has(child.name)) namedObjects.set(child.name, child);
+      });
       mixer = new THREE.AnimationMixer(model);
       actions = new Map();
       const clips = target.animations;
@@ -286,6 +314,28 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       return bounds;
     },
 
+    setBoneLabels(bones) {
+      clearBoneLabels();
+      if (model === null || bones === null || bones.length === 0) return 0;
+      // B.4 像素基准的世界换算：按缺省构图（distance = radius × 2.2、fov 40）在 720p 画幅下
+      // 让标签文字回到 14px 基准；之后随相机距离透视缩放（Sprite 默认 sizeAttenuation）
+      const worldPerPx = (2 * DEFAULT_DISTANCE_FACTOR * Math.tan(((DEFAULT_FOV / 2) * Math.PI) / 180) * bounds.radius) / LABEL_BASE_HEIGHT_PX;
+      let shown = 0;
+      for (const name of bones) {
+        const target = namedObjects.get(name);
+        if (target === undefined) continue;
+        const sprite = makeBoneLabelSprite(name, worldPerPx);
+        if (sprite === null) continue;
+        scene.add(sprite);
+        labelSprites.push({ sprite, target, offsetY: -worldPerPx * LABEL_OFFSET_PX });
+        shown += 1;
+      }
+      positionBoneLabels();
+      // 立即出一帧：截图管线在 applyView / setBoneLabels 后立即截图，不等下一个 rAF
+      renderer.render(scene, camera);
+      return shown;
+    },
+
     resize(nextWidth, nextHeight) {
       renderer.setSize(nextWidth, nextHeight);
       camera.aspect = nextWidth / nextHeight;
@@ -312,6 +362,59 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     applyMode();
     // 立即出一张帧：截图管线在 applyView 后立即截图，不等下一个 rAF
     renderer.render(scene, camera);
+  }
+
+  // ———————— B.4 骨骼名文字精灵：canvas 2D 纹理 + three Sprite（无新依赖） ————————
+
+  function clearBoneLabels(): void {
+    for (const entry of labelSprites) {
+      scene.remove(entry.sprite);
+      entry.sprite.material.map?.dispose();
+      entry.sprite.material.dispose();
+    }
+    labelSprites = [];
+  }
+
+  /** 每帧把标签回贴到关节世界位置（Y 偏移 −6px 基准），动画 seek 后依然钉在关节旁 */
+  const labelScratch = new THREE.Vector3();
+  function positionBoneLabels(): void {
+    if (labelSprites.length === 0) return;
+    for (const entry of labelSprites) {
+      entry.target.getWorldPosition(labelScratch);
+      entry.sprite.position.set(labelScratch.x, labelScratch.y + entry.offsetY, labelScratch.z);
+    }
+  }
+
+  /** 标签贴图：14px 基准文字（2× 超采样保清晰）+ 半透明底衬；主题前景色保证深浅背景下可读 */
+  function makeBoneLabelSprite(text: string, worldPerPx: number): THREE.Sprite | null {
+    const font = `600 ${LABEL_FONT_PX * 2}px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif`;
+    const pad = 5 * 2;
+    const canvas = document.createElement('canvas');
+    const probe = canvas.getContext('2d');
+    if (probe === null) return null;
+    probe.font = font;
+    const textWidth = Math.ceil(probe.measureText(text).width);
+    canvas.width = textWidth + pad * 2;
+    canvas.height = LABEL_FONT_PX * 2 + pad * 2;
+    // canvas 尺寸赋值会重置 context 状态，字体要重设一次
+    const ctx = canvas.getContext('2d');
+    if (ctx === null) return null;
+    ctx.font = font;
+    ctx.fillStyle = 'rgba(26, 29, 35, 0.72)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#e9ecf2';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, pad, canvas.height / 2 + 1);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+    const sprite = new THREE.Sprite(material);
+    // 世界尺寸 = 像素基准 × worldPerPx（画布按 2× 超采样画，尺寸按 1× 换算）
+    const worldHeight = worldPerPx * (canvas.height / 2);
+    sprite.scale.set(worldHeight * (canvas.width / canvas.height), worldHeight, 1);
+    // 标注层永远可读：压过骨骼线与网格（skeleton 模式下本来也无遮挡）
+    sprite.renderOrder = 999;
+    return sprite;
   }
 
   function pauseInternal(): void {

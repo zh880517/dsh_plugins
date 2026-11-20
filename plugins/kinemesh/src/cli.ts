@@ -34,7 +34,9 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
   kinemesh skeleton <file> [选项]
       骨架识别与映射：stdout 返回 {ok,dir,files,digest}（skeleton-report.json 落盘）。
-      --shots <name>           标注截图批次 auto / none / all（缺省 auto：CORE15 有缺口才出批次清单）
+      --shots <name>           标注截图批次 auto / none / all（缺省 auto：CORE15 有缺口才渲染）。
+                               shots:auto/all 真实渲染骨骼名标注截图 labels-<view>-<两位批次>.png
+                               （front/side × 每批，进同一输出目录与 digest.shots；需要 playwright）
       --bone-map <file>        kinemesh-bones.json 映射文件路径（缺省按 资产同目录 > 工作区 发现）
       --out <dir>              输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
 
@@ -46,6 +48,9 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       --azimuth <deg> --elevation <deg> --distance <n> --target x,y,z --fov <deg>
                                自定义球坐标视角（与 --view-preset 二选一）
       --mode <name>            default / wireframe / skeleton / bones-overlay
+      --bone-labels <batch>    骨骼名文字标注（B.4，与 --mode skeleton|bones-overlay 联用）：
+                               auto（缺省第 1 批）/ all（全部骨骼名，允许重叠，调试）/ 批次号（1 起，
+                               stride 分批防叠；骨架识别单批读图用）
       --width <px> --height <px>
       --out-dir <dir>          PNG 输出目录（缺省系统临时目录 kinemesh-shots/）
 
@@ -164,6 +169,23 @@ function buildView(flags: Record<string, string>): unknown | undefined {
   };
 }
 
+/** --bone-labels 解析（B.4）：undefined = 未给；null = 非法值（已输出三段式 stderr） */
+function boneLabelsFlag(flags: Record<string, string>): number | 'auto' | 'all' | null | undefined {
+  const raw = flags['bone-labels'];
+  if (raw === undefined || raw === '' || raw === 'true') return undefined;
+  if (raw === 'auto' || raw === 'all') return raw;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    fail(
+      `--bone-labels 的值「${raw}」不合法。`,
+      '取 auto（第 1 批）/ all（全部骨骼名，调试）/ 批次号（≥1 整数），例如 --bone-labels 2；与 --mode skeleton 或 bones-overlay 联用。',
+      '解析渲染参数',
+    );
+    return null;
+  }
+  return value;
+}
+
 async function runRender(fileArg: string | undefined, flags: Record<string, string>): Promise<number> {
   const framesRaw = flags.frames ?? flags.frame;
   if (framesRaw === undefined || framesRaw === 'true') {
@@ -176,6 +198,8 @@ async function runRender(fileArg: string | undefined, flags: Record<string, stri
   if (frames.length === 0) {
     return fail('frames 里没有合法帧号。', '帧号是非负整数，逗号分隔：--frames 0,15,30。', '解析渲染参数');
   }
+  const boneLabels = boneLabelsFlag(flags);
+  if (boneLabels === null) return 1;
   const loaded = await readModel(fileArg);
   if (loaded === null) return 1;
   const view = buildView(flags);
@@ -194,6 +218,7 @@ async function runRender(fileArg: string | undefined, flags: Record<string, stri
       width: numberFlag(flags, 'width'),
       height: numberFlag(flags, 'height'),
       outDir: flags['out-dir'] === undefined ? undefined : expandHome(flags['out-dir']),
+      boneLabels,
     });
     emit({ ok: true, images: result.images, count: result.images.length, warnings: result.warnings, hint: '用读图工具逐张查看后再给结论。' });
     return 0;
