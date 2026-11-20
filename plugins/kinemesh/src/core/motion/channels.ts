@@ -42,6 +42,8 @@ export interface FrameChannels {
   moveSpeed: number[];
   contactL: boolean[];
   contactR: boolean[];
+  /** 命中的接触 tag（人形 l/r；非人形 = limb tag；空串 = 无接触点或全不命中，B.7） */
+  contactTags: string[];
   airborne: boolean[];
   /** double-support / single-L / single-R / air，A.6 */
   support: string[];
@@ -263,6 +265,17 @@ export function computeChannels(sample: SampleResult, options: ChannelsOptions =
         }
       }
     }
+    if (!resolved && anchors.hips >= 0 && anchors.head >= 0) {
+      // B.7 回退②：root→head 向量投影 XZ（四足/带颈类；root 承担 hips 锚角色）
+      const [px, , pz] = at(k, anchors.hips);
+      const [dx, , dz] = at(k, anchors.head);
+      const len = Math.hypot(dx - px, dz - pz);
+      if (len > 1e-9) {
+        fx = (dx - px) / len;
+        fz = (dz - pz) / len;
+        resolved = true;
+      }
+    }
     if (!resolved && rootTrack) {
       // 回退：(0,0,1) 经根骨骼世界四元数旋转后投影 XZ（A.4 非人形/缺腿口径）
       const qx = rootTrack.quaternions[k * 4]!;
@@ -341,40 +354,63 @@ export function computeChannels(sample: SampleResult, options: ChannelsOptions =
     moveDirBody[k] = sectorOf(rootVelX[k]!, rootVelZ[k]!, heading[k]!);
   }
 
-  // ———— 接触与腾空（A.6）：高度 + 速度双阈值，逐脚 OR 后去抖 ————
+  // ———— 接触与腾空（A.6 / B.7）：高度 + 速度双阈值，按 tag（脚 / 肢链）逐点 OR 后去抖 ————
   const contactL = new Array<boolean>(n).fill(false);
   const contactR = new Array<boolean>(n).fill(false);
-  if (anchors.footPoints.length > 0) {
+  /** 命中的接触 tag（'+' 连接；人形 = l/r，非人形 = limb tag）——frames.csv contactTags 列 */
+  const contactTags = new Array<string>(n).fill('');
+  const contactAvailable = anchors.footPoints.length > 0;
+  if (contactAvailable) {
     let ground = Number.POSITIVE_INFINITY;
     for (const point of anchors.footPoints) {
       for (let k = 0; k < n; k += 1) {
         ground = Math.min(ground, raw[(k * jointCount + point.index) * 3 + 1]!);
       }
     }
-    const rawContact = (side: 'L' | 'R', k: number): boolean => {
-      for (const point of anchors.footPoints) {
-        if (point.side !== side) continue;
-        const y = raw[(k * jointCount + point.index) * 3 + 1]!;
-        if ((y - ground) / scale < CONTACT_HEIGHT && speedAt(k, point.index) < CONTACT_VEL) return true;
-      }
-      return false;
-    };
-    const debounced = (side: 'L' | 'R'): boolean[] =>
-      debounceContact(Array.from({ length: n }, (_, k) => rawContact(side, k)));
-    const left = debounced('L');
-    const right = debounced('R');
+    const tags = [...new Set(anchors.footPoints.map((point) => point.tag))].sort();
+    const sideOfTag = new Map(anchors.footPoints.map((point) => [point.tag, point.side] as const));
+    const hasSided = anchors.footPoints.some((point) => point.side !== null);
+    const tagContact = new Map<string, boolean[]>();
+    for (const tag of tags) {
+      const indices = anchors.footPoints.filter((point) => point.tag === tag).map((point) => point.index);
+      tagContact.set(
+        tag,
+        debounceContact(
+          Array.from({ length: n }, (_, k) =>
+            indices.some((index) => {
+              const y = raw[(k * jointCount + index) * 3 + 1]!;
+              return (y - ground) / scale < CONTACT_HEIGHT && speedAt(k, index) < CONTACT_VEL;
+            }),
+          ),
+        ),
+      );
+    }
     for (let k = 0; k < n; k += 1) {
-      contactL[k] = left[k]!;
-      contactR[k] = right[k]!;
+      const active = tags.filter((tag) => tagContact.get(tag)![k]!);
+      contactTags[k] = active.join('+');
+      contactL[k] = active.some((tag) => sideOfTag.get(tag) === 'L');
+      contactR[k] = active.some((tag) => sideOfTag.get(tag) === 'R');
+      // 全部 tag 都无侧别（对称肢，如蜘蛛腿）：两侧聚合口径一致，support 用 multi 描述
+      if (!hasSided && active.length > 0) {
+        contactL[k] = true;
+        contactR[k] = true;
+      }
     }
   }
-  const airborne = contactL.map((l, k) => !l && !contactR[k]!);
-  const support = airborne.map((air, k) => {
-    if (contactL[k]! && contactR[k]!) return 'double-support';
-    if (contactL[k]!) return 'single-L';
-    if (contactR[k]!) return 'single-R';
-    return 'air';
-  });
+  // 无接触点（蛇形 / 飞行 rest，B.7）：contact 全空、airborne 不输出、support 记 n/a
+  const airborne = contactAvailable
+    ? contactL.map((l, k) => !l && !contactR[k]!)
+    : new Array<boolean>(n).fill(false);
+  const support = contactAvailable
+    ? airborne.map((air, k) => {
+        const active = contactTags[k]!.split('+').filter((tag) => tag !== '');
+        if (active.length >= 3) return 'multi-support';
+        if (contactL[k]! && contactR[k]!) return 'double-support';
+        if (contactL[k]!) return 'single-L';
+        if (contactR[k]!) return 'single-R';
+        return 'air';
+      })
+    : new Array<string>(n).fill('n/a');
 
   // ———— topJoint（A.6 表 / §6.3）：本帧线速度最高的关节；平手取权重更大者，再取关节序 ————
   const topJoint = new Array<string>(n).fill('');
@@ -414,6 +450,7 @@ export function computeChannels(sample: SampleResult, options: ChannelsOptions =
     moveSpeed,
     contactL,
     contactR,
+    contactTags,
     airborne,
     support,
     topJoint,

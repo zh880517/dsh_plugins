@@ -184,6 +184,137 @@ export function buildChainRig(): ChainRig {
   return { root, bones: { seg_a: segA, seg_b: segB, seg_c: segC } };
 }
 
+// ———————— 非人形 rig（B.7 / M7d：四足 + 蛇形） ————————
+
+export interface QuadrupedRig {
+  root: THREE.Group;
+  bones: Record<string, THREE.Bone>;
+}
+
+/** 四足：Body(root) + Spine_1 + Head（+Z 前向）；四腿两节（fl/fr/bl/br）；尾两节。四足尖同高 0.17 */
+export function buildQuadrupedRig(): QuadrupedRig {
+  const root = new THREE.Group();
+  root.name = 'quad';
+  const spec: Array<[string, string | null, [number, number, number]]> = [
+    ['Body', null, [0, 0.55, 0]],
+    ['Spine_1', 'Body', [0, 0.08, 0]],
+    ['Head', 'Spine_1', [0, 0.06, 0.32]],
+    ['Leg_FL_1', 'Body', [-0.18, -0.06, 0.12]],
+    ['Foot_FL', 'Leg_FL_1', [0, -0.32, 0]],
+    ['Leg_FR_1', 'Body', [0.18, -0.06, 0.12]],
+    ['Foot_FR', 'Leg_FR_1', [0, -0.32, 0]],
+    ['Leg_BL_1', 'Body', [-0.18, -0.06, -0.14]],
+    ['Foot_BL', 'Leg_BL_1', [0, -0.32, 0]],
+    ['Leg_BR_1', 'Body', [0.18, -0.06, -0.14]],
+    ['Foot_BR', 'Leg_BR_1', [0, -0.32, 0]],
+    ['Tail_1', 'Body', [0, 0.05, -0.25]],
+    ['Tail_2', 'Tail_1', [0, 0, -0.25]],
+  ];
+  const bones: Record<string, THREE.Bone> = {};
+  for (const [name, parent, local] of spec) {
+    const bone = new THREE.Bone();
+    bone.name = name;
+    bone.position.set(...local);
+    bones[name] = bone;
+    if (parent === null) root.add(bone);
+    else bones[parent].add(bone);
+  }
+  root.updateMatrixWorld(true);
+  return { root, bones };
+}
+
+/** 四足对角步（trot）：FL+BR 与 FR+BL 反相正弦抬腿（1s 周期，关键帧落在 15fps 网格） */
+export function buildQuadrupedTrotClip(
+  rig: QuadrupedRig,
+  options: { duration?: number; sampleFps?: number } = {},
+): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const sampleFps = options.sampleFps ?? 15;
+  const keys = Math.round(duration * sampleFps);
+  const times: number[] = [];
+  const fl: number[] = [];
+  const fr: number[] = [];
+  for (let k = 0; k <= keys; k += 1) {
+    const t = k / sampleFps;
+    times.push(t);
+    fl.push(0.05 + 0.05 * Math.sin(2 * Math.PI * t));
+    fr.push(0.05 + 0.05 * Math.sin(2 * Math.PI * t + Math.PI));
+  }
+  const track = (bone: THREE.Bone, values: number[]): THREE.VectorKeyframeTrack => {
+    const rest = bone.position;
+    const flat: number[] = [];
+    for (const lift of values) flat.push(rest.x, rest.y + lift, rest.z);
+    return new THREE.VectorKeyframeTrack(`${bone.name}.position`, times, flat);
+  };
+  return new THREE.AnimationClip('Trot', duration, [
+    track(rig.bones.Foot_FL!, fl),
+    track(rig.bones.Foot_BR!, fl),
+    track(rig.bones.Foot_FR!, fr),
+    track(rig.bones.Foot_BL!, fr),
+  ]);
+}
+
+/** 四足原地转向 90°：Body 偏航——heading 走 B.7 回退②（root→head 向量） */
+export function buildQuadrupedTurnClip(rig: QuadrupedRig, options: { degrees?: number; duration?: number } = {}): THREE.AnimationClip {
+  const degrees = options.degrees ?? 90;
+  const duration = options.duration ?? 1;
+  const quat = new THREE.Quaternion();
+  quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (degrees * Math.PI) / 180);
+  return new THREE.AnimationClip('Turn', duration, [
+    new THREE.QuaternionKeyframeTrack('Body.quaternion', [0, duration], [0, 0, 0, 1, quat.x, quat.y, quat.z, quat.w]),
+  ]);
+}
+
+export interface SnakeRig {
+  root: THREE.Group;
+  bones: Record<string, THREE.Bone>;
+}
+
+/** 蛇形（chain，无肢链）：5 节沿 +Z 平铺，S0 为 root、S1–S4 为 spine */
+export function buildSnakeRig(): SnakeRig {
+  const root = new THREE.Group();
+  root.name = 'snake';
+  const bones: Record<string, THREE.Bone> = {};
+  let parent: THREE.Bone | null = null;
+  for (let i = 0; i < 5; i += 1) {
+    const bone = new THREE.Bone();
+    bone.name = `S${i}`;
+    bone.position.set(0, 0.1, i === 0 ? 0 : 0.18);
+    bones[bone.name] = bone;
+    if (parent === null) root.add(bone);
+    else parent.add(bone);
+    parent = bone;
+  }
+  root.updateMatrixWorld(true);
+  return { root, bones };
+}
+
+/** 蛇形侧摆：S2/S3 的 x = 0.05·sin（有能量、无肢链——contact/airborne 不输出） */
+export function buildSnakeSlitherClip(
+  rig: SnakeRig,
+  options: { duration?: number; sampleFps?: number } = {},
+): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const sampleFps = options.sampleFps ?? 15;
+  const keys = Math.round(duration * sampleFps);
+  const times: number[] = [];
+  const x2: number[] = [];
+  const x3: number[] = [];
+  for (let k = 0; k <= keys; k += 1) {
+    const t = k / sampleFps;
+    times.push(t);
+    x2.push(0.05 * Math.sin(2 * Math.PI * t));
+    x3.push(0.05 * Math.sin(2 * Math.PI * t + Math.PI / 2));
+  }
+  const track = (bone: THREE.Bone, values: number[]): THREE.VectorKeyframeTrack => {
+    const rest = bone.position;
+    const flat: number[] = [];
+    for (const x of values) flat.push(rest.x + x, rest.y, rest.z);
+    return new THREE.VectorKeyframeTrack(`${bone.name}.position`, times, flat);
+  };
+  return new THREE.AnimationClip('Slither', duration, [track(rig.bones.S2!, x2), track(rig.bones.S3!, x3)]);
+}
+
 /** seg_b 绕 Z 摆动 → seg_c 公转（世界位移方差最大者），seg_a/seg_b 原点静止 */
 export function buildChainSwingClip(rig: ChainRig): THREE.AnimationClip {
   const times = [0, 0.5, 1, 1.5, 2];

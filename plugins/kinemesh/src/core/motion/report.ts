@@ -65,6 +65,7 @@ export const FRAMES_CSV_COLUMNS = [
   'moveSpeed',
   'contactL',
   'contactR',
+  'contactTags',
   'airborne',
   'support',
   'topJoint',
@@ -111,6 +112,7 @@ export function framesCsv(channels: FrameChannels): string {
         roundLength(length(channels.moveSpeed, k)),
         flag(channels.contactL, k) ? 'true' : 'false',
         flag(channels.contactR, k) ? 'true' : 'false',
+        word(channels.contactTags, k),
         flag(channels.airborne, k) ? 'true' : 'false',
         word(channels.support, k),
         word(channels.topJoint, k),
@@ -421,6 +423,8 @@ export interface MotionSummary {
     joints: Array<{ id: string; objectName: string; weight: number }>;
     declaredJoints: string[];
   };
+  /** B.7：humanoid | quadruped | winged | multiped | chain | custom（top15/explicit 回退） */
+  archetype: string;
   /** 根位移参照骨骼的实际骨骼名（A.5：rootPos=hips；缺 hips 时为回退根骨骼名，null=无） */
   rootJoint: string | null;
   normalize: { mode: string; scale: number; warnings: string[] };
@@ -462,8 +466,7 @@ export interface SummaryInput {
   clipName: string;
   duration: number;
   fps: number | null;
-  sample: SampleResult;
-  channels: FrameChannels;
+  sample: SampleResult;  channels: FrameChannels;
   segments: DescribedSegment[];
   events: MotionEvent[];
   keyframes: KeyframeEntry[];
@@ -612,6 +615,7 @@ export function buildSummary(input: SummaryInput): MotionSummary {
       declaredJoints: sample.declaredJoints,
     },
     rootJoint: sample.joints.find((joint) => joint.id === 'hips')?.objectName ?? sample.rootJoint?.name ?? null,
+    archetype: input.sample.archetype,
     normalize: input.normalize,
     clipStats: {
       energy: { mean: meanE, p50: q(0.5), p90: q(0.9), max: maxE },

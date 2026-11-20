@@ -168,7 +168,7 @@ describe('channels · 720° 自转（turnTotal vs 净差）', () => {
 });
 
 describe('channels · 非人形链式 rig（motion-top15 口径）', () => {
-  it('topJoint = 方差最大的 seg_c；heading 走根骨骼回退（恒 0）；无足点 → air', () => {
+  it('topJoint = 方差最大的 seg_c；heading 走根骨骼回退（恒 0）；无足点 → contact 不输出（B.7）', () => {
     const chain = buildChainRig();
     const sample = sampleClip(buildRigScene(chain.root, [buildChainSwingClip(chain)]));
     const channels = computeChannels(sample);
@@ -177,8 +177,10 @@ describe('channels · 非人形链式 rig（motion-top15 口径）', () => {
       expect(channels.heading[k]).toBeCloseTo(0, 6);
       expect(channels.amplitude[k]).toBe(0);
       expect(channels.moveDir[k]).toBe('in-place');
-      expect(channels.airborne[k]).toBe(true);
-      expect(channels.support[k]).toBe('air');
+      // 无贴地肢链：contactTags 空、airborne 不输出（恒 false）、support 记 n/a（B.7）
+      expect(channels.contactTags[k]).toBe('');
+      expect(channels.airborne[k]).toBe(false);
+      expect(channels.support[k]).toBe('n/a');
     }
     expect(channels.energy[0]).toBeGreaterThan(0);
   });
@@ -191,7 +193,7 @@ describe('frames.csv 序列化（§6.4 / A.14 圆整）', () => {
     const lines = framesCsv(computeChannels(sample)).trimEnd().split('\n');
     expect(lines).toHaveLength(31);
     expect(lines[0]).toBe(
-      'frame,time,energy,energyLevel,root_x,root_y,root_z,heading,turnTotal,moveDir,moveDirBody,moveSpeed,contactL,contactR,airborne,support,topJoint,topJointSpeed,amplitude',
+      'frame,time,energy,energyLevel,root_x,root_y,root_z,heading,turnTotal,moveDir,moveDirBody,moveSpeed,contactL,contactR,contactTags,airborne,support,topJoint,topJointSpeed,amplitude',
     );
     // topJoint 在全关节速度并列时由浮点噪声决定，不按名列断；其余列都有解析值
     const row = (k: number): string[] => lines[k + 1].split(',');
@@ -211,10 +213,11 @@ describe('frames.csv 序列化（§6.4 / A.14 圆整）', () => {
     expect(row(1)[11]).toBe('1.000');
     expect(row(1)[12]).toBe('false');
     expect(row(1)[13]).toBe('false');
-    expect(row(1)[14]).toBe('true');
-    expect(row(1)[15]).toBe('air');
-    expect(row(1)[17]).toBe('1.000');
-    expect(row(1)[18]).toBe('0.176');
+    expect(row(1)[14]).toBe(''); // contactTags：脚速超阈不接触
+    expect(row(1)[15]).toBe('true');
+    expect(row(1)[16]).toBe('air');
+    expect(row(1)[18]).toBe('1.000');
+    expect(row(1)[19]).toBe('0.176');
   });
 
   it('正弦摆动：能量 static 档、支撑描述 double-support 进 CSV', () => {
@@ -224,7 +227,8 @@ describe('frames.csv 序列化（§6.4 / A.14 圆整）', () => {
     for (const k of [0, 15, 30]) {
       const row = lines[k + 1].split(',');
       expect(row[3]).toBe('static');
-      expect(row[15]).toBe('double-support');
+      expect(row[14]).toBe('l+r'); // contactTags：双脚静止接触
+      expect(row[16]).toBe('double-support');
     }
     // 峰值帧能量圆整为 0.000
     expect(lines[16].split(',')[2]).toBe('0.000');

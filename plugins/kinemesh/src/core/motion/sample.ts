@@ -22,7 +22,17 @@ import { RENDER_FPS } from '../viewstate.js';
  * bone-map = 映射文件（kinemesh-bones.json，最高优先）＞ humanoid-conventions = 字典查表（B.1–B.2）＞
  * motion-top15 = 回退（summary 注明并附「AI 补映射」指引）；explicit 不变。
  */
-export type JointBasis = 'humanoid-conventions' | 'bone-map' | 'motion-top15' | 'explicit';
+export type JointBasis =
+  | 'humanoid-conventions'
+  | 'bone-map'
+  | 'motion-top15'
+  | 'explicit'
+  /** B.7 非 humanoid 映射（archetype 泛化通道） */
+  | 'archetype:quadruped'
+  | 'archetype:winged'
+  | 'archetype:multiped'
+  | 'archetype:chain'
+  | 'archetype:custom';
 
 export interface SampledJoint {
   /** 规范 id：J15 用 hips/spine/head/L.Hand…；top15 与 explicit-骨骼名用场景对象名 */
@@ -39,10 +49,13 @@ export interface SampleAnchors {
   head: number;
   leftUpperLeg: number;
   rightUpperLeg: number;
-  /** 幅度端点（附录 A.3：L/R Hand、L/R Foot、head） */
+  /** 幅度端点（附录 A.3：L/R Hand、L/R Foot、head；非人形 = 非贴地肢链 tip + head，B.7） */
   endEffectors: number[];
-  /** 接触检测足点（附录 A.6：每脚 {Foot, Toe?}） */
-  footPoints: Array<{ side: 'L' | 'R'; index: number }>;
+  /**
+   * 接触检测足点（附录 A.6 / B.7）：人形 = 每脚 {Foot, Toe?}（tag l/r）；
+   * 非人形 = 贴地肢链 tip（tag 取映射 limb.tag，side 由 tag 推得，无法判定为 null）。
+   */
+  footPoints: Array<{ side: 'L' | 'R' | null; index: number; tag: string }>;
 }
 
 /** rootPos / heading 回退的参照对象逐帧轨迹（附录 A.4/A.5） */
@@ -73,6 +86,8 @@ export interface SampleResult {
   positions: Float64Array;
   endpointPositions: Float64Array;
   jointBasis: JointBasis;
+  /** B.7：humanoid（惯例集/映射简写）| 映射文件 archetype | custom（top15/explicit 回退） */
+  archetype: string;
   joints: SampledJoint[];
   jointObjects: THREE.Object3D[];
   anchors: SampleAnchors;
@@ -300,6 +315,10 @@ interface JointResolution {
   declaredJoints: string[];
   anchors: SampleAnchors;
   rootJoint: THREE.Object3D | null;
+  /** B.7 非 humanoid 映射解析时携带；其余路径缺省 'humanoid'（top15/explicit 回退 'custom'） */
+  archetype?: string;
+  /** B.7 解析期的非致命提示（贴地判定/肢链裁剪/口径），并入 sample.warnings */
+  resolutionWarnings?: string[];
 }
 
 const EMPTY_ANCHORS: SampleAnchors = {
@@ -338,7 +357,7 @@ function buildAnchors(joints: SampledJoint[]): SampleAnchors {
   for (const side of ['L', 'R'] as const) {
     for (const id of [`${side}.Foot`, `${side}.Toe`]) {
       const index = indexById.get(id);
-      if (index !== undefined) anchors.footPoints.push({ side, index });
+      if (index !== undefined) anchors.footPoints.push({ side, index, tag: side.toLowerCase() });
     }
   }
   return anchors;
@@ -424,6 +443,223 @@ function resolveMappedJoints(root: THREE.Object3D, mapping: BonesMapping | null 
   }
   if (slots.size === 0) return null;
   return buildResolutionFromSlots(slots, 'bone-map', slots.get(':hips') ?? null);
+}
+
+// ———————— B.7 非 humanoid 映射（archetype 泛化通道） ————————
+
+/** limb.tag → 侧别：fl/bl/l/left → L，fr/br/r/right → R，判不出为 null（对称肢如蜘蛛腿） */
+function sideOfLimbTag(tag: string | undefined): 'L' | 'R' | null {
+  if (tag === undefined) return null;
+  const lowered = tag.toLowerCase();
+  const tokens = lowered.split(/[^a-z0-9]+/).filter((token) => token !== '');
+  for (const token of tokens) {
+    if (token === 'l' || token === 'left') return 'L';
+    if (token === 'r' || token === 'right') return 'R';
+  }
+  // 前后缀写法（fl / br / leg_l）：末字符独立 l/r 也认
+  const last = lowered.slice(-1);
+  if (last === 'l') return 'L';
+  if (last === 'r') return 'R';
+  return null;
+}
+
+/**
+ * 肢链 tip 位移方差粗排（B.7「limb > 8 取方差 Top-8」）：粗网格（≤5fps、≤60 点）FK 预采样，
+ * 只用于排序，不产出通道；Welford 在线方差（3D 分量方差之和），返回 tip 对象 → 方差。
+ * evaluateAt = sampleClip 既有的「设值 + updateMatrixWorld」闭包，采样循环会重设姿态，无污染。
+ */
+function computeTipVariances(
+  tips: THREE.Object3D[],
+  duration: number,
+  evaluateAt: (t: number) => void,
+): Map<THREE.Object3D, number> {
+  const out = new Map<THREE.Object3D, number>();
+  if (duration <= 0 || tips.length === 0) return out;
+  const points = Math.min(60, Math.max(2, Math.ceil(duration * 5)));
+  const stats = new Map<THREE.Object3D, { mean: THREE.Vector3; m2: number; count: number }>();
+  const scratch = new THREE.Vector3();
+  for (let p = 0; p < points; p += 1) {
+    evaluateAt((duration * p) / (points - 1));
+    for (const tip of tips) {
+      tip.getWorldPosition(scratch);
+      const entry = stats.get(tip);
+      if (entry === undefined) {
+        stats.set(tip, { mean: scratch.clone(), m2: 0, count: 1 });
+        continue;
+      }
+      entry.count += 1;
+      const dx = scratch.x - entry.mean.x;
+      const dy = scratch.y - entry.mean.y;
+      const dz = scratch.z - entry.mean.z;
+      entry.mean.x += dx / entry.count;
+      entry.mean.y += dy / entry.count;
+      entry.mean.z += dz / entry.count;
+      const ex = scratch.x - entry.mean.x;
+      const ey = scratch.y - entry.mean.y;
+      const ez = scratch.z - entry.mean.z;
+      entry.m2 += ex * ex + ey * ey + ez * ez;
+    }
+  }
+  for (const [tip, entry] of stats) out.set(tip, entry.count > 1 ? entry.m2 / entry.count : 0);
+  return out;
+}
+
+/** B.7 AS（分析关节集）常量：根/头/脊柱各 1 + 肢链每条 ≤3；肢链上限 8；总上限 27 */
+const B7_LIMB_MAX = 8;
+const B7_AS_MAX = 27;
+
+/**
+ * 非 humanoid 映射解析（B.7）：AS = {root, head?, spine 中位骨?, 每条 limb 的首/中/末}；
+ * 贴地肢链（tip rest 高度贴地）→ 接触点（role 视作 leg，无论映射写的什么）；
+ * 幅度末端 = 非贴地 tip + head；heading 走 channels 的 root→head 回退（anchors 不给腿）。
+ * limbVariance 仅在肢链 > B7_LIMB_MAX 时由 sampleClip 传入（方差 Top-8 排序）。
+ */
+function resolveArchetypeJoints(
+  root: THREE.Object3D,
+  mapping: BonesMapping | null | undefined,
+  limbVariance?: Map<THREE.Object3D, number>,
+): JointResolution | null {
+  if (!mapping || mapping.archetype === 'humanoid' || mapping.root === null) return null;
+  const byName = new Map<string, THREE.Object3D>();
+  root.traverse((obj) => {
+    if (obj !== root && obj.name !== '' && !byName.has(obj.name)) byName.set(obj.name, obj);
+  });
+  const rootObj = byName.get(mapping.root);
+  if (!rootObj) return null;
+
+  const warnings: string[] = [];
+  // 肢链裁剪（B.7）：> 8 条时按 tip 位移方差 Top-8（方差并列按映射顺序，确定性）
+  let limbs = mapping.limbs;
+  if (limbs.length > B7_LIMB_MAX) {
+    const variance = limbVariance ?? new Map<THREE.Object3D, number>();
+    limbs = [...limbs]
+      .map((limb, index) => {
+        const tipObj = byName.get(limb.tip);
+        return { limb, index, v: tipObj !== undefined ? (variance.get(tipObj) ?? -1) : -1 };
+      })
+      .sort((a, b) => b.v - a.v || a.index - b.index)
+      .slice(0, B7_LIMB_MAX)
+      .map((entry) => entry.limb);
+    warnings.push(`肢链 ${mapping.limbs.length} 条 > ${B7_LIMB_MAX}：按 tip 位移方差取 Top-${B7_LIMB_MAX}（B.7）。`);
+  }
+
+  // 关节装配（顺序 = root → head → spine 中位 → 肢链首/中/末；重复骨骼只记首次）
+  const jointObjects: THREE.Object3D[] = [];
+  const joints: SampledJoint[] = [];
+  const used = new Set<THREE.Object3D>();
+  const push = (object: THREE.Object3D, id: string, weight: number): number => {
+    const index = joints.length;
+    jointObjects.push(object);
+    joints.push({ id, objectName: object.name, weight });
+    used.add(object);
+    return index;
+  };
+  const rootIndex = push(rootObj, 'root', 0.2);
+  let headIndex = -1;
+  const headObj = mapping.head === null ? undefined : byName.get(mapping.head);
+  if (headObj && !used.has(headObj)) headIndex = push(headObj, 'head', 1.0);
+  if (mapping.spine.length > 0) {
+    // 中位骨（下中位，与 B.2 多骨同槽口径一致）
+    const middle = mapping.spine[Math.floor((mapping.spine.length - 1) / 2)]!;
+    const spineObj = byName.get(middle);
+    if (spineObj && !used.has(spineObj)) push(spineObj, 'spine', 0.3);
+  }
+
+  // AS 上限 27：root+head+spine 至多 3，8 条肢链 ×3 恰好封顶；超预算时按 mid → base 顺序让位（tip 最后丢）
+  interface LimbJointPlan { object: THREE.Object3D; id: string; weight: number }
+  const limbPlans: LimbJointPlan[] = [];
+  for (const limb of limbs) {
+    const tag = limb.tag ?? limb.role;
+    const objects = [...limb.bones].map((name) => byName.get(name)).filter((obj): obj is THREE.Object3D => obj !== undefined);
+    if (objects.length === 0) continue;
+    const unique = objects.filter((obj) => !used.has(obj) && !limbPlans.some((plan) => plan.object === obj));
+    if (unique.length === 0) continue;
+    const pick = (obj: THREE.Object3D, slot: string, weight: number): void => {
+      limbPlans.push({ object: obj, id: `${tag}:${slot}`, weight });
+    };
+    if (unique.length === 1) pick(unique[0]!, 'tip', 1.0);
+    else if (unique.length === 2) {
+      pick(unique[0]!, 'base', 0.6);
+      pick(unique[unique.length - 1]!, 'tip', 1.0);
+    } else {
+      pick(unique[0]!, 'base', 0.6);
+      pick(unique[Math.floor((unique.length - 1) / 2)]!, 'mid', 0.8);
+      pick(unique[unique.length - 1]!, 'tip', 1.0);
+    }
+  }
+  const orderedPlans = [...limbPlans];
+  let midsDropped = 0;
+  let basesDropped = 0;
+  const fits = (): boolean => joints.length + orderedPlans.length <= B7_AS_MAX;
+  while (!fits() && orderedPlans.some((plan) => plan.id.endsWith(':mid'))) {
+    const index = orderedPlans.findIndex((plan) => plan.id.endsWith(':mid'));
+    if (index >= 0) { orderedPlans.splice(index, 1); midsDropped += 1; }
+  }
+  while (!fits() && orderedPlans.some((plan) => plan.id.endsWith(':base'))) {
+    const index = orderedPlans.findIndex((plan) => plan.id.endsWith(':base'));
+    if (index >= 0) { orderedPlans.splice(index, 1); basesDropped += 1; }
+  }
+  const limbTipIndices: number[] = [];
+  for (const plan of orderedPlans) {
+    const index = push(plan.object, plan.id, plan.weight);
+    if (plan.id.endsWith(':tip')) limbTipIndices.push(index);
+  }
+  if (midsDropped > 0 || basesDropped > 0) {
+    warnings.push(`分析关节集超出 ${B7_AS_MAX} 上限：裁掉中段 ${midsDropped} 节、根段 ${basesDropped} 节（tip 优先保留，B.7）。`);
+  }
+
+  // 贴地判定（B.7）：tip rest 高度与全部 tip 最低高度差 < 0.05×H（H 取映射骨骼的 rest 高度跨度）
+  root.updateMatrixWorld(true);
+  const scratch = new THREE.Vector3();
+  const tipY = new Map<number, number>();
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const index of limbTipIndices) {
+    jointObjects[index]!.getWorldPosition(scratch);
+    tipY.set(index, scratch.y);
+    minY = Math.min(minY, scratch.y);
+  }
+  for (const object of jointObjects) {
+    object.getWorldPosition(scratch);
+    maxY = Math.max(maxY, scratch.y);
+  }
+  const localHeight = Math.max(maxY - Math.min(minY, maxY - 1), 1e-6);
+  const grounded = [...limbTipIndices].filter((index) => (tipY.get(index)! - minY) < 0.05 * localHeight);
+
+  const footPoints = grounded.map((index) => {
+    const limb = limbs.find((limb) => {
+      const tipObj = byName.get(limb.tip);
+      return tipObj === jointObjects[index];
+    });
+    const tag = limb?.tag ?? limb?.role ?? `limb${index}`;
+    return { side: sideOfLimbTag(limb?.tag), index, tag };
+  });
+  const groundedSet = new Set(grounded);
+  const amplitudeTips = limbTipIndices.filter((index) => !groundedSet.has(index));
+  const anchors: SampleAnchors = {
+    ...EMPTY_ANCHORS,
+    endEffectors: [],
+    footPoints,
+  };
+  anchors.hips = rootIndex; // rootPos / P(t) / 幅度轴的参照（B.7：root 承担 hips 角色）
+  anchors.head = headIndex;
+  anchors.endEffectors = [...amplitudeTips, ...(headIndex >= 0 ? [headIndex] : [])];
+
+  if (footPoints.length === 0) {
+    warnings.push('映射无贴地肢链（tip rest 高度均不贴地或无肢链）：contact / airborne 不输出（B.7，蛇形/飞行类）。');
+  }
+  warnings.push(`archetype=${mapping.archetype}：非人形泛化通道（B.7）执行——链位权重、贴地肢链接触、root→head 朝向。`);
+
+  return {
+    basis: `archetype:${mapping.archetype}`,
+    jointObjects,
+    joints,
+    declaredJoints: [],
+    anchors,
+    rootJoint: rootObj,
+    archetype: mapping.archetype,
+    resolutionWarnings: warnings,
+  };
 }
 
 /** 槽位表 → 采样关节集（A.0 顺序即输出顺序；J15_PLAN + Toe，权重按惯例表） */
@@ -645,16 +881,39 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
       root.updateMatrixWorld(true);
     };
 
-    // 关节集解析（A.0 + M7 §7.4）：auto = 映射文件 > 字典查表（B.1–B.2）> motion-top15 回退；
-    // AI 兜底是 Agent 侧流程（读 report/图 → 写 kinemesh-bones.json），不进工具运行时。
+    // 关节集解析（A.0 + M7 §7.4 + B.7）：auto = humanoid 映射简写 > 非 humanoid 映射（archetype
+    // 泛化通道）> 字典查表（B.1–B.2）> motion-top15 回退；AI 兜底是 Agent 侧流程（读 report/图 →
+    // 写 kinemesh-bones.json），不进工具运行时。肢链 > 8 时先做方差粗排（B.7 Top-8）。
     const requested = options.joints ?? 'auto';
+    const needsLimbVariance =
+      requested === 'auto' &&
+      options.boneMap !== null &&
+      options.boneMap !== undefined &&
+      options.boneMap.archetype !== 'humanoid' &&
+      options.boneMap.limbs.length > B7_LIMB_MAX;
+    const limbVariance = needsLimbVariance
+      ? computeTipVariances(
+          options.boneMap!.limbs
+            .map((limb) => {
+              const found = root.getObjectByName(limb.tip);
+              return found ?? null;
+            })
+            .filter((obj): obj is THREE.Object3D => obj !== null),
+          clip.duration,
+          evaluateAt,
+        )
+      : undefined;
     const resolution =
       requested === 'auto'
         ? (resolveMappedJoints(root, options.boneMap) ??
+          resolveArchetypeJoints(root, options.boneMap, limbVariance) ??
           resolveHumanoidJoints(root, options.vocabPrefixes) ??
           resolveTop15Joints(root, times, evaluateAt))
         : resolveExplicitJoints(root, requested);
     const { joints, jointObjects } = resolution;
+    const archetype =
+      resolution.archetype ??
+      (resolution.basis === 'humanoid-conventions' || resolution.basis === 'bone-map' ? 'humanoid' : 'custom');
 
     const warnings: string[] = [];
     if (prepared.morphIgnored > 0) {
@@ -673,6 +932,11 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
     }
     if (resolution.basis === 'bone-map' && resolution.rootJoint === null) {
       warnings.push('映射文件缺 hips 槽位：rootPos/heading 无参照，本片记 0；把 hips 补进 kinemesh-bones.json 后重跑。');
+    }
+    // B.7：解析期提示（贴地判定 / 肢链裁剪 / 泛化通道口径）+ 非 humanoid 的阈值口径声明（§7.2）
+    for (const extra of resolution.resolutionWarnings ?? []) warnings.push(extra);
+    if (archetype !== 'humanoid') {
+      warnings.push(`archetype=${archetype}：强度/循环阈值按人形运动校准，非人形结果仅作横向参考（§7.2 口径）。`);
     }
 
     const jointCount = joints.length;
@@ -735,6 +999,7 @@ export function sampleClip(scene: CanonicalScene, options: SampleOptions = {}): 
       positions,
       endpointPositions,
       jointBasis: resolution.basis,
+      archetype,
       joints,
       jointObjects,
       anchors: resolution.anchors,
