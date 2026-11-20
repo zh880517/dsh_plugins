@@ -1,9 +1,10 @@
-// Host 半入口：Agent 工具（kinemesh_info / kinemesh_analyze / kinemesh_render）+ /kinemesh 前缀路由。
+// Host 半入口：Agent 工具（kinemesh_info / kinemesh_analyze / kinemesh_render / kinemesh_skeleton）+ /kinemesh 前缀路由。
 // 路由五件事：给预览面板供模型字节（GET /kinemesh/model）、供 info JSON（GET /kinemesh/info）、
 // 接「发送给 AI 分析」（POST /kinemesh/analyze → agents.followup 唤醒，与 aiworkflow/定时提醒同一机制）、
 // 供会话模型清单（GET /kinemesh/session-models，M6e 预览页左列）、供预览曲线数据
 // （GET /kinemesh/analysis，M6 core 内存返回 digest/分段/关键帧/能量序列，不落盘）。
-// 会话用过的模型记录在内存表（进程内，Host 重启即清空，§6.10.1）。
+// 会话用过的模型记录在内存表（进程内，Host 重启即清空，§6.10.1）——Agent 工具直调
+// （exec.agent.id）与 HTTP 路由记同一张表。
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -28,9 +29,11 @@ const ROUTE_PREFIX = '/kinemesh';
 const MAX_MODEL_BYTES = 512 * 1024 * 1024;
 
 export function apply(ctx: any): void {
-  ctx.effect(() => registerTools(ctx));
+  // 会话模型表（§6.10.1）：Agent 工具直调（exec.agent.id）与 HTTP 路由（预览加载/发送分析）
+  // 都记入同一张表——「会话用过 kinemesh」以工具使用为准，预览页签随之出现。
+  const sessions = createSessionModels();
+  ctx.effect(() => registerTools(ctx, (sessionId, absPath) => sessions.record(sessionId, absPath)));
   ctx.effect(() => {
-    const sessions = createSessionModels();
     const disposeRoute = ctx.webServer.register({
       kind: 'prefix',
       path: ROUTE_PREFIX,

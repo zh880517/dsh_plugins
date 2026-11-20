@@ -53,13 +53,25 @@ function expandHome(input: string): string {
   return input;
 }
 
-/** 注册 Agent 工具，返回一次性释放句柄 */
-export function registerTools(ctx: any): () => void {
+/**
+ * 会话模型表记录器（§6.10.1：Agent 工具直调也进表）——DSH 出口由 host 注入，
+ * 会话号取工具执行上下文的 exec.agent.id（aiworkflow 同款口径）；CLI / MCP 无会话概念不注入。
+ */
+export type SessionModelRecorder = (sessionId: string, absPath: string) => void;
+
+function recordSessionModel(record: SessionModelRecorder | undefined, exec: any, absPath: string): void {
+  if (record === undefined) return;
+  const sessionId = typeof exec?.agent?.id === 'string' ? exec.agent.id.trim() : '';
+  if (sessionId !== '') record(sessionId, absPath);
+}
+
+/** 注册 Agent 工具，返回一次性释放句柄；record = 会话模型表记录器（可选，DSH 出口注入） */
+export function registerTools(ctx: any, record?: SessionModelRecorder): () => void {
   const disposers = [
-    ctx.tools.register(infoTool()),
-    ctx.tools.register(analyzeTool()),
-    ctx.tools.register(renderTool()),
-    ctx.tools.register(skeletonTool()),
+    ctx.tools.register(infoTool(record)),
+    ctx.tools.register(analyzeTool(record)),
+    ctx.tools.register(renderTool(record)),
+    ctx.tools.register(skeletonTool(record)),
   ];
   return () => {
     for (const dispose of disposers.reverse()) {
@@ -249,7 +261,7 @@ function parseRangeArg(value: unknown): [number, number] | null | undefined {
   return [t0, t1];
 }
 
-function analyzeTool(): AgentTool {
+function analyzeTool(record?: SessionModelRecorder): AgentTool {
   return {
     name: 'kinemesh_analyze',
     description:
@@ -294,7 +306,7 @@ function analyzeTool(): AgentTool {
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => textResult(value) },
     timeoutMs: 120_000,
-    async execute(args) {
+    async execute(args, exec) {
       const range = parseRangeArg(args?.range);
       if (range === null) {
         return errorPayload(
@@ -326,10 +338,12 @@ function analyzeTool(): AgentTool {
         boneMap: typeof args?.boneMap === 'string' && args.boneMap.trim() !== '' ? expandHome(args.boneMap.trim()) : undefined,
       };
       try {
-        return await runAnalyze(loaded.data, path.basename(loaded.abs), params, {
+        const result = await runAnalyze(loaded.data, path.basename(loaded.abs), params, {
           assetDir: path.dirname(loaded.abs),
           absPath: loaded.abs,
         });
+        recordSessionModel(record, exec, loaded.abs);
+        return result;
       } catch (error) {
         if (error instanceof KinemeshError) {
           return errorPayload(error.message, error.guidance, `分析 ${loaded.abs}`);
@@ -414,7 +428,7 @@ export async function runSkeleton(
   };
 }
 
-function skeletonTool(): AgentTool {
+function skeletonTool(record?: SessionModelRecorder): AgentTool {
   return {
     name: 'kinemesh_skeleton',
     description:
@@ -441,7 +455,7 @@ function skeletonTool(): AgentTool {
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => textResult(value) },
     timeoutMs: 60_000,
-    async execute(args) {
+    async execute(args, exec) {
       const given = typeof args?.path === 'string' ? args.path : '';
       const loaded = await readModelFile(given);
       if (!loaded.ok) return loaded.payload;
@@ -451,10 +465,12 @@ function skeletonTool(): AgentTool {
         out: typeof args?.out === 'string' ? args.out : undefined,
       };
       try {
-        return await runSkeleton(loaded.data, path.basename(loaded.abs), params, {
+        const result = await runSkeleton(loaded.data, path.basename(loaded.abs), params, {
           assetDir: path.dirname(loaded.abs),
           absPath: loaded.abs,
         });
+        recordSessionModel(record, exec, loaded.abs);
+        return result;
       } catch (error) {
         if (error instanceof KinemeshError) {
           return errorPayload(error.message, error.guidance, `识别 ${loaded.abs} 的骨架`);
@@ -465,7 +481,7 @@ function skeletonTool(): AgentTool {
   };
 }
 
-function infoTool(): AgentTool {
+function infoTool(record?: SessionModelRecorder): AgentTool {
   return {
     name: 'kinemesh_info',
     description:
@@ -484,13 +500,14 @@ function infoTool(): AgentTool {
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => textResult(value) },
     timeoutMs: 60_000,
-    async execute(args) {
+    async execute(args, exec) {
       const given = typeof args?.path === 'string' ? args.path : '';
       const loaded = await readModelFile(given);
       if (!loaded.ok) return loaded.payload;
       try {
         // M6f：info 的场景构造路径（FBX/OBJ 无 fastInfo）走 path+mtime 进程内缓存
         const report = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
+        recordSessionModel(record, exec, loaded.abs);
         return { ok: true, ...report };
       } catch (error) {
         if (error instanceof KinemeshError) {
@@ -502,7 +519,7 @@ function infoTool(): AgentTool {
   };
 }
 
-function renderTool(): AgentTool {
+function renderTool(record?: SessionModelRecorder): AgentTool {
   return {
     name: 'kinemesh_render',
     description:
@@ -536,7 +553,7 @@ function renderTool(): AgentTool {
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => textResult(value) },
     timeoutMs: 180_000,
-    async execute(args) {
+    async execute(args, exec) {
       const frames = Array.isArray(args?.frames) ? args.frames : undefined;
       if (frames === undefined) {
         return errorPayload('缺少 frames 参数。', 'frames 是帧号整数数组，例如 "frames": [0, 15, 30]；静态模型传 [0]。', '渲染截图');
@@ -554,6 +571,7 @@ function renderTool(): AgentTool {
           height: typeof args?.height === 'number' ? args.height : undefined,
           outDir: typeof args?.out === 'string' && args.out.trim() !== '' ? expandHome(args.out.trim()) : undefined,
         });
+        recordSessionModel(record, exec, loaded.abs);
         return {
           ok: true,
           images: result.images,

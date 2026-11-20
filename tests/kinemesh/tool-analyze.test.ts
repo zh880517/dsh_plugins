@@ -50,6 +50,37 @@ afterAll(async () => {
   await rm(workDir, { recursive: true, force: true });
 });
 
+describe('会话模型表接线（§6.10.1：Agent 工具直调也进表）', () => {
+  it('execute 成功后用 exec.agent.id 记录会话与路径；无 exec / 失败不记录', async () => {
+    const registered = new Map<string, RegisteredTool>();
+    const recorded: Array<{ sessionId: string; absPath: string }> = [];
+    const ctx = {
+      tools: {
+        register(definition: RegisteredTool): () => void {
+          registered.set(definition.name, definition);
+          return () => undefined;
+        },
+      },
+    };
+    registerTools(ctx, (sessionId, absPath) => recorded.push({ sessionId, absPath }));
+    const info = registered.get('kinemesh_info')!;
+    const run = info.execute as (args: Record<string, unknown>, exec?: unknown) => Promise<Record<string, unknown>>;
+
+    const ok = await run({ path: animGlb }, { agent: { id: 'sess-1' } });
+    expect(ok.ok).toBe(true);
+    expect(recorded).toEqual([{ sessionId: 'sess-1', absPath: path.resolve(animGlb) }]);
+
+    // 无 exec（CLI / MCP 进程口径没有会话概念）：不记录
+    await run({ path: animGlb });
+    expect(recorded).toHaveLength(1);
+
+    // 执行失败（文件不存在）：不记录
+    const bad = await run({ path: path.join(workDir, 'nope.glb') }, { agent: { id: 'sess-2' } });
+    expect(bad.ok).toBe(false);
+    expect(recorded).toHaveLength(1);
+  });
+});
+
 describe('kinemesh_analyze 工具', () => {
   it('注册名是 kinemesh_analyze，schema 必填只有 path', async () => {
     const registered = new Map<string, { name: string; parameters: Record<string, unknown> }>();

@@ -523,11 +523,10 @@ kinemesh_analyze(path, {
 - 槽位 **`conversation.view`**：aiworkflow 已用它注册「运行图」会话页签（条件注册、随会话
   出现/消失），模式在本仓库内已验证，不新造机制；
 - 注册条目 `{name:'conversation.view', id:'kinemesh-preview', order:20, label:「模型预览」}`；
-- **出现条件（实际口径回写）**：本会话「用过 kinemesh」= 会话模型表非空——只有 HTTP 路由
-  写这张表：预览加载（`GET /kinemesh/model`）、面板信息（`GET /kinemesh/info`）与「发送给
-  AI 分析」（`POST /kinemesh/analyze`）处理成功即 record；**Agent 工具直调（DSH 工具 /
-  MCP / CLI）不经路由、不进会话表**——页签数据口径限于 HTTP 路由 + 预览加载，为已知口径
-  （拉平需把 `exec.agent.id` 接进会话表，见总审遗留项）；
+- **出现条件**：本会话「用过 kinemesh」= 任一 kinemesh 工具（info/render/analyze/skeleton）以某路径
+  执行成功，或在预览（浮层/页面）里加载过模型——**Agent 工具直调经 exec.agent.id 记入同一张会话表**
+  （aiworkflow 同款口径；CLI / MCP 进程无会话概念不进表），HTTP 路由（model/info/analyze）处理成功
+  也记入；
 - 会话身份与数据：header utilities 槽捕获 sessionId（`dsh:<sessionId>`，aiworkflow 同款口径）；
   Host 维护 `sessionId → 有序去重路径表`（内存，按首次出现顺序，不持久化——会话级功能，
   Host 重启即清空、重新使用即恢复）；客户端在 sessionId 变化时同步注册/注销页签
@@ -558,8 +557,7 @@ kinemesh_analyze(path, {
 
 #### 6.10.4 边界
 
-- 列表按 sessionId 隔离；会话表记录口径见 §6.10.1（HTTP 路由 + 预览加载；Agent 工具直调
-  不进表，见总审遗留项）；
+- 列表按 sessionId 隔离；Agent 工具直调与页面/路由加载都记入同一张会话表（§6.10.1）；
 - 页签文案与页面文本走 locale 服务（zh/en locale 文件已有）；
 - 不做跨会话历史列表（会话日志才是事实源；要做也是后续从会话日志回放，非 v1）。
 
