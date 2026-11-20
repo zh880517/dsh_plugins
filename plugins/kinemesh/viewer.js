@@ -24,6 +24,46 @@
 			return String(error);
 		}
 	}
+	Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY;
+	//#endregion
+	//#region plugins/kinemesh/src/core/analyze/label-batches.ts
+	/**
+	* B.4 stride 分批（纯函数）：批数 B = ceil(目标数 / LABELS_PER_SHOT(12))；
+	* 第 i 批 = DFS 序号 ≡ i (mod B)（1 起批号 = 下标 + 1，与 PNG 两位序号一致）。
+	* 相邻 DFS 序号（父子骨）必然分属不同批，从根上避免批内标签互叠；
+	* 目标总数 ≤ 12 时单批全量；目标为空返回空数组；空批保留为空数组（批号稳定）。
+	*/
+	function strideLabelBatches(targets) {
+		if (targets.length === 0) return [];
+		const batchCount = Math.max(1, Math.ceil(targets.length / 12));
+		const batches = Array.from({ length: batchCount }, () => []);
+		for (const target of targets) batches[target.dfsIndex % batchCount].push(target.name);
+		return batches;
+	}
+	/**
+	* 与 collectSkeletonSet（skeleton-report.ts）同口径的 DFS 骨架清单收集：
+	* 场景有 Bone 收 Bone，否则收命名节点；空名节点与 Mesh 一律跳过
+	* （骨架清单是关节，不是渲染网格）。viewer 页侧给 setBoneLabels 解析批次用，
+	* 与 skeleton-report 的 dfsIndex 序号保持一致是两条路径批号可对齐的前提。
+	*/
+	function collectLabelTargets(root) {
+		let hasBones = false;
+		root.traverse((obj) => {
+			if (obj !== root && obj.isBone) hasBones = true;
+		});
+		const targets = [];
+		const walk = (obj) => {
+			for (const child of obj.children) {
+				if (child.name !== "" && !child.isMesh && (!hasBones || child.isBone)) targets.push({
+					name: child.name,
+					dfsIndex: targets.length
+				});
+				walk(child);
+			}
+		};
+		walk(root);
+		return targets;
+	}
 	/**
 	* @license
 	* Copyright 2010-2026 Three.js Authors
@@ -15015,6 +15055,307 @@
 			if (value === true) this.version++;
 		}
 	};
+	/**
+	* A material for rendering instances of {@link Sprite}.
+	*
+	* ```js
+	* const map = new THREE.TextureLoader().load( 'textures/sprite.png' );
+	* const material = new THREE.SpriteMaterial( { map: map, color: 0xffffff } );
+	*
+	* const sprite = new THREE.Sprite( material );
+	* sprite.scale.set(200, 200, 1)
+	* scene.add( sprite );
+	* ```
+	*
+	* @augments Material
+	*/
+	var SpriteMaterial = class extends Material {
+		/**
+		* Constructs a new sprite material.
+		*
+		* @param {Object} [parameters] - An object with one or more properties
+		* defining the material's appearance. Any property of the material
+		* (including any property from inherited materials) can be passed
+		* in here. Color values can be passed any type of value accepted
+		* by {@link Color#set}.
+		*/
+		constructor(parameters) {
+			super();
+			/**
+			* This flag can be used for type testing.
+			*
+			* @type {boolean}
+			* @readonly
+			* @default true
+			*/
+			this.isSpriteMaterial = true;
+			this.type = "SpriteMaterial";
+			/**
+			* Color of the material.
+			*
+			* @type {Color}
+			* @default (1,1,1)
+			*/
+			this.color = new Color(16777215);
+			/**
+			* The color map. May optionally include an alpha channel, typically combined
+			* with {@link Material#transparent} or {@link Material#alphaTest}. The texture map
+			* color is modulated by the diffuse `color`.
+			*
+			* `map` represents color data, and the texture must be assigned a
+			* {@link Texture#colorSpace}. Most `map` textures set
+			* `texture.colorSpace = SRGBColorSpace`.
+			*
+			* @type {?Texture}
+			* @default null
+			*/
+			this.map = null;
+			/**
+			* The alpha map is a grayscale texture that controls the opacity across the
+			* surface (black: fully transparent; white: fully opaque).
+			*
+			* Only the color of the texture is used, ignoring the alpha channel if one
+			* exists. For RGB and RGBA textures, the renderer will use the green channel
+			* when sampling this texture due to the extra bit of precision provided for
+			* green in DXT-compressed and uncompressed RGB 565 formats. Luminance-only and
+			* luminance/alpha textures will also still work as expected.
+			*
+			* `alphaMap` represents non-color data. Any texture assigned must have
+			* `texture.colorSpace = NoColorSpace` (default).
+			*
+			* @type {?Texture}
+			* @default null
+			*/
+			this.alphaMap = null;
+			/**
+			* The rotation of the sprite in radians.
+			*
+			* @type {number}
+			* @default 0
+			*/
+			this.rotation = 0;
+			/**
+			* Specifies whether size of the sprite is attenuated by the camera depth (perspective camera only).
+			*
+			* @type {boolean}
+			* @default true
+			*/
+			this.sizeAttenuation = true;
+			/**
+			* Overwritten since sprite materials are transparent
+			* by default.
+			*
+			* @type {boolean}
+			* @default true
+			*/
+			this.transparent = true;
+			/**
+			* Whether the material is affected by fog or not.
+			*
+			* @type {boolean}
+			* @default true
+			*/
+			this.fog = true;
+			this.setValues(parameters);
+		}
+		copy(source) {
+			super.copy(source);
+			this.color.copy(source.color);
+			this.map = source.map;
+			this.alphaMap = source.alphaMap;
+			this.rotation = source.rotation;
+			this.sizeAttenuation = source.sizeAttenuation;
+			this.fog = source.fog;
+			return this;
+		}
+	};
+	var _geometry;
+	var _intersectPoint = /*@__PURE__*/ new Vector3();
+	var _worldScale = /*@__PURE__*/ new Vector3();
+	var _mvPosition = /*@__PURE__*/ new Vector3();
+	var _alignedPosition = /*@__PURE__*/ new Vector2();
+	var _rotatedPosition = /*@__PURE__*/ new Vector2();
+	var _viewWorldMatrix = /*@__PURE__*/ new Matrix4();
+	var _vA$1 = /*@__PURE__*/ new Vector3();
+	var _vB$1 = /*@__PURE__*/ new Vector3();
+	var _vC$1 = /*@__PURE__*/ new Vector3();
+	var _uvA = /*@__PURE__*/ new Vector2();
+	var _uvB = /*@__PURE__*/ new Vector2();
+	var _uvC = /*@__PURE__*/ new Vector2();
+	/**
+	* A sprite is a plane that always faces towards the camera, generally with a
+	* partially transparent texture applied.
+	*
+	* Sprites do not cast shadows, setting {@link Object3D#castShadow} to `true` will
+	* have no effect.
+	*
+	* ```js
+	* const map = new THREE.TextureLoader().load( 'sprite.png' );
+	* const material = new THREE.SpriteMaterial( { map: map } );
+	*
+	* const sprite = new THREE.Sprite( material );
+	* scene.add( sprite );
+	* ```
+	*
+	* @augments Object3D
+	*/
+	var Sprite = class extends Object3D {
+		/**
+		* Constructs a new sprite.
+		*
+		* @param {(SpriteMaterial|SpriteNodeMaterial)} [material] - The sprite material.
+		*/
+		constructor(material = new SpriteMaterial()) {
+			super();
+			/**
+			* This flag can be used for type testing.
+			*
+			* @type {boolean}
+			* @readonly
+			* @default true
+			*/
+			this.isSprite = true;
+			this.type = "Sprite";
+			if (_geometry === void 0) {
+				_geometry = new BufferGeometry();
+				const interleavedBuffer = new InterleavedBuffer(new Float32Array([
+					-.5,
+					-.5,
+					0,
+					0,
+					0,
+					.5,
+					-.5,
+					0,
+					1,
+					0,
+					.5,
+					.5,
+					0,
+					1,
+					1,
+					-.5,
+					.5,
+					0,
+					0,
+					1
+				]), 5);
+				_geometry.setIndex([
+					0,
+					1,
+					2,
+					0,
+					2,
+					3
+				]);
+				_geometry.setAttribute("position", new InterleavedBufferAttribute(interleavedBuffer, 3, 0, false));
+				_geometry.setAttribute("uv", new InterleavedBufferAttribute(interleavedBuffer, 2, 3, false));
+			}
+			/**
+			* The sprite geometry.
+			*
+			* @type {BufferGeometry}
+			*/
+			this.geometry = _geometry;
+			/**
+			* The sprite material.
+			*
+			* @type {(SpriteMaterial|SpriteNodeMaterial)}
+			*/
+			this.material = material;
+			/**
+			* The sprite's anchor point, and the point around which the sprite rotates.
+			* A value of `(0.5, 0.5)` corresponds to the midpoint of the sprite. A value
+			* of `(0, 0)` corresponds to the lower left corner of the sprite.
+			*
+			* @type {Vector2}
+			* @default (0.5,0.5)
+			*/
+			this.center = new Vector2(.5, .5);
+			/**
+			* The number of instances of this sprite.
+			* Can only be used with {@link WebGPURenderer}.
+			*
+			* @type {number}
+			* @default 1
+			*/
+			this.count = 1;
+		}
+		/**
+		* Returns `true` if this sprite intersects the given frustum.
+		*
+		* @param {Frustum|FrustumArray} frustum - The frustum to test.
+		* @return {boolean} Whether this sprite intersects the given frustum or not.
+		*/
+		intersectsFrustum(frustum) {
+			return frustum.intersectsSprite(this);
+		}
+		/**
+		* Computes intersection points between a casted ray and this sprite.
+		*
+		* @param {Raycaster} raycaster - The raycaster.
+		* @param {Array<Object>} intersects - The target array that holds the intersection points.
+		*/
+		raycast(raycaster, intersects) {
+			if (raycaster.camera === null) error("Sprite: \"Raycaster.camera\" needs to be set in order to raycast against sprites.");
+			_worldScale.setFromMatrixScale(this.matrixWorld);
+			_viewWorldMatrix.copy(raycaster.camera.matrixWorld);
+			this.modelViewMatrix.multiplyMatrices(raycaster.camera.matrixWorldInverse, this.matrixWorld);
+			_mvPosition.setFromMatrixPosition(this.modelViewMatrix);
+			if (raycaster.camera.isPerspectiveCamera && this.material.sizeAttenuation === false) _worldScale.multiplyScalar(-_mvPosition.z);
+			const rotation = this.material.rotation;
+			let sin, cos;
+			if (rotation !== 0) {
+				cos = Math.cos(rotation);
+				sin = Math.sin(rotation);
+			}
+			const center = this.center;
+			transformVertex(_vA$1.set(-.5, -.5, 0), _mvPosition, center, _worldScale, sin, cos);
+			transformVertex(_vB$1.set(.5, -.5, 0), _mvPosition, center, _worldScale, sin, cos);
+			transformVertex(_vC$1.set(.5, .5, 0), _mvPosition, center, _worldScale, sin, cos);
+			_uvA.set(0, 0);
+			_uvB.set(1, 0);
+			_uvC.set(1, 1);
+			let intersect = raycaster.ray.intersectTriangle(_vA$1, _vB$1, _vC$1, false, _intersectPoint);
+			if (intersect === null) {
+				transformVertex(_vB$1.set(-.5, .5, 0), _mvPosition, center, _worldScale, sin, cos);
+				_uvB.set(0, 1);
+				intersect = raycaster.ray.intersectTriangle(_vA$1, _vC$1, _vB$1, false, _intersectPoint);
+				if (intersect === null) return;
+			}
+			const distance = raycaster.ray.origin.distanceTo(_intersectPoint);
+			if (distance < raycaster.near || distance > raycaster.far) return;
+			intersects.push({
+				distance,
+				point: _intersectPoint.clone(),
+				uv: Triangle.getInterpolation(_intersectPoint, _vA$1, _vB$1, _vC$1, _uvA, _uvB, _uvC, new Vector2()),
+				face: null,
+				object: this
+			});
+		}
+		copy(source, recursive) {
+			super.copy(source, recursive);
+			if (source.center !== void 0) this.center.copy(source.center);
+			this.material = source.material;
+			return this;
+		}
+		toJSON(meta) {
+			const data = super.toJSON(meta);
+			data.object.center = this.center.toArray();
+			return data;
+		}
+	};
+	function transformVertex(vertexPosition, mvPosition, center, scale, sin, cos) {
+		_alignedPosition.subVectors(vertexPosition, center).addScalar(.5).multiply(scale);
+		if (sin !== void 0) {
+			_rotatedPosition.x = cos * _alignedPosition.x - sin * _alignedPosition.y;
+			_rotatedPosition.y = sin * _alignedPosition.x + cos * _alignedPosition.y;
+		} else _rotatedPosition.copy(_alignedPosition);
+		vertexPosition.copy(mvPosition);
+		vertexPosition.x += _rotatedPosition.x;
+		vertexPosition.y += _rotatedPosition.y;
+		vertexPosition.applyMatrix4(_viewWorldMatrix);
+	}
 	var _vector$7 = /*@__PURE__*/ new Vector3();
 	var _segCenter = /*@__PURE__*/ new Vector3();
 	var _segDir = /*@__PURE__*/ new Vector3();
@@ -15695,9 +16036,9 @@
 	var _ray$3 = /*@__PURE__*/ new Ray();
 	var _sphere$6 = /*@__PURE__*/ new Sphere();
 	var _sphereHitAt = /*@__PURE__*/ new Vector3();
-	var _vA$1 = /*@__PURE__*/ new Vector3();
-	var _vB$1 = /*@__PURE__*/ new Vector3();
-	var _vC$1 = /*@__PURE__*/ new Vector3();
+	var _vA$2 = /*@__PURE__*/ new Vector3();
+	var _vB$2 = /*@__PURE__*/ new Vector3();
+	var _vC$2 = /*@__PURE__*/ new Vector3();
 	var _tempA = /*@__PURE__*/ new Vector3();
 	var _morphA = /*@__PURE__*/ new Vector3();
 	var _intersectionPoint = /*@__PURE__*/ new Vector3();
@@ -15961,13 +16302,13 @@
 		};
 	}
 	function checkGeometryIntersection(object, material, raycaster, ray, uv, uv1, normal, a, b, c) {
-		object.getVertexPosition(a, _vA$1);
-		object.getVertexPosition(b, _vB$1);
-		object.getVertexPosition(c, _vC$1);
-		const intersection = checkIntersection$1(object, material, raycaster, ray, _vA$1, _vB$1, _vC$1, _intersectionPoint);
+		object.getVertexPosition(a, _vA$2);
+		object.getVertexPosition(b, _vB$2);
+		object.getVertexPosition(c, _vC$2);
+		const intersection = checkIntersection$1(object, material, raycaster, ray, _vA$2, _vB$2, _vC$2, _intersectionPoint);
 		if (intersection) {
 			const barycoord = new Vector3();
-			Triangle.getBarycoord(_intersectionPoint, _vA$1, _vB$1, _vC$1, barycoord);
+			Triangle.getBarycoord(_intersectionPoint, _vA$2, _vB$2, _vC$2, barycoord);
 			if (uv) intersection.uv = Triangle.getInterpolatedAttribute(uv, a, b, c, barycoord, new Vector2());
 			if (uv1) intersection.uv1 = Triangle.getInterpolatedAttribute(uv1, a, b, c, barycoord, new Vector2());
 			if (normal) {
@@ -15981,7 +16322,7 @@
 				normal: new Vector3(),
 				materialIndex: 0
 			};
-			Triangle.getNormal(_vA$1, _vB$1, _vC$1, face.normal);
+			Triangle.getNormal(_vA$2, _vB$2, _vC$2, face.normal);
 			intersection.face = face;
 			intersection.barycoord = barycoord;
 		}
@@ -17910,6 +18251,41 @@
 		}
 		set images(value) {
 			this.image = value;
+		}
+	};
+	/**
+	* Creates a texture from a canvas element.
+	*
+	* This is almost the same as the base texture class, except that it sets {@link Texture#needsUpdate}
+	* to `true` immediately since a canvas can directly be used for rendering.
+	*
+	* @augments Texture
+	*/
+	var CanvasTexture = class extends Texture {
+		/**
+		* Constructs a new texture.
+		*
+		* @param {HTMLCanvasElement} [canvas] - The HTML canvas element.
+		* @param {number} [mapping=Texture.DEFAULT_MAPPING] - The texture mapping.
+		* @param {number} [wrapS=ClampToEdgeWrapping] - The wrapS value.
+		* @param {number} [wrapT=ClampToEdgeWrapping] - The wrapT value.
+		* @param {number} [magFilter=LinearFilter] - The mag filter value.
+		* @param {number} [minFilter=LinearMipmapLinearFilter] - The min filter value.
+		* @param {number} [format=RGBAFormat] - The texture format.
+		* @param {number} [type=UnsignedByteType] - The texture type.
+		* @param {number} [anisotropy=Texture.DEFAULT_ANISOTROPY] - The anisotropy value.
+		*/
+		constructor(canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy) {
+			super(canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy);
+			/**
+			* This flag can be used for type testing.
+			*
+			* @type {boolean}
+			* @readonly
+			* @default true
+			*/
+			this.isCanvasTexture = true;
+			this.needsUpdate = true;
 		}
 	};
 	/**
@@ -44768,9 +45144,6 @@ void main() {
 	(/* @__PURE__ */ __commonJSMin(((exports, module) => {
 		module.exports = {};
 	})))();
-	Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY;
-	//#endregion
-	//#region plugins/kinemesh/src/core/analyze/humanoid.ts
 	var CATEGORIES = [
 		["pelvis", /hips|pelvis/],
 		["spine", /spine|torso|chest|ribs/],
@@ -46484,6 +46857,7 @@ void main() {
 	}
 	//#endregion
 	//#region plugins/kinemesh/src/core/viewstate.ts
+	var DEFAULT_DISTANCE_FACTOR = 2.2;
 	/** 球坐标 → 相机位置（Y 轴向上，azimuth 0 = 从 +Z 看） */
 	function cameraPosition(camera) {
 		const azimuthRad = normalizeDegrees(camera.azimuth) * Math.PI / 180;
@@ -46519,6 +46893,9 @@ void main() {
 	}
 	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/kinemesh-viewer.ts
+	/** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
+	var LABEL_BASE_HEIGHT_PX = 720;
+	var LABEL_OFFSET_PX = 6;
 	function mountViewer(container, options = {}) {
 		const width = options.width ?? (container.clientWidth || 1280);
 		const height = options.height ?? (container.clientHeight || 720);
@@ -46558,6 +46935,8 @@ void main() {
 			clips: [],
 			durationSeconds: 0
 		};
+		let labelSprites = [];
+		let namedObjects = /* @__PURE__ */ new Map();
 		let clipName = null;
 		let frame = 0;
 		let playing = false;
@@ -46576,6 +46955,7 @@ void main() {
 				mixer.setTime(frame / 30);
 			}
 			controls.update();
+			positionBoneLabels();
 			renderer.render(scene, camera);
 			if (firstFrameResolve !== null) {
 				firstFrameResolve();
@@ -46585,6 +46965,7 @@ void main() {
 		};
 		renderer.setAnimationLoop(renderLoop);
 		function clearModel() {
+			clearBoneLabels();
 			if (model === null) return;
 			scene.remove(model);
 			model.traverse((child) => {
@@ -46627,6 +47008,10 @@ void main() {
 					if (mesh.isMesh && mesh.geometry.getAttribute("normal") === void 0) mesh.geometry.computeVertexNormals();
 				});
 				scene.add(model);
+				namedObjects = /* @__PURE__ */ new Map();
+				model.traverse((child) => {
+					if (child.name !== "" && !namedObjects.has(child.name)) namedObjects.set(child.name, child);
+				});
 				mixer = new AnimationMixer(model);
 				actions = /* @__PURE__ */ new Map();
 				const clips = target.animations;
@@ -46750,6 +47135,28 @@ void main() {
 			sceneBounds() {
 				return bounds;
 			},
+			setBoneLabels(bones) {
+				clearBoneLabels();
+				if (model === null || bones === null || bones.length === 0) return 0;
+				const worldPerPx = 2 * DEFAULT_DISTANCE_FACTOR * Math.tan(20 * Math.PI / 180) * bounds.radius / LABEL_BASE_HEIGHT_PX;
+				let shown = 0;
+				for (const name of bones) {
+					const target = namedObjects.get(name);
+					if (target === void 0) continue;
+					const sprite = makeBoneLabelSprite(name, worldPerPx);
+					if (sprite === null) continue;
+					scene.add(sprite);
+					labelSprites.push({
+						sprite,
+						target,
+						offsetY: -worldPerPx * LABEL_OFFSET_PX
+					});
+					shown += 1;
+				}
+				positionBoneLabels();
+				renderer.render(scene, camera);
+				return shown;
+			},
 			resize(nextWidth, nextHeight) {
 				renderer.setSize(nextWidth, nextHeight);
 				camera.aspect = nextWidth / nextHeight;
@@ -46773,6 +47180,53 @@ void main() {
 			applyMode();
 			renderer.render(scene, camera);
 		}
+		function clearBoneLabels() {
+			for (const entry of labelSprites) {
+				scene.remove(entry.sprite);
+				entry.sprite.material.map?.dispose();
+				entry.sprite.material.dispose();
+			}
+			labelSprites = [];
+		}
+		/** 每帧把标签回贴到关节世界位置（Y 偏移 −6px 基准），动画 seek 后依然钉在关节旁 */
+		const labelScratch = new Vector3();
+		function positionBoneLabels() {
+			if (labelSprites.length === 0) return;
+			for (const entry of labelSprites) {
+				entry.target.getWorldPosition(labelScratch);
+				entry.sprite.position.set(labelScratch.x, labelScratch.y + entry.offsetY, labelScratch.z);
+			}
+		}
+		/** 标签贴图：14px 基准文字（2× 超采样保清晰）+ 半透明底衬；主题前景色保证深浅背景下可读 */
+		function makeBoneLabelSprite(text, worldPerPx) {
+			const font = `600 28px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif`;
+			const pad = 10;
+			const canvas = document.createElement("canvas");
+			const probe = canvas.getContext("2d");
+			if (probe === null) return null;
+			probe.font = font;
+			canvas.width = Math.ceil(probe.measureText(text).width) + 20;
+			canvas.height = 48;
+			const ctx = canvas.getContext("2d");
+			if (ctx === null) return null;
+			ctx.font = font;
+			ctx.fillStyle = "rgba(26, 29, 35, 0.72)";
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
+			ctx.fillStyle = "#e9ecf2";
+			ctx.textBaseline = "middle";
+			ctx.fillText(text, pad, canvas.height / 2 + 1);
+			const texture = new CanvasTexture(canvas);
+			texture.colorSpace = SRGBColorSpace;
+			const sprite = new Sprite(new SpriteMaterial({
+				map: texture,
+				transparent: true,
+				depthTest: false
+			}));
+			const worldHeight = worldPerPx * (canvas.height / 2);
+			sprite.scale.set(worldHeight * (canvas.width / canvas.height), worldHeight, 1);
+			sprite.renderOrder = 999;
+			return sprite;
+		}
 		function pauseInternal() {
 			playing = false;
 			if (activeAction !== null) activeAction.paused = true;
@@ -46786,6 +47240,7 @@ void main() {
 	//#endregion
 	//#region plugins/kinemesh/src/viewer-page.ts
 	var viewer = null;
+	var loadedScene = null;
 	var bounds = {
 		center: [
 			0,
@@ -46815,6 +47270,7 @@ void main() {
 			const entry = detectFormat(new Uint8Array(data, 0, Math.min(1024, data.byteLength)), fileName);
 			if (entry === null) throw unknownFormatError(fileName);
 			const scene = await entry.load(data, { fileName });
+			loadedScene = scene;
 			getViewer().loadScene(scene);
 			bounds = getViewer().sceneBounds();
 			return {
@@ -46833,6 +47289,35 @@ void main() {
 			};
 		}
 	}
+	function setBoneLabels(spec) {
+		if (spec === null || loadedScene === null) {
+			getViewer().setBoneLabels(null);
+			return {
+				shown: 0,
+				batches: 0,
+				batch: null
+			};
+		}
+		const targets = collectLabelTargets(loadedScene.object);
+		if (spec === "all") return {
+			shown: getViewer().setBoneLabels(targets.map((target) => target.name)),
+			batches: strideLabelBatches(targets).length,
+			batch: "all"
+		};
+		if (Array.isArray(spec)) return {
+			shown: getViewer().setBoneLabels(spec),
+			batches: strideLabelBatches(targets).length,
+			batch: null
+		};
+		const batches = strideLabelBatches(targets);
+		const batch = spec === "auto" ? 1 : spec;
+		const bones = batches[batch - 1] ?? [];
+		return {
+			shown: getViewer().setBoneLabels(bones),
+			batches: batches.length,
+			batch
+		};
+	}
 	window.__kinemeshViewer = {
 		load,
 		applyView(view) {
@@ -46847,6 +47332,9 @@ void main() {
 		},
 		trackNames() {
 			return getViewer().trackNames();
+		},
+		setBoneLabels(spec) {
+			return setBoneLabels(spec);
 		},
 		ready() {
 			return getViewer().ready();

@@ -637,13 +637,15 @@ kinemesh_analyze(path, {
 | M7c | `kinemesh-bones.json` 消费（B.5）+ analyze joints 走映射链 + SKILL 两级兜底工作流段 | 乱命名合成 rig（Bone01…）→ AI 读 report+图写映射 → analyze 全通道产出（无 top15 回退） |
 | M7d | 非人形通道泛化（B.7）+ archetype 映射消费 | 四足合成 rig：4 肢 tip 接触/腾空判定正确、heading=root→head、链位权重生效；蛇形 rig contact=null+warning |
 
-> 实际落地注记（M7 随 0.5.0 与 M6 同版发布；M7a–M7c 已交付，实现细节以 `core/analyze/bone-map.ts`、
-> `core/analyze/skeleton-report.ts` 与 `tests/kinemesh/` 为准）。**B.4 骨骼名标注截图已实装**
-> （`kinemesh_render` 的 `boneLabels` / CLI `--bone-labels` 画文字精灵 + `kinemesh_skeleton`
-> shots:auto/all 直接渲染 `labels-<view>-<两位批次>.png` 进 run 目录与 digest.shots；批次划分纯函数
-> 在 `core/analyze/label-batches.ts`，渲染复用 render 截图管线）。一处设计未实装：
-> **B.7 泛化通道**未实装（M7d 不在本版：映射文件的 archetype 字段校验与泛化说明已交付，
-> 通道切换留候选——非 humanoid 映射当前按常规链解析并附 warning）。
+> 实际落地注记（M7 随 0.5.0 与 M6 同版发布；**M7a–M7d 全部交付**，实现细节以 `core/analyze/bone-map.ts`、
+> `core/analyze/skeleton-report.ts`、`core/analyze/label-batches.ts`、`core/motion/sample.ts`（archetype 解析）
+> 与 `tests/kinemesh/` 为准）。**B.4 骨骼名标注截图已实装**（`kinemesh_render` 的 `boneLabels` / CLI
+> `--bone-labels` 画文字精灵 + `kinemesh_skeleton` shots:auto/all 直接渲染 `labels-<view>-<两位批次>.png`
+> 进 run 目录与 digest.shots；批次划分纯函数在 `core/analyze/label-batches.ts`，渲染复用 render 截图管线）。
+> **B.7 泛化通道已实装**（M7d：非 humanoid 映射 → `archetype:<type>` 关节集（AS 构造 + 链位权重，
+> 肢链 >8 按 tip 位移方差 Top-8）；接触泛化为贴地肢链 tip（新增 contactTags 列，支撑态补
+> multi-support / n/a）；heading 回退序含 root→head；蛇形无贴地肢链 → contact 不输出 + warning；
+> 非人形阈值口径 warning 由 sample 层产出、三出口一致）。
 
 ## 8. M6/M7 拍板决策记录（2026-11-18 用户拍板，14 条）
 
@@ -1083,6 +1085,12 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
   无任何贴地 limb（鱼 / 飞行 rest pose / chain）→ contact 全 null + warning，airborne 不输出。
 - **amplitude 末端集**：非贴地 limb 的 tips + head（人形「双手双脚 + head」的推广）。
 - **P(t)**：关节集换 AS，A.10 其余流程（减 root、转 −heading、/H、RMS）不变。
+- **接触分组实现口径**：footPoints 带 tag（人形 l/r，非人形 = limb.tag）；同一 tag 多点 OR →
+  双阈值 → **按 tag 去抖**；`contactL/R` = 侧别聚合（sideOfLimbTag：fl/bl/l→L、fr/br/r→R，
+  无侧别 tag 两侧同值）；frames.csv 新增 **`contactTags` 列**（命中 tag 按 '+' 连接、字母序）；
+  支撑态扩展：≥3 命中 = `multi-support`，无接触点 = `n/a`（airborne 恒 false）。
+- **肢链方差排序**：粗网格（≤5fps、≤60 点）FK 预采样 + Welford 在线方差，只用于 Top-8 排序
+  （方差并列按映射顺序，确定性）；AS 超 27 时按 mid → base 顺序让位（tip 最后丢）。
 - **summary**：`archetype` 必出；≠ humanoid 时附阈值口径 warning（§7.2）。
 
 依据:自定——泛化规则保证与 J15 特例兼容（人形映射下各条退化为附录 A 原式）；贴地判定的
