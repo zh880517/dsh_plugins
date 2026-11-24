@@ -593,6 +593,10 @@ kinemesh_analyze(path, {
     斑点）。改为按相机距离推导：near = 距离×0.02、far = 距离×20（`core/viewer/clip-planes.ts`，
     纯函数 + 单测），同位置可分辨厚度降到 <0.01 单位，实测斑点降到 0.6%（余量属模型自身层叠/接缝）；
     拖动/滚轮缩放时经 OrbitControls change 事件同步更新（拉近看细节不会退回低精度）。
+  - **骨架线生命周期（0.6.9）**：`SkeletonHelper` 挂在 scene 上（不在 model 层级里），
+    卸载模型时必须显式摘除 + 释放（`core/viewer/skeleton-helpers.ts`，纯对象操作 + 单测）。
+    漏摘会让 `skeleton` / `bones-overlay` 模式「换一个 FBX 后残留旧骨架」——真实资产实测：
+    换模型后画面多出 4740 个像素的旧骨架线段，修好后与「全新载入」对照图逐像素一致（diff = 0）。
   - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）；
   - **辅助对象过滤**：Unity/Max 导出的 FBX 常带 Dummy、locator、IK 目标、线框 gizmo、相机/灯光辅助物，
     常规 3D 工具默认不显示；载入时按「对象类型（Line/Points/Sprite/Camera/Light）+ 命名（dummy|helper|

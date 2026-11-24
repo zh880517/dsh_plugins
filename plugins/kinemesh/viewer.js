@@ -47016,6 +47016,27 @@ void main() {
 		return true;
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/skeleton-helpers.ts
+	/** 为刚载入的模型建骨架线（先隐藏，由 applyMode 按模式显示） */
+	function createSkeletonHelpers(root) {
+		const helper = new SkeletonHelper(root);
+		helper.visible = false;
+		return [helper];
+	}
+	/** 挂到场景（scene 级，不在 model 层级里） */
+	function attachSkeletonHelpers(scene, helpers) {
+		for (const helper of helpers) scene.add(helper);
+	}
+	/** 卸载模型时摘除并释放：必须从 scene 移除，否则残留旧骨架（0.6.9 修复） */
+	function detachSkeletonHelpers(scene, helpers) {
+		for (const helper of helpers) {
+			scene.remove(helper);
+			helper.geometry.dispose();
+			const materials = Array.isArray(helper.material) ? helper.material : [helper.material];
+			for (const material of materials) if (material !== void 0 && material !== null) material.dispose();
+		}
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/kinemesh-viewer.ts
 	/** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
 	var LABEL_BASE_HEIGHT_PX = 720;
@@ -47151,6 +47172,7 @@ void main() {
 			mixer = null;
 			actions = /* @__PURE__ */ new Map();
 			activeAction = null;
+			detachSkeletonHelpers(scene, skeletons);
 			skeletons = [];
 			suppressedAux = [];
 		}
@@ -47225,11 +47247,8 @@ void main() {
 					const action = mixer.clipAction(clip);
 					actions.set(clip.name || `clip_${actions.size}`, action);
 				}
-				skeletons = [new SkeletonHelper(model)];
-				for (const helper of skeletons) {
-					helper.visible = false;
-					scene.add(helper);
-				}
+				skeletons = createSkeletonHelpers(model);
+				attachSkeletonHelpers(scene, skeletons);
 				const box = new Box3().setFromObject(model, true);
 				const size = box.isEmpty() ? new Vector3(1, 1, 1) : box.getSize(new Vector3());
 				const center = box.isEmpty() ? new Vector3() : box.getCenter(new Vector3());

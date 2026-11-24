@@ -17,6 +17,7 @@ import { collectAuxiliaryObjects } from './auxiliary.js';
 import { computeClipPlanes } from './clip-planes.js';
 import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
+import { attachSkeletonHelpers, createSkeletonHelpers, detachSkeletonHelpers } from './skeleton-helpers.js';
 import type { CanonicalScene } from '../types.js';
 
 /** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
@@ -225,6 +226,8 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     mixer = null;
     actions = new Map();
     activeAction = null;
+    // 骨架线必须显式从 scene 摘掉（它不在 model 层级里），否则旧骨架残留在下一个模型上
+    detachSkeletonHelpers(scene, skeletons);
     skeletons = [];
     suppressedAux = [];
   }
@@ -328,11 +331,9 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         const action = mixer.clipAction(clip);
         actions.set(clip.name || `clip_${actions.size}`, action);
       }
-      skeletons = [new THREE.SkeletonHelper(model)];
-      for (const helper of skeletons) {
-        helper.visible = false;
-        scene.add(helper);
-      }
+      // 骨架线挂在 scene 上（生命周期见 viewer/skeleton-helpers.ts）：换模型时由 clearModel 摘除
+      skeletons = createSkeletonHelpers(model);
+      attachSkeletonHelpers(scene, skeletons);
       const box = new THREE.Box3().setFromObject(model, true);
       const size = box.isEmpty() ? new THREE.Vector3(1, 1, 1) : box.getSize(new THREE.Vector3());
       const center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
