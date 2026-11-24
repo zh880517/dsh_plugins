@@ -47473,6 +47473,7 @@ void main() {
 				const duration = action.getClip().duration;
 				frame = clampFrame(requested, duration);
 				playing = false;
+				if (action.paused) action.paused = false;
 				mixer.setTime(frame / 30);
 				renderer.render(scene, camera);
 				ensureRenderLoop();
@@ -47628,9 +47629,17 @@ void main() {
 			sprite.renderOrder = 999;
 			return sprite;
 		}
+		/**
+		* 暂停（0.7.5 修正）：**只清 playing 标志，绝不设 `action.paused = true`**。
+		*
+		* 踩过的坑：three 的 `AnimationAction.paused` 会把 `_effectiveTimeScale` 归零，于是
+		* `mixer.setTime(t)` 里的 `deltaTime *= _updateTimeScale()` 变成 0——action 的时间停在
+		* `setTime` 刚重置的 0 上，姿势永远回到**第 0 帧**。表现就是「暂停之后点轨道/播放条跳转，
+		* 帧号和播放头在动、3D 画面不动（其实是永远停在第 0 帧）」，而再次播放又正常。
+		* 我们的渲染循环本来就用 `playing` 门控是否推进，不需要 paused 这个开关。
+		*/
 		function pauseInternal() {
 			playing = false;
-			if (activeAction !== null) activeAction.paused = true;
 		}
 		function clampFrame(requested, durationSeconds) {
 			const maxFrame = Math.max(0, Math.floor(durationSeconds * 30));

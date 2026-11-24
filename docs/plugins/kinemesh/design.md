@@ -636,6 +636,16 @@ kinemesh_analyze(path, {
   2× → 48 帧、0.2× → 4 帧。
 - **帧号显示恒为整数（0.7.4）**：播放时内部帧号是连续小数（平滑推进），轨道头部/读数一律
   `Math.round` 后再显示——修 0.7.3 之前出现过的 `f9.115996421575549 / f55`。
+- **暂停后仍可跳转（0.7.5，真根因）**：修「暂停之后点轨道条/播放条跳转，帧号与播放头在动、
+  但 3D 画面不动」。根因是 three 的 `AnimationAction.paused = true` 会把 `_effectiveTimeScale`
+  归零，于是 `AnimationMixer.setTime(t)` 内部 `deltaTime *= scale` 变成 0，action 时间停在 setTime
+  刚重置的 0 上 → 姿势永远回到**第 0 帧**（所以第一次跳转看着"动了"，之后每帧画面完全一样），
+  而再次播放会 `reset().play()` 解开 paused 又正常——这就是"好了又坏"的由来。
+  修法：`pauseInternal()` **只清 `playing` 标志，不设 `action.paused`**（渲染循环本来就用 `playing`
+  门控推进）；`seekFrame()` 里再兜一层 `if (action.paused) action.paused = false` 才 `mixer.setTime`。
+  回归测试：`tests/kinemesh/viewer-pause-scrub.test.ts` 直接钉住 three 的这个行为；
+  端到端 harness（真实 client.js + 真 FBX）实测暂停后连续跳转：修前 3 次跳转 diff 全为 0，
+  修后 56344 / 54086 / 17259 / 37120 像素变化。
 - **渲染循环健壮性（0.7.4）**：修「点轨道条/播放条跳转不刷新显示」。three 的
   `setAnimationLoop` 在回调抛错后**不会排下一帧**，循环一死画面永停、交互区还在动——正是这个症状。
   ① `renderLoop` 整体 try/catch（异常只记一次，循环继续）；② 每次交互（play / seek / setDisplay /
