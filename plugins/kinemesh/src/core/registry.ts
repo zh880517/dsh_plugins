@@ -36,10 +36,30 @@ export const FORMAT_ENTRIES: readonly FormatEntry[] = [FBX_ENTRY, GLTF_ENTRY, OB
 
 /** 找不到返回 null，由调用方给自愈指引（unknownFormatError） */
 export function detectFormat(head: Uint8Array, fileName: string): FormatEntry | null {
+  // 内容优先：magic / 结构特征先判，扩展名只是内容判不出来时的兜底提示
+  for (const entry of FORMAT_ENTRIES) {
+    if (entry.detect(head, '')) return entry;
+  }
   for (const entry of FORMAT_ENTRIES) {
     if (entry.detect(head, fileName)) return entry;
   }
   return null;
+}
+
+/**
+ * 纯内容格式探测（忽略文件名/扩展名）：文件浏览、同资产扫描、附件落盘等
+ * 「不同项目命名约束不同」的场景用——判定只来自字节内容（FBX magic/ASCII 头、glTF JSON/GLB magic、OBJ 关键字）。
+ */
+export function detectFormatByContent(head: Uint8Array): FormatEntry | null {
+  for (const entry of FORMAT_ENTRIES) {
+    if (entry.detect(head, '')) return entry;
+  }
+  return null;
+}
+
+/** 内容嗅探：这个字节串看起来是不是可分析的模型（不看文件名） */
+export function looksLikeModelBytes(head: Uint8Array): boolean {
+  return detectFormatByContent(head) !== null;
 }
 
 /** 未识别/明确不支持的输入 → 「错在哪 + 正确姿势」（设计文档 §3.3） */

@@ -80,6 +80,9 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
   kinemesh --help
   kinemesh --version       打印 CLI 版本（第三方 Agent 用来确认手上是哪一版）
 
+判定口径：格式识别与「动画 ↔ 网格」配对一律按文件内容（magic/结构/骨骼名覆盖率），不依赖文件名或扩展名；
+mesh 参数缺省时会在动作文件附近按内容自动找网格候选，找到多个同覆盖率候选时 warnings 会列出并说明取舍。
+
 输出契约：成功 → stdout 一行 JSON（ok:true）；失败 → stderr 一行 JSON（ok:false 带
 what/guidance/step 三段式）+ 非零退出码。截图需要 playwright：
   npm i playwright && npx playwright install chromium
@@ -173,7 +176,7 @@ async function readMeshFlag(flags: Record<string, string>): Promise<ModelFileRef
   const raw = flags.mesh;
   if (raw === undefined || raw === '' || raw === 'true') {
     if (raw === 'true') {
-      fail('--mesh 缺少文件路径。', '--mesh <mesh-file>，例如 --mesh basic/xxx_skin.fbx。', '解析 mesh 参数');
+      fail('--mesh 缺少文件路径。', '--mesh <网格文件路径>（任意命名，例如 D:/assets/hero_mesh.fbx）。', '解析 mesh 参数');
       return null;
     }
     return undefined;

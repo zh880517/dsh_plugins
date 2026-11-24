@@ -1,12 +1,13 @@
 // 同资产 mesh 文件内容扫描（0.10.1「不依赖文件名」）：动作文件没有网格时，在它附近找
 // 「真的有网格、且骨骼能和动作对上」的模型文件——判定全部来自**文件内容**（FBX 的 Geometry/Model
-// 节点、glTF 的 meshes/skins 节点），不依赖 `_skin` 之类的文件名或 `basic/` 之类的目录名。
+// 节点、glTF 的 meshes/skins 节点），不依赖文件名或目录命名约定。
 //
 // 扫描范围：动作文件所在目录 / 上一级（角色目录）/ 上两级（资产根），各向下 3 层、最多 400 个模型文件；
 // 先用便宜的字节探测（不解析场景）找出有网格的文件，ASCII FBX 还能直接抽骨骼名；
 // 二进制 FBX 等无法便宜抽骨骼的格式，只对排序靠前的少数候选做一次真实解析补骨骼名。
 // 进程内按「路径 + mtime + 大小」缓存探测结果，同一资产反复预览不重复读文件。
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
+import { detectFormatByContent } from '../registry.js';
 import path from 'node:path';
 import { loadModelScene } from '../analyze-file.js';
 import { nodeNameKey } from './names.js';
@@ -17,9 +18,6 @@ const MAX_FILES = 400;
 const MAX_RESULTS = 6;
 /** 无法便宜抽骨骼名的格式（二进制 FBX），最多解析几个候选来评分 */
 const MAX_PARSE_CANDIDATES = 4;
-/** 模型扩展名（registry 支持的全部格式） */
-const MODEL_EXTENSIONS = new Set(['.fbx', '.glb', '.gltf', '.obj']);
-
 export interface CompanionMeshMatch {
   path: string;
   name: string;
@@ -175,7 +173,7 @@ interface ModelFileRef {
   depth: number;
 }
 
-/** 动作文件附近收集模型文件：所在目录 / 上一级 / 上两级，各向下 maxDepth 层 */
+/** 动作文件附近收集候选文件：所在目录 / 上一级 / 上两级，各向下 maxDepth 层（不看文件名/扩展名） */
 async function collectNearbyModelFiles(absPath: string, maxFiles: number, maxDepth: number): Promise<ModelFileRef[]> {
   const ownDir = path.dirname(absPath);
   const roots = [ownDir, path.dirname(ownDir), path.dirname(path.dirname(ownDir))];
@@ -192,13 +190,11 @@ async function collectNearbyModelFiles(absPath: string, maxFiles: number, maxDep
       const entries = await readdir(current.dir, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          if (entry.name.startsWith('.')) continue;
+          if (entry.name.startsWith('.') || SKIP_DIR_NAMES.has(entry.name)) continue;
           queue.push({ dir: path.join(current.dir, entry.name), depth: current.depth + 1 });
           continue;
         }
         if (!entry.isFile()) continue;
-        const ext = path.extname(entry.name).toLowerCase();
-        if (!MODEL_EXTENSIONS.has(ext)) continue;
         const abs = path.join(current.dir, entry.name);
         if (path.resolve(abs) === absPath) continue; // 动作文件自己
         const key = path.resolve(abs).toLowerCase();
@@ -213,7 +209,26 @@ async function collectNearbyModelFiles(absPath: string, maxFiles: number, maxDep
   return files;
 }
 
+/** 明显不是模型资产的目录（避免扫贴图/缓存目录） */
+const SKIP_DIR_NAMES = new Set(['node_modules', 'Library', 'obj', 'Temp', 'Logs', 'UserSettings', 'PackageCache']);
+
 // ———————— 便宜探测（不解析场景） ————————
+
+/** 只读文件头（自愈：读不到返回 null） */
+async function readHead(abs: string, bytes: number): Promise<Buffer | null> {
+  try {
+    const handle = await open(abs, 'r');
+    try {
+      const buffer = Buffer.alloc(bytes);
+      const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+      return buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
 
 async function probeModelFile(abs: string, depth: number): Promise<Probe | null> {
   const info = await stat(abs).catch(() => undefined);
@@ -224,8 +239,13 @@ async function probeModelFile(abs: string, depth: number): Promise<Probe | null>
   }
   let probe: Omit<Probe, 'depth'> | null = null;
   try {
-    const data = await readFile(abs);
-    probe = probeBuffer(abs, data);
+    // 内容探测（忽略扩展名）：先读头判格式，非模型文件直接跳过，不做全量读取
+    const head = await readHead(abs, 4096);
+    const entry = head === null ? null : detectFormatByContent(head);
+    if (entry !== null) {
+      const data = await readFile(abs);
+      probe = probeBuffer(abs, data, entry.id);
+    }
   } catch {
     probe = null;
   }
@@ -233,12 +253,11 @@ async function probeModelFile(abs: string, depth: number): Promise<Probe | null>
   return probe === null ? null : { ...probe, depth };
 }
 
-/** 按扩展名/内容做便宜探测：是否有网格 + 能便宜拿到的骨骼名 */
-function probeBuffer(abs: string, data: Buffer): Omit<Probe, 'depth'> | null {
+/** 按内容格式做便宜探测：是否有网格 + 能便宜拿到的骨骼名 */
+function probeBuffer(abs: string, data: Buffer, format: string): Omit<Probe, 'depth'> | null {
   const name = path.basename(abs);
-  const ext = path.extname(name).toLowerCase();
   const base = { path: abs, name, bytes: data.byteLength };
-  if (ext === '.fbx') {
+  if (format === 'fbx') {
     if (isFbxBinary(data)) {
       const text = data.toString('latin1');
       // 二进制 FBX 的节点名以明文字符串存放：有 Geometry 节点 = 有网格（骨骼名留给解析）
@@ -251,24 +270,29 @@ function probeBuffer(abs: string, data: Buffer): Omit<Probe, 'depth'> | null {
       boneNames: extractAsciiFbxBones(text),
     };
   }
-  if (ext === '.glb') {
-    const json = readGlbJson(data);
+  if (format === 'gltf') {
+    // 内容判格式：GLB 有 'glTF' magic，否则按 JSON 文本解析（扩展名无关）
+    const json = isGlb(data) ? readGlbJson(data) : parseJsonText(data);
     if (json === null) return null;
     return { ...base, hasMesh: gltfHasMesh(json), boneNames: gltfBoneNames(json) };
   }
-  if (ext === '.gltf') {
-    try {
-      const json = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
-      return { ...base, hasMesh: gltfHasMesh(json), boneNames: gltfBoneNames(json) };
-    } catch {
-      return null;
-    }
-  }
-  if (ext === '.obj') {
+  if (format === 'obj') {
     // OBJ 只有静态网格、没有骨骼：可以当网格，但骨骼覆盖率会是 0
     return { ...base, hasMesh: true, boneNames: [] };
   }
   return null;
+}
+
+function isGlb(data: Buffer): boolean {
+  return data.length >= 4 && data.toString('latin1', 0, 4) === 'glTF';
+}
+
+function parseJsonText(data: Buffer): Record<string, unknown> | null {
+  try {
+    return JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function isFbxBinary(data: Buffer): boolean {

@@ -6,24 +6,16 @@
 // handler 收到 CommandInvocation = { commandId, agent, rawInput, attachments, signal }。
 // 附件（FileBlock）= { type:'file', attachment:{ attachmentId, name, bytes } } 不含磁盘路径，
 // 因此经 Host `fileUploads.resolve(agent, attachmentId)` 取内容后落临时文件，再把路径交给 Agent。
-// 纯逻辑（扩展名判定 / 消息组装 / 路径提取）抽成可测函数，与本模块的运行时注册解耦。
+// 纯逻辑（内容判定 / 消息组装 / 路径提取）抽成可测函数，与本模块的运行时注册解耦。
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, open, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { detectFormatByContent } from './core/registry.js';
 import { ensureTempDir, tempRootDir } from './core/temp-dir.js';
 
 /** 命令名（不带斜杠）；DSH 命令名需匹配其 COMMAND_NAME 正则（小写字母开头） */
 export const COMMAND_NAME = 'kinemesh';
-
-/** 可分析的模型扩展名（与 core registry 一致） */
-export const MODEL_EXTENSIONS = ['.fbx', '.glb', '.gltf', '.obj'] as const;
-
-/** 文件名是否是可分析的模型（大小写不敏感） */
-export function isModelFileName(name: string): boolean {
-  const lowered = name.toLowerCase();
-  return MODEL_EXTENSIONS.some((ext) => lowered.endsWith(ext));
-}
 
 /** 从自由文本里提取绝对/相对路径（支持盘符、UNC、~、含空格时用引号包裹），按出现顺序去重 */
 export function extractFilePaths(text: string): string[] {
@@ -50,13 +42,28 @@ export function extractFilePaths(text: string): string[] {
   return out;
 }
 
-/** 从用户输入里挑出模型路径（其余文本视为「要求」） */
+/** 从用户输入里挑出模型路径（其余文本视为「要求」）——**不按扩展名过滤**：是否模型由调用方按内容判定 */
 export function splitRequest(text: string): { paths: string[]; request: string } {
   const candidates = extractFilePaths(text);
-  const paths = candidates.filter((candidate) => isModelFileName(candidate));
   let request = text;
   for (const candidate of candidates) request = request.split(candidate).join(' ');
-  return { paths, request: request.replace(/\s+/g, ' ').trim() };
+  return { paths: candidates, request: request.replace(/\s+/g, ' ').trim() };
+}
+
+/** 路径内容是否像可分析的模型（读头嗅探；不依赖文件名/扩展名，读不到返回 false） */
+async function pathLooksLikeModel(abs: string): Promise<boolean> {
+  try {
+    const handle = await open(abs, 'r');
+    try {
+      const buffer = Buffer.alloc(4096);
+      const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
+      return detectFormatByContent(buffer.subarray(0, bytesRead)) !== null;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
+  }
 }
 
 export interface CommandPlan {
@@ -87,11 +94,6 @@ export interface CommandAttachmentRef {
   attachmentId: string;
   name: string;
   bytes: number;
-}
-
-/** 从附件列表里挑模型文件（按扩展名），保持原顺序 */
-export function selectModelAttachments<T extends { name: string }>(attachments: readonly T[]): T[] {
-  return attachments.filter((item) => isModelFileName(item.name));
 }
 
 /** 临时落盘目录（0.9.2：与缺省产物同源，落在 <cwd>/.kinemeshtmp/command-attachments，Host 重启可清） */
@@ -133,18 +135,10 @@ export function materializeAttachmentContent(
   return null;
 }
 
-/** 模型文件头嗅探（FBX 二进制/ASCII、glTF JSON、GLB、OBJ）——避免把任意内容当模型落盘 */
+/** 模型文件头嗅探（内容）：FBX magic/ASCII 头、glTF JSON、GLB magic、OBJ 关键字——不看文件名/扩展名 */
 export function looksLikeModelBytes(data: Uint8Array): boolean {
-  if (data.byteLength >= 4) {
-    // FBX 二进制 magic 是 7 字节 'Kaydara'；GLB 是 4 字节 'glTF'
-    if (data.byteLength >= 7 && new TextDecoder('latin1').decode(data.subarray(0, 7)) === 'Kaydara') return true;
-    if (new TextDecoder('latin1').decode(data.subarray(0, 4)) === 'glTF') return true;
-    if (data[0] === 0x7b) return true; // '{' glTF JSON
-    if (data[0] === 0x3b) return true; // ';' FBX ASCII 注释头
-  }
-  // OBJ / ASCII FBX 文本兜底：前 2KB 出现典型关键字
-  const head = new TextDecoder('utf-8', { fatal: false }).decode(data.subarray(0, 2048));
-  return /FBXHeaderExtension\s*:|^\s*(v|vn|vt|f|o|g|usemtl)\s/m.test(head);
+  const head = data.subarray(0, Math.min(data.byteLength, 4096));
+  return detectFormatByContent(head) !== null;
 }
 
 /** 命令 handler 的可注入副作用（运行时实现；测试可替换） */
@@ -178,18 +172,25 @@ export async function runCommand(
 ): Promise<CommandOutcome> {
   const { paths: typedPaths, request } = splitRequest(invocation.rawInput ?? '');
   const paths: string[] = [];
+  const ignored: string[] = [];
+  // 手写路径：按文件内容判定是否模型（不依赖扩展名/文件名）
   for (const candidate of typedPaths) {
     const abs = resolveLocal(candidate);
-    paths.push(abs);
+    if (await pathLooksLikeModel(abs)) paths.push(abs);
+    else ignored.push(candidate);
   }
 
-  const modelAttachments = selectModelAttachments(invocation.attachments ?? []);
+  // 附件：先读内容 → 内容嗅探 → 落盘；非模型附件（截图/文档/读不出的）计入 ignored
   const unresolved: string[] = [];
-  for (const attachment of modelAttachments) {
+  for (const attachment of invocation.attachments ?? []) {
     const content = await deps.readAttachment(invocation.agentId, attachment.attachmentId).catch(() => null);
     const materialized = content === null ? null : materializeAttachmentContent(attachment.name, content);
     if (materialized === null) {
       unresolved.push(attachment.name);
+      continue;
+    }
+    if (!looksLikeModelBytes(materialized.data)) {
+      ignored.push(attachment.name);
       continue;
     }
     try {
@@ -200,17 +201,16 @@ export async function runCommand(
     }
   }
 
-  const ignored = (invocation.attachments ?? []).filter((item) => !isModelFileName(item.name));
-
   if (paths.length === 0) {
     const reasons: string[] = [];
     if (unresolved.length > 0) reasons.push(`附件内容读不出来：${unresolved.join('、')}`);
-    if (ignored.length > 0) reasons.push(`忽略的非模型附件：${ignored.map((item) => item.name).join('、')}`);
+    if (ignored.length > 0) reasons.push(`忽略的非模型文件（按内容判定）：${ignored.join('、')}`);
     return {
       kind: 'error',
       text: [
         '没有可分析的模型文件。',
-        '用法：/kinemesh 后拖入 .fbx / .glb / .gltf / .obj，或在命令里直接写文件路径，例如 `/kinemesh E:\\art\\hero.fbx 分析攻击强度`。',
+        '用法：/kinemesh 后拖入模型文件，或在命令里直接写文件路径，例如 `/kinemesh E:\\art\\hero.fbx 分析攻击强度`。',
+        '支持的格式按文件内容识别（FBX / glTF / GLB / OBJ），与扩展名/文件名无关。',
         ...(reasons.length > 0 ? ['', ...reasons] : []),
       ].join('\n'),
     };
@@ -226,7 +226,7 @@ export async function runCommand(
   }
   const notes: string[] = [];
   if (unresolved.length > 0) notes.push(`附件读不出内容：${unresolved.join('、')}（可改用直接写路径）`);
-  if (ignored.length > 0) notes.push(`已忽略非模型附件：${ignored.map((item) => item.name).join('、')}`);
+  if (ignored.length > 0) notes.push(`已忽略非模型文件（按内容判定）：${ignored.join('、')}`);
   return {
     kind: 'success',
     text: [`已把分析指令发给会话 Agent（${paths.length} 个模型）：`, ...paths.map((item) => `- ${item}`), ...(notes.length > 0 ? ['', ...notes] : [])].join(

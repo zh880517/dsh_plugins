@@ -1,18 +1,18 @@
 // `/kinemesh` 命令（0.6.0 交互重构）：替代原输入框「动析」按钮。
 // 纯逻辑直测：扩展名判定、路径提取、消息组装、附件择优、附件内容落盘、runCommand 全分支
 // （附件 / 仅路径 / 无模型 / Agent 离线 / 非模型附件忽略）。运行时注册在 host.ts 装配。
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   COMMAND_NAME,
   attachmentTempDir,
   composeCommandMessage,
   extractFilePaths,
-  isModelFileName,
   looksLikeModelBytes,
   materializeAttachmentContent,
   runCommand,
-  selectModelAttachments,
   splitRequest,
   type CommandDeps,
 } from '../../plugins/kinemesh/src/command.js';
@@ -46,28 +46,24 @@ function fakeDeps(overrides: Partial<CommandDeps> = {}): CommandDeps & {
   };
 }
 
-describe('/kinemesh 命令名与扩展名', () => {
+describe('/kinemesh 命令名', () => {
   it('命令名是 kinemesh（DSH 命令名正则要求小写字母开头）', () => {
     expect(COMMAND_NAME).toBe('kinemesh');
     expect(/^[a-z][a-z0-9-]*$/.test(COMMAND_NAME)).toBe(true);
   });
-
-  it('四个模型扩展名大小写不敏感；非模型拒绝', () => {
-    for (const name of ['a.fbx', 'B.GLB', 'c.gltf', 'd.Obj']) expect(isModelFileName(name)).toBe(true);
-    for (const name of ['a.max', 'b.blend', 'c.png', 'readme.txt']) expect(isModelFileName(name)).toBe(false);
-  });
 });
 
 describe('输入解析：路径与要求分离', () => {
-  it('提取 Windows / UNC / ~ / 引号包裹路径，非模型路径不计入待分析', () => {
+  it('提取 Windows / UNC / ~ / 引号包裹路径；路径是否模型由内容判定（这里不做扩展名过滤）', () => {
     const text = '分析 E:\\art\\hero.fbx 和 "D:\\my art\\enemy.glb" 以及 C:\\doc\\readme.txt 的攻击强度';
     const paths = extractFilePaths(text);
     expect(paths).toContain('E:\\art\\hero.fbx');
     expect(paths).toContain('D:\\my art\\enemy.glb');
     expect(paths).toContain('C:\\doc\\readme.txt');
     const split = splitRequest(text);
-    expect(split.paths).toEqual(['E:\\art\\hero.fbx', 'D:\\my art\\enemy.glb']);
+    expect(split.paths).toEqual(extractFilePaths(text));
     expect(split.request).not.toContain('hero.fbx');
+    expect(split.request).not.toContain('readme.txt');
     expect(split.request).toContain('攻击强度');
   });
 
@@ -94,12 +90,7 @@ describe('注入消息组装', () => {
   });
 });
 
-describe('附件择优与内容落盘', () => {
-  it('只挑模型附件，保持原顺序', () => {
-    const picked = selectModelAttachments([{ name: 'a.fbx' }, { name: 'x.png' }, { name: 'b.glb' }]);
-    expect(picked.map((item) => item.name)).toEqual(['a.fbx', 'b.glb']);
-  });
-
+describe('附件内容落盘', () => {
   it('内容来源：Uint8Array / ArrayBuffer / dataUrl / 嵌套对象字段', () => {
     expect(materializeAttachmentContent('a.fbx', FAKE_FBX)?.fileName).toBe('a.fbx');
     const arrayBuffer = FAKE_FBX.buffer.slice(FAKE_FBX.byteOffset, FAKE_FBX.byteOffset + FAKE_FBX.byteLength);
@@ -146,11 +137,23 @@ describe('runCommand 全分支', () => {
     expect(deps.delivered[0]!.text).toContain('分析攻击强度与是否循环');
   });
 
-  it('命令里直接写路径（无附件）也能工作', async () => {
+  it('命令里直接写路径（无附件）也能工作：按文件内容识别（故意用无扩展名文件）', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'kinemesh-command-'));
+    const file = path.join(dir, 'hero_no_extension');
+    await writeFile(file, Buffer.from(FAKE_FBX));
     const deps = fakeDeps();
-    const outcome = await runCommand({ agentId: 'sess-1', rawInput: 'E:\\art\\hero.fbx 看强度', attachments: [] }, deps);
+    const outcome = await runCommand({ agentId: 'sess-1', rawInput: `${file} 看强度`, attachments: [] }, deps);
     expect(outcome.kind).toBe('success');
-    expect(deps.delivered[0]!.text).toContain('hero.fbx');
+    expect(deps.delivered[0]!.text).toContain(file);
+  });
+
+  it('手写路径不是模型（内容不像）时忽略并提示，不发给 Agent', async () => {
+    const deps = fakeDeps();
+    const outcome = await runCommand({ agentId: 'sess-1', rawInput: 'C:\\doc\\readme.txt 看看', attachments: [] }, deps);
+    expect(outcome.kind).toBe('error');
+    expect(outcome.text).toContain('没有可分析的模型文件');
+    expect(outcome.text).toContain('readme.txt');
+    expect(deps.delivered).toHaveLength(0);
   });
 
   it('附件读不出内容 + 无路径：error 且给用法提示', async () => {
@@ -177,8 +180,11 @@ describe('runCommand 全分支', () => {
     expect(outcome.text).toContain('/tmp/a.fbx');
   });
 
-  it('非模型附件被忽略并提示；不影响模型附件分析', async () => {
-    const deps = fakeDeps({ readAttachment: async () => FAKE_FBX });
+  it('非模型附件按内容忽略并提示（不看文件名/扩展名）；不影响模型附件分析', async () => {
+    const deps = fakeDeps({
+      readAttachment: async (_agentId, attachmentId) =>
+        attachmentId === 'a1' ? FAKE_FBX : new Uint8Array(Buffer.from('假装是截图/文档的字节内容')),
+    });
     const outcome = await runCommand(
       {
         agentId: 'sess-1',
@@ -191,7 +197,7 @@ describe('runCommand 全分支', () => {
       deps,
     );
     expect(outcome.kind).toBe('success');
-    expect(outcome.text).toContain('已忽略非模型附件');
+    expect(outcome.text).toContain('已忽略非模型文件（按内容判定）');
     expect(deps.written).toHaveLength(1);
     expect(deps.written[0]!.fileName).toBe('a.fbx');
   });

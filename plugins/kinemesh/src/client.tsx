@@ -232,9 +232,6 @@ export function resolveRestoreTarget(
   return { clip, frame: Math.max(0, Math.min(frame, Math.max(0, maxFrame))) };
 }
 
-/** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
-export const MODEL_FILE_EXTENSIONS = ['.fbx', '.glb', '.gltf', '.obj'] as const;
-
 /** 从任意平台路径取文件名（预览面板展示绑定 mesh 用） */
 export function basenameOf(filePath: string): string {
   const parts = filePath.split(/[\\/]/);
@@ -251,12 +248,6 @@ export function meshBindingChip(binding: CompanionBinding | null, meshPath: stri
   const report = binding?.report;
   if (report === null || report === undefined) return name;
   return `${name} · ${report.matchedBones}/${report.meshBones} 骨`;
-}
-
-/** 拖入文件是否为可预览的模型（纯函数，测试直测）：只看扩展名，实际格式由主进程嗅探 */
-export function isModelFileName(fileName: string): boolean {
-  const lowered = fileName.toLowerCase();
-  return MODEL_FILE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 
 /**
@@ -289,7 +280,7 @@ const ZH_TEXTS: Record<string, string> = {
   'page.models': '本会话的模型',
   'page.emptySession': '会话信息不可用，先用「动析」浮层打开一次预览。',
   'page.emptyModels': '本会话还没有用过的模型：用「动析」浮层加载，或在下方输入路径打开。',
-  'page.openPath': '模型文件路径（.fbx / .glb / .gltf / .obj）',
+  'page.openPath': '模型文件路径（FBX / glTF / GLB / OBJ，按内容识别）',
   'page.open': '打开',
   'opened.title': '打开过的模型（本进程）',
   'opened.empty': '还没有打开过模型：用右侧路径或拖入文件加载，记录只保留到本进程结束',
@@ -299,7 +290,7 @@ const ZH_TEXTS: Record<string, string> = {
   'opened.badge.animation': '动画',
   'opened.footHint': '层级：带网格的条目是根，动作文件挂在它绑定的网格下；× 删除记录',
   'page.meshPath': 'mesh 文件（可选：动作没网格时绑网格）',
-  'page.meshTitle': '独立 mesh 文件（动作-only 资产）：例如 basic/xxx_skin.fbx；留空时自动识别同资产网格文件',
+  'page.meshTitle': '独立 mesh 文件（动作-only 资产）：任意路径/命名；留空时按文件内容自动识别同资产网格',
   'binding.chip': 'mesh',
   'binding.bonesTitle': 'mesh 绑定：动画按骨骼名自动匹配到 mesh 骨架',
   'binding.auto': '已自动绑定 mesh',
@@ -342,7 +333,7 @@ const ZH_TEXTS: Record<string, string> = {
   'pane.digestChipTitle': '发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）',
   'pane.sentWithDigest': '已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。',
   'pane.sentNoDigest': '已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。',
-  'pane.dropHint': '也可以把 .fbx / .glb / .gltf / .obj 直接拖到这里',
+  'pane.dropHint': '也可以把模型文件直接拖到这里（格式按内容识别）',
   'pane.dropActive': '松开即加载',
   'pane.footHint': '「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。',
   'pane.send': '发送给 AI 分析',
@@ -359,7 +350,7 @@ const EN_TEXTS: Record<string, string> = {
   'page.models': 'Session models',
   'page.emptySession': 'Session info unavailable; open the preview overlay once first.',
   'page.emptyModels': 'No models used in this session yet: load one in the preview overlay, or type a path below.',
-  'page.openPath': 'Model file path (.fbx / .glb / .gltf / .obj)',
+  'page.openPath': 'Model file path (FBX / glTF / GLB / OBJ, detected by content)',
   'page.open': 'Open',
   'opened.title': 'Opened models (this process)',
   'opened.empty': 'No models opened yet: load one on the right or drag a file here; records live only for this process',
@@ -369,7 +360,7 @@ const EN_TEXTS: Record<string, string> = {
   'opened.badge.animation': 'motion',
   'opened.footHint': 'Hierarchy: mesh entries are roots, motion files hang under their bound mesh; × deletes a record',
   'page.meshPath': 'mesh file (optional: bind a mesh to a mesh-less motion)',
-  'page.meshTitle': 'Standalone mesh file (motion-only assets), e.g. basic/xxx_skin.fbx; leave empty to auto-detect a mesh in the same asset',
+  'page.meshTitle': 'Standalone mesh file (motion-only assets), any path/name; leave empty to auto-detect a mesh by file content',
   'binding.chip': 'mesh',
   'binding.bonesTitle': 'mesh binding: animation tracks auto-mapped to mesh bones by name',
   'binding.auto': 'mesh auto-bound',
@@ -412,7 +403,7 @@ const EN_TEXTS: Record<string, string> = {
   'pane.digestChipTitle': 'The motion-analysis digest (segments / loopCheck / keyframe recipe) will be attached when sending',
   'pane.sentWithDigest': 'Sent to AI: message includes the motion-analysis digest (segments/loopCheck/keyframe recipe).',
   'pane.sentNoDigest': 'Sent to AI: it will call kinemesh_render to capture this viewpoint and analyze the image.',
-  'pane.dropHint': 'or drag a .fbx / .glb / .gltf / .obj file here',
+  'pane.dropHint': 'or drag a model file here (format detected by content)',
   'pane.dropActive': 'Release to load',
   'pane.footHint': 'Send hands the current path, clip, frame, viewpoint and motion digest (if any) to this session\u2019s AI.',
   'pane.send': 'Send to AI',
@@ -1406,15 +1397,7 @@ function PreviewPane(props: {
     setDragOver(false);
     const file = event.dataTransfer?.files?.[0];
     if (file === undefined) return;
-    if (!isModelFileName(file.name)) {
-      setState({
-        phase: 'empty',
-        error: `不支持的文件类型：${file.name}（支持 ${MODEL_FILE_EXTENSIONS.join(' / ')}）`,
-        clips: [],
-        maxFrame: 0,
-      });
-      return;
-    }
+    // 0.10.2：不按扩展名筛——格式由内容探测判定（不同项目命名/扩展名约束不同）
     const resolved = hostPathOfFile(file);
     if (resolved === null) {
       setState({

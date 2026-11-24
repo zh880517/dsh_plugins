@@ -45701,6 +45701,7 @@ void main() {
 	];
 	/** 找不到返回 null，由调用方给自愈指引（unknownFormatError） */
 	function detectFormat(head, fileName) {
+		for (const entry of FORMAT_ENTRIES) if (entry.detect(head, "")) return entry;
 		for (const entry of FORMAT_ENTRIES) if (entry.detect(head, fileName)) return entry;
 		return null;
 	}
@@ -46034,7 +46035,7 @@ void main() {
 		} else if (primary.hasMesh) {
 			mesh = "primary";
 			warnings.push(`mesh 参数文件「${names.companion}」没有网格，网格改用 ${names.primary} 自带的。`);
-		} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（例如游戏资产里的 basic/*_skin.fbx，可先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
+		} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（任意路径/命名；先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
 		let animation;
 		if (primary.clipCount > 0) animation = "primary";
 		else if (companion.clipCount > 0) {

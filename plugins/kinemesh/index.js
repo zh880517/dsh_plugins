@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { mkdirSync } from "node:fs";
@@ -29447,7 +29447,7 @@ function addPrimitiveAttributes(geometry, primitiveDef, parser) {
 //#endregion
 //#region
 /** GLB 容器 magic：'glTF' */
-function isGlb(data) {
+function isGlb$1(data) {
 	if (data.byteLength < 4) return false;
 	return new TextDecoder("latin1").decode(new Uint8Array(data, 0, 4)) === "glTF";
 }
@@ -29475,7 +29475,7 @@ function ensureNodeProgressEvent() {
 }
 function parseGltf(data, ctx) {
 	ensureNodeProgressEvent();
-	const format = isGlb(data) ? "glb" : "gltf";
+	const format = isGlb$1(data) ? "glb" : "gltf";
 	const manager = new LoadingManager();
 	stubNodeTextures(manager);
 	const loader = new GLTFLoader(manager);
@@ -30228,7 +30228,16 @@ var FORMAT_ENTRIES = [
 ];
 /** 找不到返回 null，由调用方给自愈指引（unknownFormatError） */
 function detectFormat(head, fileName) {
+	for (const entry of FORMAT_ENTRIES) if (entry.detect(head, "")) return entry;
 	for (const entry of FORMAT_ENTRIES) if (entry.detect(head, fileName)) return entry;
+	return null;
+}
+/**
+* 纯内容格式探测（忽略文件名/扩展名）：文件浏览、同资产扫描、附件落盘等
+* 「不同项目命名约束不同」的场景用——判定只来自字节内容（FBX magic/ASCII 头、glTF JSON/GLB magic、OBJ 关键字）。
+*/
+function detectFormatByContent(head) {
+	for (const entry of FORMAT_ENTRIES) if (entry.detect(head, "")) return entry;
 	return null;
 }
 /** 未识别/明确不支持的输入 → 「错在哪 + 正确姿势」（设计文档 §3.3） */
@@ -30432,13 +30441,6 @@ var MAX_FILES = 400;
 var MAX_RESULTS = 6;
 /** 无法便宜抽骨骼名的格式（二进制 FBX），最多解析几个候选来评分 */
 var MAX_PARSE_CANDIDATES = 4;
-/** 模型扩展名（registry 支持的全部格式） */
-var MODEL_EXTENSIONS$1 = /* @__PURE__ */ new Set([
-	".fbx",
-	".glb",
-	".gltf",
-	".obj"
-]);
 var probeCache = /* @__PURE__ */ new Map();
 /** 从场景对象收集骨骼名（给自动扫描/候选报告用） */
 function collectBoneNames(root) {
@@ -30519,7 +30521,7 @@ async function findCompanionMeshes(absPath, animationBoneNames, options = {}) {
 	});
 	return matches.slice(0, options.maxResults ?? MAX_RESULTS);
 }
-/** 动作文件附近收集模型文件：所在目录 / 上一级 / 上两级，各向下 maxDepth 层 */
+/** 动作文件附近收集候选文件：所在目录 / 上一级 / 上两级，各向下 maxDepth 层（不看文件名/扩展名） */
 async function collectNearbyModelFiles(absPath, maxFiles, maxDepth) {
 	const ownDir = path.dirname(absPath);
 	const roots = [
@@ -30543,7 +30545,7 @@ async function collectNearbyModelFiles(absPath, maxFiles, maxDepth) {
 			const entries = await readdir(current.dir, { withFileTypes: true }).catch(() => []);
 			for (const entry of entries) {
 				if (entry.isDirectory()) {
-					if (entry.name.startsWith(".")) continue;
+					if (entry.name.startsWith(".") || SKIP_DIR_NAMES.has(entry.name)) continue;
 					queue.push({
 						dir: path.join(current.dir, entry.name),
 						depth: current.depth + 1
@@ -30551,8 +30553,6 @@ async function collectNearbyModelFiles(absPath, maxFiles, maxDepth) {
 					continue;
 				}
 				if (!entry.isFile()) continue;
-				const ext = path.extname(entry.name).toLowerCase();
-				if (!MODEL_EXTENSIONS$1.has(ext)) continue;
 				const abs = path.join(current.dir, entry.name);
 				if (path.resolve(abs) === absPath) continue;
 				const key = path.resolve(abs).toLowerCase();
@@ -30569,6 +30569,31 @@ async function collectNearbyModelFiles(absPath, maxFiles, maxDepth) {
 	}
 	return files;
 }
+/** 明显不是模型资产的目录（避免扫贴图/缓存目录） */
+var SKIP_DIR_NAMES = /* @__PURE__ */ new Set([
+	"node_modules",
+	"Library",
+	"obj",
+	"Temp",
+	"Logs",
+	"UserSettings",
+	"PackageCache"
+]);
+/** 只读文件头（自愈：读不到返回 null） */
+async function readHead(abs, bytes) {
+	try {
+		const handle = await open(abs, "r");
+		try {
+			const buffer = Buffer.alloc(bytes);
+			const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+			return buffer.subarray(0, bytesRead);
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		return null;
+	}
+}
 async function probeModelFile(abs, depth) {
 	const info = await stat(abs).catch(() => void 0);
 	if (info === void 0 || !info.isFile()) return null;
@@ -30579,7 +30604,9 @@ async function probeModelFile(abs, depth) {
 	};
 	let probe = null;
 	try {
-		probe = probeBuffer(abs, await readFile(abs));
+		const head = await readHead(abs, 4096);
+		const entry = head === null ? null : detectFormatByContent(head);
+		if (entry !== null) probe = probeBuffer(abs, await readFile(abs), entry.id);
 	} catch {
 		probe = null;
 	}
@@ -30593,16 +30620,14 @@ async function probeModelFile(abs, depth) {
 		depth
 	};
 }
-/** 按扩展名/内容做便宜探测：是否有网格 + 能便宜拿到的骨骼名 */
-function probeBuffer(abs, data) {
-	const name = path.basename(abs);
-	const ext = path.extname(name).toLowerCase();
+/** 按内容格式做便宜探测：是否有网格 + 能便宜拿到的骨骼名 */
+function probeBuffer(abs, data, format) {
 	const base = {
 		path: abs,
-		name,
+		name: path.basename(abs),
 		bytes: data.byteLength
 	};
-	if (ext === ".fbx") {
+	if (format === "fbx") {
 		if (isFbxBinary(data)) {
 			const text = data.toString("latin1");
 			return {
@@ -30618,8 +30643,8 @@ function probeBuffer(abs, data) {
 			boneNames: extractAsciiFbxBones(text)
 		};
 	}
-	if (ext === ".glb") {
-		const json = readGlbJson(data);
+	if (format === "gltf") {
+		const json = isGlb(data) ? readGlbJson(data) : parseJsonText(data);
 		if (json === null) return null;
 		return {
 			...base,
@@ -30627,22 +30652,22 @@ function probeBuffer(abs, data) {
 			boneNames: gltfBoneNames(json)
 		};
 	}
-	if (ext === ".gltf") try {
-		const json = JSON.parse(data.toString("utf8"));
-		return {
-			...base,
-			hasMesh: gltfHasMesh(json),
-			boneNames: gltfBoneNames(json)
-		};
-	} catch {
-		return null;
-	}
-	if (ext === ".obj") return {
+	if (format === "obj") return {
 		...base,
 		hasMesh: true,
 		boneNames: []
 	};
 	return null;
+}
+function isGlb(data) {
+	return data.length >= 4 && data.toString("latin1", 0, 4) === "glTF";
+}
+function parseJsonText(data) {
+	try {
+		return JSON.parse(data.toString("utf8"));
+	} catch {
+		return null;
+	}
 }
 function isFbxBinary(data) {
 	return data.length >= 23 && data.toString("latin1", 0, 23) === "Kaydara FBX Binary  \0\0";
@@ -33615,18 +33640,6 @@ function createRunDir(kind) {
 //#region
 /** 命令名（不带斜杠）；DSH 命令名需匹配其 COMMAND_NAME 正则（小写字母开头） */
 var COMMAND_NAME = "kinemesh";
-/** 可分析的模型扩展名（与 core registry 一致） */
-var MODEL_EXTENSIONS = [
-	".fbx",
-	".glb",
-	".gltf",
-	".obj"
-];
-/** 文件名是否是可分析的模型（大小写不敏感） */
-function isModelFileName(name) {
-	const lowered = name.toLowerCase();
-	return MODEL_EXTENSIONS.some((ext) => lowered.endsWith(ext));
-}
 /** 从自由文本里提取绝对/相对路径（支持盘符、UNC、~、含空格时用引号包裹），按出现顺序去重 */
 function extractFilePaths(text) {
 	const hits = [];
@@ -33654,16 +33667,30 @@ function extractFilePaths(text) {
 	for (const hit of hits) if (hit.value !== "" && !out.includes(hit.value)) out.push(hit.value);
 	return out;
 }
-/** 从用户输入里挑出模型路径（其余文本视为「要求」） */
+/** 从用户输入里挑出模型路径（其余文本视为「要求」）——**不按扩展名过滤**：是否模型由调用方按内容判定 */
 function splitRequest(text) {
 	const candidates = extractFilePaths(text);
-	const paths = candidates.filter((candidate) => isModelFileName(candidate));
 	let request = text;
 	for (const candidate of candidates) request = request.split(candidate).join(" ");
 	return {
-		paths,
+		paths: candidates,
 		request: request.replace(/\s+/g, " ").trim()
 	};
+}
+/** 路径内容是否像可分析的模型（读头嗅探；不依赖文件名/扩展名，读不到返回 false） */
+async function pathLooksLikeModel(abs) {
+	try {
+		const handle = await open(abs, "r");
+		try {
+			const buffer = Buffer.alloc(4096);
+			const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
+			return detectFormatByContent(buffer.subarray(0, bytesRead)) !== null;
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		return false;
+	}
 }
 /** 组装注入给 Agent 的指令（中文；只陈述事实与要求，数值由工具产出，不预设结论） */
 function composeCommandMessage(paths, request) {
@@ -33677,10 +33704,6 @@ function composeCommandMessage(paths, request) {
 		"语义存疑时按配方调 kinemesh_render 出关键帧截图，用读图工具逐张查看后带依据下结论。",
 		"数值一律引用工具产出，不要自行换算或编造。"
 	].join("\n");
-}
-/** 从附件列表里挑模型文件（按扩展名），保持原顺序 */
-function selectModelAttachments(attachments) {
-	return attachments.filter((item) => isModelFileName(item.name));
 }
 /** 临时落盘目录（0.9.2：与缺省产物同源，落在 <cwd>/.kinemeshtmp/command-attachments，Host 重启可清） */
 function attachmentTempDir() {
@@ -33727,16 +33750,9 @@ function materializeAttachmentContent(name, content) {
 	}
 	return null;
 }
-/** 模型文件头嗅探（FBX 二进制/ASCII、glTF JSON、GLB、OBJ）——避免把任意内容当模型落盘 */
+/** 模型文件头嗅探（内容）：FBX magic/ASCII 头、glTF JSON、GLB magic、OBJ 关键字——不看文件名/扩展名 */
 function looksLikeModelBytes(data) {
-	if (data.byteLength >= 4) {
-		if (data.byteLength >= 7 && new TextDecoder("latin1").decode(data.subarray(0, 7)) === "Kaydara") return true;
-		if (new TextDecoder("latin1").decode(data.subarray(0, 4)) === "glTF") return true;
-		if (data[0] === 123) return true;
-		if (data[0] === 59) return true;
-	}
-	const head = new TextDecoder("utf-8", { fatal: false }).decode(data.subarray(0, 2048));
-	return /FBXHeaderExtension\s*:|^\s*(v|vn|vt|f|o|g|usemtl)\s/m.test(head);
+	return detectFormatByContent(data.subarray(0, Math.min(data.byteLength, 4096))) !== null;
 }
 /**
 * `/kinemesh` 命令主体（纯逻辑 + 注入依赖）：解析用户输入与附件 → 落盘 → 记录会话模型 → 注入 Agent 指令。
@@ -33745,17 +33761,22 @@ function looksLikeModelBytes(data) {
 async function runCommand(invocation, deps) {
 	const { paths: typedPaths, request } = splitRequest(invocation.rawInput ?? "");
 	const paths = [];
+	const ignored = [];
 	for (const candidate of typedPaths) {
 		const abs = resolveLocal$1(candidate);
-		paths.push(abs);
+		if (await pathLooksLikeModel(abs)) paths.push(abs);
+		else ignored.push(candidate);
 	}
-	const modelAttachments = selectModelAttachments(invocation.attachments ?? []);
 	const unresolved = [];
-	for (const attachment of modelAttachments) {
+	for (const attachment of invocation.attachments ?? []) {
 		const content = await deps.readAttachment(invocation.agentId, attachment.attachmentId).catch(() => null);
 		const materialized = content === null ? null : materializeAttachmentContent(attachment.name, content);
 		if (materialized === null) {
 			unresolved.push(attachment.name);
+			continue;
+		}
+		if (!looksLikeModelBytes(materialized.data)) {
+			ignored.push(attachment.name);
 			continue;
 		}
 		try {
@@ -33765,16 +33786,16 @@ async function runCommand(invocation, deps) {
 			unresolved.push(attachment.name);
 		}
 	}
-	const ignored = (invocation.attachments ?? []).filter((item) => !isModelFileName(item.name));
 	if (paths.length === 0) {
 		const reasons = [];
 		if (unresolved.length > 0) reasons.push(`附件内容读不出来：${unresolved.join("、")}`);
-		if (ignored.length > 0) reasons.push(`忽略的非模型附件：${ignored.map((item) => item.name).join("、")}`);
+		if (ignored.length > 0) reasons.push(`忽略的非模型文件（按内容判定）：${ignored.join("、")}`);
 		return {
 			kind: "error",
 			text: [
 				"没有可分析的模型文件。",
-				"用法：/kinemesh 后拖入 .fbx / .glb / .gltf / .obj，或在命令里直接写文件路径，例如 `/kinemesh E:\\art\\hero.fbx 分析攻击强度`。",
+				"用法：/kinemesh 后拖入模型文件，或在命令里直接写文件路径，例如 `/kinemesh E:\\art\\hero.fbx 分析攻击强度`。",
+				"支持的格式按文件内容识别（FBX / glTF / GLB / OBJ），与扩展名/文件名无关。",
 				...reasons.length > 0 ? ["", ...reasons] : []
 			].join("\n")
 		};
@@ -33786,7 +33807,7 @@ async function runCommand(invocation, deps) {
 	};
 	const notes = [];
 	if (unresolved.length > 0) notes.push(`附件读不出内容：${unresolved.join("、")}（可改用直接写路径）`);
-	if (ignored.length > 0) notes.push(`已忽略非模型附件：${ignored.map((item) => item.name).join("、")}`);
+	if (ignored.length > 0) notes.push(`已忽略非模型文件（按内容判定）：${ignored.join("、")}`);
 	return {
 		kind: "success",
 		text: [
@@ -34175,6 +34196,7 @@ async function autoResolveCompanion(primaryAbs, primaryData, primaryFileName = p
 		const buffer = await readFile(top.path);
 		const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 		const alternatives = matches.slice(1, 4).map((match) => match.name);
+		const tied = matches.slice(1).filter((match) => Math.abs(match.coverage - top.coverage) < 1e-6 && match.matchedBones === top.matchedBones).map((match) => match.name);
 		return {
 			companion: {
 				data,
@@ -34182,7 +34204,7 @@ async function autoResolveCompanion(primaryAbs, primaryData, primaryFileName = p
 				abs: top.path,
 				reason: top.reason
 			},
-			warnings: [`path 文件没有网格（动画-only）：已按文件内容自动识别同资产的网格文件「${top.name}」并交给绑定（${top.reason}）；绑定按骨骼名自动匹配（未命中骨骼保持 rest 姿态）。替换网格用 mesh 参数显式指定。` + (alternatives.length > 0 ? `其它候选：${alternatives.join("、")}。` : "")]
+			warnings: [`path 文件没有网格（动画-only）：已按文件内容自动识别同资产的网格文件「${top.name}」并交给绑定（${top.reason}）；绑定按骨骼名自动匹配（未命中骨骼保持 rest 姿态）。替换网格用 mesh 参数显式指定。` + (alternatives.length > 0 ? `其它候选：${alternatives.join("、")}。` : "") + (tied.length > 0 ? `其中 ${tied.length} 个候选骨骼覆盖率与它并列（${tied.join("、")}）——不同项目对 LOD/皮肤变体的取舍规则不同，已按文件体积从小到大选；要指定的变体请用 mesh 参数。` : "")]
 		};
 	} catch {
 		return {
@@ -34431,7 +34453,7 @@ function planCompanion(primary, companion, names = {
 	} else if (primary.hasMesh) {
 		mesh = "primary";
 		warnings.push(`mesh 参数文件「${names.companion}」没有网格，网格改用 ${names.primary} 自带的。`);
-	} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（例如游戏资产里的 basic/*_skin.fbx，可先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
+	} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（任意路径/命名；先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
 	let animation;
 	if (primary.clipCount > 0) animation = "primary";
 	else if (companion.clipCount > 0) {

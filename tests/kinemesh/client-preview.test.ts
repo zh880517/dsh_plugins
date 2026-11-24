@@ -12,7 +12,6 @@ import {
   frameTicks,
   frameToPercent,
   hostPathOfFile,
-  isModelFileName,
   normalizeEnergySeries,
   pickSendDigest,
   readPaneMemory,
@@ -120,15 +119,7 @@ describe('加载后恢复目标（0.6.2：自动选首个 clip + 恢复记忆进
   });
 });
 
-describe('拖入文件（0.5.3）：扩展名判定 + 桌面版真实路径解析', () => {
-  it('isModelFileName：四个支持扩展名大小写不敏感；其他类型拒绝', () => {
-    for (const name of ['a.fbx', 'B.GLB', 'c.gltf', 'd.Obj', 'path/x.fbx']) {
-      expect(isModelFileName(name)).toBe(true);
-    }
-    for (const name of ['a.max', 'b.blend', 'c.png', 'd', 'e.fbx.bak']) {
-      expect(isModelFileName(name)).toBe(false);
-    }
-  });
+describe('拖入文件（0.5.3）：桌面版真实路径解析（不按扩展名筛，格式由内容判定）', () => {
 
   it('hostPathOfFile：有 preload 桥时返回真实路径，无桥/抛错时返回 null', () => {
     const scope = globalThis as { __DSH_HOST_PATHS__?: { pathFor?: (file: File) => unknown } };

@@ -48082,6 +48082,7 @@ var FORMAT_ENTRIES = [
 ];
 /** 找不到返回 null，由调用方给自愈指引（unknownFormatError） */
 function detectFormat(head, fileName) {
+	for (const entry of FORMAT_ENTRIES) if (entry.detect(head, "")) return entry;
 	for (const entry of FORMAT_ENTRIES) if (entry.detect(head, fileName)) return entry;
 	return null;
 }
@@ -48415,7 +48416,7 @@ function planCompanion(primary, companion, names = {
 	} else if (primary.hasMesh) {
 		mesh = "primary";
 		warnings.push(`mesh 参数文件「${names.companion}」没有网格，网格改用 ${names.primary} 自带的。`);
-	} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（例如游戏资产里的 basic/*_skin.fbx，可先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
+	} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（任意路径/命名；先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
 	let animation;
 	if (primary.clipCount > 0) animation = "primary";
 	else if (companion.clipCount > 0) {
@@ -48810,13 +48811,6 @@ function resolveRestoreTarget(memory, loadedPath, clips, maxFrame) {
 		frame: Math.max(0, Math.min(frame, Math.max(0, maxFrame)))
 	};
 }
-/** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
-var MODEL_FILE_EXTENSIONS = [
-	".fbx",
-	".glb",
-	".gltf",
-	".obj"
-];
 /** 从任意平台路径取文件名（预览面板展示绑定 mesh 用） */
 function basenameOf(filePath) {
 	const parts = filePath.split(/[\\/]/);
@@ -48832,11 +48826,6 @@ function meshBindingChip(binding, meshPath) {
 	const report = binding?.report;
 	if (report === null || report === void 0) return name;
 	return `${name} · ${report.matchedBones}/${report.meshBones} 骨`;
-}
-/** 拖入文件是否为可预览的模型（纯函数，测试直测）：只看扩展名，实际格式由主进程嗅探 */
-function isModelFileName(fileName) {
-	const lowered = fileName.toLowerCase();
-	return MODEL_FILE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 /**
 * 取拖入文件的真实绝对路径。
@@ -48862,7 +48851,7 @@ var ZH_TEXTS = {
 	"page.models": "本会话的模型",
 	"page.emptySession": "会话信息不可用，先用「动析」浮层打开一次预览。",
 	"page.emptyModels": "本会话还没有用过的模型：用「动析」浮层加载，或在下方输入路径打开。",
-	"page.openPath": "模型文件路径（.fbx / .glb / .gltf / .obj）",
+	"page.openPath": "模型文件路径（FBX / glTF / GLB / OBJ，按内容识别）",
 	"page.open": "打开",
 	"opened.title": "打开过的模型（本进程）",
 	"opened.empty": "还没有打开过模型：用右侧路径或拖入文件加载，记录只保留到本进程结束",
@@ -48872,7 +48861,7 @@ var ZH_TEXTS = {
 	"opened.badge.animation": "动画",
 	"opened.footHint": "层级：带网格的条目是根，动作文件挂在它绑定的网格下；× 删除记录",
 	"page.meshPath": "mesh 文件（可选：动作没网格时绑网格）",
-	"page.meshTitle": "独立 mesh 文件（动作-only 资产）：例如 basic/xxx_skin.fbx；留空时自动识别同资产网格文件",
+	"page.meshTitle": "独立 mesh 文件（动作-only 资产）：任意路径/命名；留空时按文件内容自动识别同资产网格",
 	"binding.chip": "mesh",
 	"binding.bonesTitle": "mesh 绑定：动画按骨骼名自动匹配到 mesh 骨架",
 	"binding.auto": "已自动绑定 mesh",
@@ -48915,7 +48904,7 @@ var ZH_TEXTS = {
 	"pane.digestChipTitle": "发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）",
 	"pane.sentWithDigest": "已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。",
 	"pane.sentNoDigest": "已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。",
-	"pane.dropHint": "也可以把 .fbx / .glb / .gltf / .obj 直接拖到这里",
+	"pane.dropHint": "也可以把模型文件直接拖到这里（格式按内容识别）",
 	"pane.dropActive": "松开即加载",
 	"pane.footHint": "「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。",
 	"pane.send": "发送给 AI 分析",
@@ -48932,7 +48921,7 @@ var EN_TEXTS = {
 	"page.models": "Session models",
 	"page.emptySession": "Session info unavailable; open the preview overlay once first.",
 	"page.emptyModels": "No models used in this session yet: load one in the preview overlay, or type a path below.",
-	"page.openPath": "Model file path (.fbx / .glb / .gltf / .obj)",
+	"page.openPath": "Model file path (FBX / glTF / GLB / OBJ, detected by content)",
 	"page.open": "Open",
 	"opened.title": "Opened models (this process)",
 	"opened.empty": "No models opened yet: load one on the right or drag a file here; records live only for this process",
@@ -48942,7 +48931,7 @@ var EN_TEXTS = {
 	"opened.badge.animation": "motion",
 	"opened.footHint": "Hierarchy: mesh entries are roots, motion files hang under their bound mesh; × deletes a record",
 	"page.meshPath": "mesh file (optional: bind a mesh to a mesh-less motion)",
-	"page.meshTitle": "Standalone mesh file (motion-only assets), e.g. basic/xxx_skin.fbx; leave empty to auto-detect a mesh in the same asset",
+	"page.meshTitle": "Standalone mesh file (motion-only assets), any path/name; leave empty to auto-detect a mesh by file content",
 	"binding.chip": "mesh",
 	"binding.bonesTitle": "mesh binding: animation tracks auto-mapped to mesh bones by name",
 	"binding.auto": "mesh auto-bound",
@@ -48985,7 +48974,7 @@ var EN_TEXTS = {
 	"pane.digestChipTitle": "The motion-analysis digest (segments / loopCheck / keyframe recipe) will be attached when sending",
 	"pane.sentWithDigest": "Sent to AI: message includes the motion-analysis digest (segments/loopCheck/keyframe recipe).",
 	"pane.sentNoDigest": "Sent to AI: it will call kinemesh_render to capture this viewpoint and analyze the image.",
-	"pane.dropHint": "or drag a .fbx / .glb / .gltf / .obj file here",
+	"pane.dropHint": "or drag a model file here (format detected by content)",
 	"pane.dropActive": "Release to load",
 	"pane.footHint": "Send hands the current path, clip, frame, viewpoint and motion digest (if any) to this session’s AI.",
 	"pane.send": "Send to AI",
@@ -49831,15 +49820,6 @@ function PreviewPane(props) {
 		setDragOver(false);
 		const file = event.dataTransfer?.files?.[0];
 		if (file === void 0) return;
-		if (!isModelFileName(file.name)) {
-			setState({
-				phase: "empty",
-				error: `不支持的文件类型：${file.name}（支持 ${MODEL_FILE_EXTENSIONS.join(" / ")}）`,
-				clips: [],
-				maxFrame: 0
-			});
-			return;
-		}
 		const resolved = hostPathOfFile(file);
 		if (resolved === null) {
 			setState({
@@ -50392,7 +50372,6 @@ function apply(ctx) {
 }
 //#endregion
 exports.DEFAULT_DISPLAY = DEFAULT_DISPLAY;
-exports.MODEL_FILE_EXTENSIONS = MODEL_FILE_EXTENSIONS;
 exports.StandalonePreviewPage = StandalonePreviewPage;
 exports.apply = apply;
 exports.basenameOf = basenameOf;
@@ -50407,7 +50386,6 @@ exports.frameTicks = frameTicks;
 exports.frameToPercent = frameToPercent;
 exports.hostPathOfFile = hostPathOfFile;
 exports.inject = inject;
-exports.isModelFileName = isModelFileName;
 exports.meshBindingChip = meshBindingChip;
 exports.normalizeEnergySeries = normalizeEnergySeries;
 exports.openedAssetList = openedAssetList;
