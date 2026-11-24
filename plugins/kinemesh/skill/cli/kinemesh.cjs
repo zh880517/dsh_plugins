@@ -23813,7 +23813,7 @@ function collectTextures(meshes) {
 				const texture = record[slot];
 				if (texture === void 0 || texture === null || !texture.isTexture) continue;
 				const image = texture.image;
-				const size = image !== void 0 && typeof image.width === "number" && typeof image.height === "number" ? [image.width, image.height] : null;
+				const size = image !== void 0 && image !== null && typeof image.width === "number" && typeof image.height === "number" ? [image.width, image.height] : null;
 				const name = texture.name || `(${slot})`;
 				const key = `${name}|${size === null ? "?" : `${size[0]}x${size[1]}`}`;
 				if (byKey.get(key) === void 0) byKey.set(key, {

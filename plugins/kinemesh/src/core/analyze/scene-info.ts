@@ -196,9 +196,14 @@ function collectTextures(meshes: THREE.Mesh[]): TextureInfo[] {
       for (const slot of TEXTURE_SLOTS) {
         const texture = record[slot] as THREE.Texture | undefined;
         if (texture === undefined || texture === null || !texture.isTexture) continue;
-        const image = texture.image as { width?: number; height?: number } | undefined;
+        // image 可能为 null（three r155+ Texture.DEFAULT_IMAGE = null；node 端贴图桩不解码位图）——
+        // 真实 FBX 带贴图节点时曾在此抛 null.width，回归见 tests/kinemesh/scene-info.test.ts
+        const image = texture.image as { width?: number; height?: number } | null | undefined;
         const size: [number, number] | null =
-          image !== undefined && typeof image.width === 'number' && typeof image.height === 'number'
+          image !== undefined &&
+          image !== null &&
+          typeof image.width === 'number' &&
+          typeof image.height === 'number'
             ? [image.width, image.height]
             : null;
         const name = texture.name || `(${slot})`;
