@@ -2,6 +2,7 @@
 // 帧号百分比、digest 摘要文案。交互与渲染在 client.tsx，不走 jsdom（与 handoff 同一套策略）。
 import { describe, expect, it } from 'vitest';
 import {
+  clampFrame,
   clearPaneMemories,
   computeTickStep,
   energyPoints,
@@ -16,6 +17,7 @@ import {
   resolveRestoreTarget,
   segmentColor,
   shouldShowPreviewTab,
+  stepFrame,
   writePaneMemory,
 } from '../../plugins/kinemesh/src/client.js';
 
@@ -205,6 +207,38 @@ describe('分段色带颜色与帧号百分比', () => {
     expect(frameToPercent(-5, 100)).toBe(0);
     expect(frameToPercent(10, 0)).toBe(0);
     expect(frameToPercent(Number.NaN, 100)).toBe(0);
+  });
+});
+
+describe('播放条帧号口径（0.7.0：首帧/末帧/逐帧都走 clampFrame + stepFrame）', () => {
+  it('clampFrame 夹紧到 [0, maxFrame] 并取整', () => {
+    expect(clampFrame(0, 60)).toBe(0);
+    expect(clampFrame(30, 60)).toBe(30);
+    expect(clampFrame(-3, 60)).toBe(0);
+    expect(clampFrame(999, 60)).toBe(60);
+    expect(clampFrame(12.6, 60)).toBe(13);
+    expect(clampFrame(5, 0)).toBe(0);
+    expect(clampFrame(Number.NaN, 60)).toBe(0);
+  });
+
+  it('stepFrame 前后各一帧，首末帧静止不绕回', () => {
+    expect(stepFrame(10, 1, 60)).toBe(11);
+    expect(stepFrame(10, -1, 60)).toBe(9);
+    expect(stepFrame(0, -1, 60)).toBe(0); // 已在首帧：不绕到末帧
+    expect(stepFrame(60, 1, 60)).toBe(60); // 已在末帧：不绕回首帧
+  });
+
+  it('stepFrame 非法入参与退化区间不产生负帧/越界帧', () => {
+    expect(stepFrame(Number.NaN, 1, 60)).toBe(1);
+    expect(stepFrame(10, Number.NaN, 60)).toBe(10);
+    expect(stepFrame(10, 1, 0)).toBe(0);
+    expect(stepFrame(10, 5, -1)).toBe(0);
+  });
+
+  it('maxFrame 非整数按四舍五入夹紧（duration×fps 浮点误差不产生半帧）', () => {
+    expect(clampFrame(68, 67.9999)).toBe(68);
+    expect(clampFrame(68.4, 67.9999)).toBe(68);
+    expect(stepFrame(66, 1, 68.0001)).toBe(67);
   });
 });
 

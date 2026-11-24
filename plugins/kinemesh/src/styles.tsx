@@ -35,8 +35,12 @@ export const css = `
   color:var(--dsw-alias-label-on-color,#111)}
 .kinemesh-btn[data-primary="true"]:hover{filter:brightness(1.06)}
 
+/* 3D 舞台：0.7.0 起撑满剩余高度（原先写死 min(58vh,540px) 只占半屏）。
+   flex-basis 给一个视口兜底值，flex-grow 再吃掉剩余空间：
+   · 宿主容器高度确定时 → 长到满（真正铺满页面）；
+   · 万一父容器高度是 auto（flex 链断掉）→ 也不会塌成一条，至少 min(46vh,420px)。 */
 .kinemesh-stage{position:relative;margin:0 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;
-  overflow:hidden;background:var(--dsw-alias-bg-layer-1);height:min(58vh,540px);min-height:300px}
+  overflow:hidden;background:var(--dsw-alias-bg-layer-1);flex:1 1 min(46vh,420px);min-height:0}
 .kinemesh-stage canvas{display:block;width:100%;height:100%}
 .kinemesh-stage[data-dragover="true"]{border-color:var(--dsw-alias-brand-primary);border-style:dashed}
 .kinemesh-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;
@@ -47,9 +51,11 @@ export const css = `
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);
   color:var(--dsw-alias-brand-primary);font-size:13px;font-weight:600}
 
-.kinemesh-controls{display:flex;align-items:center;gap:10px;padding:10px 14px 4px}
-.kinemesh-slider{flex:1;accent-color:var(--dsw-alias-brand-primary)}
-.kinemesh-frame{font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);min-width:86px;text-align:right}
+/* ———— 播放条（0.7.0：纯图标按钮，整条在轨道条上方，居中排布） ———— */
+.kinemesh-transport{display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 14px 4px}
+.kinemesh-transportbtn{width:30px;height:30px;border-radius:8px}
+.kinemesh-transportbtn[disabled]{opacity:.35;cursor:default}
+.kinemesh-transportbtn[disabled]:hover{background:transparent;color:var(--dsw-alias-label-secondary)}
 
 .kinemesh-readout{display:flex;align-items:center;gap:8px;padding:4px 14px 8px;font-size:11.5px;
   color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;flex-wrap:wrap}
@@ -62,19 +68,20 @@ export const css = `
 .kinemesh-foot{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
 
 /* ———— 独立预览页（侧边栏入口，0.6.0：纯预览不接 AI） ———— */
-.kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:420px;overflow:auto;
+/* 0.7.0：整页不再滚动，3D 舞台吃掉除工具栏/播放条/轨道以外的全部高度 */
+.kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:360px;overflow:hidden;
   color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
-.kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px}
+.kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px;flex:none}
 .kinemesh-standalonemain{flex:1;min-height:0;display:flex;flex-direction:column;padding-bottom:12px}
 .kinemesh-standalonemain .kinemesh-stage{margin:0 18px}
 .kinemesh-standalonemain .kinemesh-toolbar,
-.kinemesh-standalonemain .kinemesh-controls,
+.kinemesh-standalonemain .kinemesh-transport,
 .kinemesh-standalonemain .kinemesh-readout{padding-left:18px;padding-right:18px}
+.kinemesh-standalonemain .kinemesh-timeline{margin-left:18px;margin-right:18px}
 
 /* ———— 模型预览页（conversation.view 页签，M6e） ———— */
 .kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;
-  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
-.kinemesh-pageholder{flex:1;display:grid;place-items:center;padding:24px;text-align:center;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}.kinemesh-pageholder{flex:1;display:grid;place-items:center;padding:24px;text-align:center;
   color:var(--dsw-alias-label-secondary);font-size:12.5px}
 .kinemesh-side{width:250px;min-width:200px;flex:none;display:flex;flex-direction:column;
   border-right:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
@@ -91,17 +98,21 @@ export const css = `
 .kinemesh-sideempty{padding:12px;color:var(--dsw-alias-label-secondary);font-size:11.5px;text-align:center}
 .kinemesh-sidefoot{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1)}
 .kinemesh-sidefoot .kinemesh-input{min-width:0;flex:1}
-.kinemesh-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto}
+.kinemesh-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
 
-/* ———— 强度曲线时间轴（§6.10.3）：进度条上方的曲线 + 分段色带 + 循环高亮 + 帧号刻度 ———— */
+/* ———— 强度曲线轨道条（§6.10.3）：0.7.0 起拖动与帧号都收在这条轨道里 ———— */
 .kinemesh-timeline{margin:4px 14px 0}
+.kinemesh-timelinehead{display:flex;align-items:baseline;gap:10px;margin-bottom:3px}
+.kinemesh-timelinehead .kinemesh-timelinehint{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+.kinemesh-framelabel{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-primary);padding:1px 7px;border-radius:6px;
+  border:1px solid var(--dsw-alias-border-l1)}
 .kinemesh-timeline svg{display:block;width:100%;height:52px;cursor:crosshair;border-radius:8px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);touch-action:none}
 .kinemesh-ticks{position:relative;height:14px;margin-top:2px}
 .kinemesh-tick{position:absolute;top:0;font-size:10px;line-height:14px;white-space:nowrap;
   color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
-.kinemesh-timeline .kinemesh-timelinehint{display:block;margin-top:1px;font-size:10.5px;
-  color:var(--dsw-alias-label-secondary)}
 `;
 
 export function Styles(): React.ReactElement {

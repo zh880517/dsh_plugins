@@ -109,6 +109,14 @@ const ZH_TEXTS: Record<string, string> = {
   'page.open': '打开',
   'list.animated': '动画',
   'timeline.hint': '强度曲线（点击/拖动定位帧）；色带=分段 guess，半透明=循环区间',
+  'timeline.hintNoCurve': '点击/拖动这条轨道定位帧（该片段没有强度曲线数据）',
+  'transport.label': '播放控制',
+  'transport.first': '回到第一帧',
+  'transport.prev': '前一帧',
+  'transport.play': '播放',
+  'transport.pause': '暂停',
+  'transport.next': '下一帧',
+  'transport.last': '跳到最后一帧',
   'pane.load': '加载',
   'pane.loading': '加载中…',
   'pane.staticClip': '（静态）',
@@ -141,6 +149,14 @@ const EN_TEXTS: Record<string, string> = {
   'page.open': 'Open',
   'list.animated': 'anim',
   'timeline.hint': 'Energy curve (click/drag to scrub); band = segment guess, translucent = loop range',
+  'timeline.hintNoCurve': 'Click/drag this track to scrub frames (no energy curve for this clip)',
+  'transport.label': 'Playback controls',
+  'transport.first': 'Go to first frame',
+  'transport.prev': 'Previous frame',
+  'transport.play': 'Play',
+  'transport.pause': 'Pause',
+  'transport.next': 'Next frame',
+  'transport.last': 'Go to last frame',
   'pane.load': 'Load',
   'pane.loading': 'Loading…',
   'pane.staticClip': '(static)',
@@ -248,6 +264,19 @@ export function frameToPercent(frame: number, maxFrame: number): number {
   if (!Number.isFinite(frame) || !Number.isFinite(maxFrame) || maxFrame <= 0) return 0;
   const ratio = (Math.min(Math.max(frame, 0), maxFrame) / maxFrame) * 100;
   return Number(ratio.toFixed(3));
+}
+
+/** 帧号夹紧到 [0, maxFrame]（0.7.0：播放条的 首帧/末帧/逐帧 都走这一个口径） */
+export function clampFrame(target: number, maxFrame: number): number {
+  const max = Number.isFinite(maxFrame) ? Math.max(Math.round(maxFrame), 0) : 0;
+  if (!Number.isFinite(target)) return 0;
+  return Math.min(Math.max(Math.round(target), 0), max);
+}
+
+/** 逐帧步进：from 夹紧后加 delta 再夹紧（越界不绕回，静止在首/末帧） */
+export function stepFrame(from: number, delta: number, maxFrame: number): number {
+  const step = Number.isFinite(delta) ? Math.trunc(delta) : 0;
+  return clampFrame(clampFrame(from, maxFrame) + step, maxFrame);
 }
 
 /** host /kinemesh/analysis 返回的 summaryDigest 里前端消费的字段（防御式可选） */
@@ -397,21 +426,122 @@ export function frameTicks(maxFrame: number, step?: number): number[] {
   return ticks;
 }
 
+// ———————— 播放条（0.7.0：图标按钮，无文字；整条放在轨道条上方） ————————
+
+type TransportKind = 'first' | 'prev' | 'play' | 'pause' | 'next' | 'last';
+
+/** 图标全部手绘 SVG（不引图标库），描边/填充用 currentColor 跟随宿主主题 */
+function TransportGlyph({ kind }: { kind: TransportKind }): React.ReactElement {
+  const frame = { width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': true, style: { display: 'block' } } as const;
+  if (kind === 'first') {
+    return (
+      <svg {...frame}>
+        <path d="M3.2 3.2v9.6" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" />
+        <path d="M12.8 3 5.6 8l7.2 5z" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (kind === 'last') {
+    return (
+      <svg {...frame}>
+        <path d="M3.2 3 10.4 8l-7.2 5z" fill="currentColor" />
+        <path d="M12.8 3.2v9.6" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (kind === 'prev') {
+    return (
+      <svg {...frame}>
+        <path d="M11.2 3 4 8l7.2 5z" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (kind === 'next') {
+    return (
+      <svg {...frame}>
+        <path d="M4.8 3 12 8l-7.2 5z" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (kind === 'pause') {
+    return (
+      <svg {...frame}>
+        <rect x="4.4" y="3" width="2.8" height="10" rx="0.8" fill="currentColor" />
+        <rect x="8.8" y="3" width="2.8" height="10" rx="0.8" fill="currentColor" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...frame}>
+      <path d="M4.6 3 12.6 8l-8 5z" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** 播放条：回到第一帧 / 前一帧 / 播放暂停 / 下一帧 / 跳到最后一帧（纯图标，标题即无障碍名） */
+function TransportBar(props: {
+  playing: boolean;
+  frame: number;
+  maxFrame: number;
+  onFirst: () => void;
+  onPrev: () => void;
+  onTogglePlay: () => void;
+  onNext: () => void;
+  onLast: () => void;
+}): React.ReactElement {
+  const max = Math.max(props.maxFrame, 0);
+  const atStart = props.frame <= 0;
+  const atEnd = props.frame >= max;
+  const buttons: Array<{ kind: TransportKind; title: string; onClick: () => void; disabled: boolean }> = [
+    { kind: 'first', title: translate('transport.first'), onClick: props.onFirst, disabled: atStart },
+    { kind: 'prev', title: translate('transport.prev'), onClick: props.onPrev, disabled: atStart },
+    {
+      kind: props.playing ? 'pause' : 'play',
+      title: props.playing ? translate('transport.pause') : translate('transport.play'),
+      onClick: props.onTogglePlay,
+      disabled: max <= 0,
+    },
+    { kind: 'next', title: translate('transport.next'), onClick: props.onNext, disabled: atEnd },
+    { kind: 'last', title: translate('transport.last'), onClick: props.onLast, disabled: atEnd },
+  ];
+  return (
+    <div className="kinemesh-transport" role="group" aria-label={translate('transport.label')}>
+      {buttons.map((button) => (
+        <button
+          key={button.kind + '-' + button.title}
+          type="button"
+          className="kinemesh-iconbtn kinemesh-transportbtn"
+          data-kind={button.kind}
+          title={button.title}
+          aria-label={button.title}
+          onClick={button.onClick}
+          disabled={button.disabled}
+        >
+          <TransportGlyph kind={button.kind} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MotionTimeline(props: {
-  frames: number[];
   energy: number[];
   segments: NonNullable<DigestSummary['segments']>;
   loopFrames: { start: number; end: number } | null;
   maxFrame: number;
   frame: number;
   onSeek: (frame: number) => void;
-}): React.ReactElement | null {
+}): React.ReactElement {
   const dragging = React.useRef(false);
   const normalized = normalizeEnergySeries(props.energy);
-  if (normalized.length === 0) return null;
-  const points = energyPoints(normalized, TIMELINE_VB_W, TIMELINE_CURVE_H)
-    .map(([x, y]) => `${x},${y}`)
-    .join(' ');
+  // 没有强度曲线（分析未回来 / 分析失败 / 静态片段）也照常出轨道：
+  // 0.7.0 起拖动与帧号都收进这条轨道，轨道是唯一的定位入口，不能因为缺曲线就消失
+  const hasCurve = normalized.length > 0;
+  const points = hasCurve
+    ? energyPoints(normalized, TIMELINE_VB_W, TIMELINE_CURVE_H)
+        .map(([x, y]) => `${x},${y}`)
+        .join(' ')
+    : '';
   const playheadX = (frameToPercent(props.frame, props.maxFrame) / 100) * TIMELINE_VB_W;
   const ticks = frameTicks(props.maxFrame);
   const seekFromEvent = (event: React.PointerEvent<SVGSVGElement>): void => {
@@ -422,6 +552,10 @@ function MotionTimeline(props: {
   };
   return (
     <div className="kinemesh-timeline">
+      <div className="kinemesh-timelinehead">
+        <span className="kinemesh-timelinehint">{hasCurve ? translate('timeline.hint') : translate('timeline.hintNoCurve')}</span>
+        <span className="kinemesh-framelabel">{`f${props.frame} / f${Math.max(props.maxFrame, 0)}`}</span>
+      </div>
       <svg
         viewBox={`0 0 ${TIMELINE_VB_W} ${TIMELINE_VB_H}`}
         preserveAspectRatio="none"
@@ -459,28 +593,31 @@ function MotionTimeline(props: {
             <title>{`循环区间 frame ${props.loopFrames.start}–${props.loopFrames.end}（loopCheck.bestLoopRange）`}</title>
           </rect>
         )}
-        <polyline points={points} fill="none" stroke="var(--dsw-alias-brand-primary, #4c8bf5)" strokeWidth="1.5" />
-        {props.segments.map((segment, index) => {
-          const start = frameToPercent(segment.frameStart ?? 0, props.maxFrame);
-          const end = frameToPercent(segment.frameEnd ?? segment.frameStart ?? 0, props.maxFrame);
-          const x = (start / 100) * TIMELINE_VB_W;
-          const width = Math.max(2, ((end - start) / 100) * TIMELINE_VB_W);
-          const label = segment.label ?? '';
-          const guess = segment.guess ?? '';
-          return (
-            <rect
-              key={`${segment.frameStart ?? index}-${index}`}
-              x={x}
-              y={TIMELINE_BAND_TOP}
-              width={width}
-              height={TIMELINE_BAND_H}
-              fill={segmentColor(label)}
-              opacity="0.9"
-            >
-              <title>{`#${index + 1} frame ${segment.frameStart ?? '?'}–${segment.frameEnd ?? '?'}：${label} · guess ${guess} · 强度 ${segment.level ?? '?'}`}</title>
-            </rect>
-          );
-        })}
+        {hasCurve && (
+          <polyline points={points} fill="none" stroke="var(--dsw-alias-brand-primary, #4c8bf5)" strokeWidth="1.5" />
+        )}
+        {hasCurve &&
+          props.segments.map((segment, index) => {
+            const start = frameToPercent(segment.frameStart ?? 0, props.maxFrame);
+            const end = frameToPercent(segment.frameEnd ?? segment.frameStart ?? 0, props.maxFrame);
+            const x = (start / 100) * TIMELINE_VB_W;
+            const width = Math.max(2, ((end - start) / 100) * TIMELINE_VB_W);
+            const label = segment.label ?? '';
+            const guess = segment.guess ?? '';
+            return (
+              <rect
+                key={`${segment.frameStart ?? index}-${index}`}
+                x={x}
+                y={TIMELINE_BAND_TOP}
+                width={width}
+                height={TIMELINE_BAND_H}
+                fill={segmentColor(label)}
+                opacity="0.9"
+              >
+                <title>{`#${index + 1} frame ${segment.frameStart ?? '?'}–${segment.frameEnd ?? '?'}：${label} · guess ${guess} · 强度 ${segment.level ?? '?'}`}</title>
+              </rect>
+            );
+          })}
         {ticks.map((tick) => {
           const x = (frameToPercent(tick, props.maxFrame) / 100) * TIMELINE_VB_W;
           return (
@@ -517,7 +654,6 @@ function MotionTimeline(props: {
           );
         })}
       </div>
-      <span className="kinemesh-timelinehint">{translate('timeline.hint')}</span>
     </div>
   );
 }
@@ -783,6 +919,15 @@ function PreviewPane(props: {
     void viewerRef.current?.seekFrame(next);
   };
 
+  /** 播放条跳转（0.7.0）：播放中先暂停再定位——逐帧/首尾是「检查某一帧」的语义，不该继续跑 */
+  const stepTo = (target: number): void => {
+    if (playing) {
+      viewerRef.current?.pause();
+      setPlaying(false);
+    }
+    seek(clampFrame(target, state.maxFrame));
+  };
+
   const changeMode = (next: ViewMode): void => {
     setMode(next);
     viewerRef.current?.setMode(next);
@@ -905,34 +1050,28 @@ function PreviewPane(props: {
         )}
         {dragOver && <div className="kinemesh-dropmask">{translate('pane.dropActive')}</div>}
       </div>
-      {state.phase === 'ready' && clip !== '' && analysis.data !== null && (
-        <MotionTimeline
-          frames={analysis.data.frames}
-          energy={analysis.data.energy}
-          segments={analysis.data.segments}
-          loopFrames={loopFrames}
-          maxFrame={state.maxFrame}
-          frame={frame}
-          onSeek={seek}
-        />
+      {state.phase === 'ready' && clip !== '' && (
+        <React.Fragment>
+          <TransportBar
+            playing={playing}
+            frame={frame}
+            maxFrame={state.maxFrame}
+            onFirst={() => stepTo(0)}
+            onPrev={() => stepTo(stepFrame(frame, -1, state.maxFrame))}
+            onTogglePlay={togglePlay}
+            onNext={() => stepTo(stepFrame(frame, 1, state.maxFrame))}
+            onLast={() => stepTo(state.maxFrame)}
+          />
+          <MotionTimeline
+            energy={analysis.data?.energy ?? []}
+            segments={analysis.data?.segments ?? []}
+            loopFrames={loopFrames}
+            maxFrame={state.maxFrame}
+            frame={frame}
+            onSeek={seek}
+          />
+        </React.Fragment>
       )}
-      <div className="kinemesh-controls">
-        <button type="button" className="kinemesh-btn" onClick={togglePlay} disabled={state.phase !== 'ready' || clip === ''}>
-          {playing ? translate('pane.pause') : translate('pane.play')}
-        </button>
-        <input
-          className="kinemesh-slider"
-          type="range"
-          min={0}
-          max={Math.max(state.maxFrame, 1)}
-          value={frame}
-          onChange={(event) => seek(Number(event.target.value))}
-          disabled={state.phase !== 'ready' || clip === ''}
-        />
-        <span className="kinemesh-frame">
-          f{frame} / f{Math.max(state.maxFrame, 0)}
-        </span>
-      </div>
       <div className="kinemesh-readout">
         <span className="kinemesh-chip">{viewText}</span>
         {digestHeadline !== '' && (

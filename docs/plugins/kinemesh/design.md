@@ -606,6 +606,18 @@ kinemesh_analyze(path, {
     （`core/viewer/auxiliary.ts`，纯函数可测）；
   - 下拉仍可切 `default` 看贴图，`wireframe/skeleton/bones-overlay` 不变；截图管线缺省模式保持
     `default`（AI 链路不变），需要素模时显式传 `mode:"solid"`。
+- **播放条与轨道（0.7.0，用户拍板改版）**：
+  - **3D 舞台铺满页面**：舞台不再写死 `min(58vh,540px)`（只占半屏），改 `flex:1 1 min(46vh,420px)`
+    ——容器高度确定时长满剩余空间；万一父容器高度是 auto（flex 链断），至少 420px 不回退成一条；
+  - **播放条 = 5 个纯图标按钮**，整条放在**轨道条上方**、居中：回到第一帧 / 前一帧 / 播放·暂停 /
+    下一帧 / 跳到最后一帧（手绘 SVG，不引图标库；`title`/`aria-label` 为无障碍名；首末帧与播放
+    按钮按当前帧禁用）。逐帧与首尾跳转**播放中先暂停**（「检查某一帧」语义）；
+  - **原播放按钮 + 帧滑条（`.kinemesh-controls`）删除**：拖动 scrub 与帧号 `f{current} / f{total}`
+    合并进轨道条——轨道头行左侧是说明文案、右侧是帧号徽标，轨道本体（SVG）点击/拖动定位帧；
+  - 轨道/刻度在**没有强度曲线**时也照常显示（分析未返回 / 分析失败 / 静态片段）：0.7.0 起轨道是
+    唯一定位入口，不能因为缺曲线就消失（此时提示文案切换为 `timeline.hintNoCurve`）；
+  - 帧号口径统一走 `clampFrame` / `stepFrame` 纯函数（`tests/kinemesh/client-preview.test.ts` 直测：
+    首末帧静止不绕回、非法入参归 0、`duration×fps` 浮点误差不产生半帧）。
 
 #### 6.10.3 动画时间轴 + 强度曲线（M6e 核心）
 

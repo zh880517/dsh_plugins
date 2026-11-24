@@ -47523,8 +47523,12 @@ var css = `
   color:var(--dsw-alias-label-on-color,#111)}
 .kinemesh-btn[data-primary="true"]:hover{filter:brightness(1.06)}
 
+/* 3D 舞台：0.7.0 起撑满剩余高度（原先写死 min(58vh,540px) 只占半屏）。
+   flex-basis 给一个视口兜底值，flex-grow 再吃掉剩余空间：
+   · 宿主容器高度确定时 → 长到满（真正铺满页面）；
+   · 万一父容器高度是 auto（flex 链断掉）→ 也不会塌成一条，至少 min(46vh,420px)。 */
 .kinemesh-stage{position:relative;margin:0 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;
-  overflow:hidden;background:var(--dsw-alias-bg-layer-1);height:min(58vh,540px);min-height:300px}
+  overflow:hidden;background:var(--dsw-alias-bg-layer-1);flex:1 1 min(46vh,420px);min-height:0}
 .kinemesh-stage canvas{display:block;width:100%;height:100%}
 .kinemesh-stage[data-dragover="true"]{border-color:var(--dsw-alias-brand-primary);border-style:dashed}
 .kinemesh-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;
@@ -47535,9 +47539,11 @@ var css = `
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);
   color:var(--dsw-alias-brand-primary);font-size:13px;font-weight:600}
 
-.kinemesh-controls{display:flex;align-items:center;gap:10px;padding:10px 14px 4px}
-.kinemesh-slider{flex:1;accent-color:var(--dsw-alias-brand-primary)}
-.kinemesh-frame{font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);min-width:86px;text-align:right}
+/* ———— 播放条（0.7.0：纯图标按钮，整条在轨道条上方，居中排布） ———— */
+.kinemesh-transport{display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 14px 4px}
+.kinemesh-transportbtn{width:30px;height:30px;border-radius:8px}
+.kinemesh-transportbtn[disabled]{opacity:.35;cursor:default}
+.kinemesh-transportbtn[disabled]:hover{background:transparent;color:var(--dsw-alias-label-secondary)}
 
 .kinemesh-readout{display:flex;align-items:center;gap:8px;padding:4px 14px 8px;font-size:11.5px;
   color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;flex-wrap:wrap}
@@ -47550,19 +47556,20 @@ var css = `
 .kinemesh-foot{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
 
 /* ———— 独立预览页（侧边栏入口，0.6.0：纯预览不接 AI） ———— */
-.kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:420px;overflow:auto;
+/* 0.7.0：整页不再滚动，3D 舞台吃掉除工具栏/播放条/轨道以外的全部高度 */
+.kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:360px;overflow:hidden;
   color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
-.kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px}
+.kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px;flex:none}
 .kinemesh-standalonemain{flex:1;min-height:0;display:flex;flex-direction:column;padding-bottom:12px}
 .kinemesh-standalonemain .kinemesh-stage{margin:0 18px}
 .kinemesh-standalonemain .kinemesh-toolbar,
-.kinemesh-standalonemain .kinemesh-controls,
+.kinemesh-standalonemain .kinemesh-transport,
 .kinemesh-standalonemain .kinemesh-readout{padding-left:18px;padding-right:18px}
+.kinemesh-standalonemain .kinemesh-timeline{margin-left:18px;margin-right:18px}
 
 /* ———— 模型预览页（conversation.view 页签，M6e） ———— */
 .kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;
-  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
-.kinemesh-pageholder{flex:1;display:grid;place-items:center;padding:24px;text-align:center;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}.kinemesh-pageholder{flex:1;display:grid;place-items:center;padding:24px;text-align:center;
   color:var(--dsw-alias-label-secondary);font-size:12.5px}
 .kinemesh-side{width:250px;min-width:200px;flex:none;display:flex;flex-direction:column;
   border-right:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
@@ -47579,17 +47586,21 @@ var css = `
 .kinemesh-sideempty{padding:12px;color:var(--dsw-alias-label-secondary);font-size:11.5px;text-align:center}
 .kinemesh-sidefoot{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1)}
 .kinemesh-sidefoot .kinemesh-input{min-width:0;flex:1}
-.kinemesh-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto}
+.kinemesh-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
 
-/* ———— 强度曲线时间轴（§6.10.3）：进度条上方的曲线 + 分段色带 + 循环高亮 + 帧号刻度 ———— */
+/* ———— 强度曲线轨道条（§6.10.3）：0.7.0 起拖动与帧号都收在这条轨道里 ———— */
 .kinemesh-timeline{margin:4px 14px 0}
+.kinemesh-timelinehead{display:flex;align-items:baseline;gap:10px;margin-bottom:3px}
+.kinemesh-timelinehead .kinemesh-timelinehint{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+.kinemesh-framelabel{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-primary);padding:1px 7px;border-radius:6px;
+  border:1px solid var(--dsw-alias-border-l1)}
 .kinemesh-timeline svg{display:block;width:100%;height:52px;cursor:crosshair;border-radius:8px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);touch-action:none}
 .kinemesh-ticks{position:relative;height:14px;margin-top:2px}
 .kinemesh-tick{position:absolute;top:0;font-size:10px;line-height:14px;white-space:nowrap;
   color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
-.kinemesh-timeline .kinemesh-timelinehint{display:block;margin-top:1px;font-size:10.5px;
-  color:var(--dsw-alias-label-secondary)}
 `;
 function Styles() {
 	return /* @__PURE__ */ react.createElement("style", null, css);
@@ -47677,6 +47688,14 @@ var ZH_TEXTS = {
 	"page.open": "打开",
 	"list.animated": "动画",
 	"timeline.hint": "强度曲线（点击/拖动定位帧）；色带=分段 guess，半透明=循环区间",
+	"timeline.hintNoCurve": "点击/拖动这条轨道定位帧（该片段没有强度曲线数据）",
+	"transport.label": "播放控制",
+	"transport.first": "回到第一帧",
+	"transport.prev": "前一帧",
+	"transport.play": "播放",
+	"transport.pause": "暂停",
+	"transport.next": "下一帧",
+	"transport.last": "跳到最后一帧",
 	"pane.load": "加载",
 	"pane.loading": "加载中…",
 	"pane.staticClip": "（静态）",
@@ -47709,6 +47728,14 @@ var EN_TEXTS = {
 	"page.open": "Open",
 	"list.animated": "anim",
 	"timeline.hint": "Energy curve (click/drag to scrub); band = segment guess, translucent = loop range",
+	"timeline.hintNoCurve": "Click/drag this track to scrub frames (no energy curve for this clip)",
+	"transport.label": "Playback controls",
+	"transport.first": "Go to first frame",
+	"transport.prev": "Previous frame",
+	"transport.play": "Play",
+	"transport.pause": "Pause",
+	"transport.next": "Next frame",
+	"transport.last": "Go to last frame",
 	"pane.load": "Load",
 	"pane.loading": "Loading…",
 	"pane.staticClip": "(static)",
@@ -47791,6 +47818,17 @@ function frameToPercent(frame, maxFrame) {
 	if (!Number.isFinite(frame) || !Number.isFinite(maxFrame) || maxFrame <= 0) return 0;
 	const ratio = Math.min(Math.max(frame, 0), maxFrame) / maxFrame * 100;
 	return Number(ratio.toFixed(3));
+}
+/** 帧号夹紧到 [0, maxFrame]（0.7.0：播放条的 首帧/末帧/逐帧 都走这一个口径） */
+function clampFrame(target, maxFrame) {
+	const max = Number.isFinite(maxFrame) ? Math.max(Math.round(maxFrame), 0) : 0;
+	if (!Number.isFinite(target)) return 0;
+	return Math.min(Math.max(Math.round(target), 0), max);
+}
+/** 逐帧步进：from 夹紧后加 delta 再夹紧（越界不绕回，静止在首/末帧） */
+function stepFrame(from, delta, maxFrame) {
+	const step = Number.isFinite(delta) ? Math.trunc(delta) : 0;
+	return clampFrame(clampFrame(from, maxFrame) + step, maxFrame);
 }
 /** digest 摘要一行（发送按钮旁 chip 文案：clip · 段数 · loopCheck verdict）；无有效内容返回空串 */
 function formatDigestHeadline(digest) {
@@ -47918,11 +47956,118 @@ function frameTicks(maxFrame, step) {
 	}
 	return ticks;
 }
+/** 图标全部手绘 SVG（不引图标库），描边/填充用 currentColor 跟随宿主主题 */
+function TransportGlyph({ kind }) {
+	const frame = {
+		width: 16,
+		height: 16,
+		viewBox: "0 0 16 16",
+		"aria-hidden": true,
+		style: { display: "block" }
+	};
+	if (kind === "first") return /* @__PURE__ */ react.createElement("svg", frame, /* @__PURE__ */ react.createElement("path", {
+		d: "M3.2 3.2v9.6",
+		stroke: "currentColor",
+		strokeWidth: 1.7,
+		strokeLinecap: "round"
+	}), /* @__PURE__ */ react.createElement("path", {
+		d: "M12.8 3 5.6 8l7.2 5z",
+		fill: "currentColor"
+	}));
+	if (kind === "last") return /* @__PURE__ */ react.createElement("svg", frame, /* @__PURE__ */ react.createElement("path", {
+		d: "M3.2 3 10.4 8l-7.2 5z",
+		fill: "currentColor"
+	}), /* @__PURE__ */ react.createElement("path", {
+		d: "M12.8 3.2v9.6",
+		stroke: "currentColor",
+		strokeWidth: 1.7,
+		strokeLinecap: "round"
+	}));
+	if (kind === "prev") return /* @__PURE__ */ react.createElement("svg", frame, /* @__PURE__ */ react.createElement("path", {
+		d: "M11.2 3 4 8l7.2 5z",
+		fill: "currentColor"
+	}));
+	if (kind === "next") return /* @__PURE__ */ react.createElement("svg", frame, /* @__PURE__ */ react.createElement("path", {
+		d: "M4.8 3 12 8l-7.2 5z",
+		fill: "currentColor"
+	}));
+	if (kind === "pause") return /* @__PURE__ */ react.createElement("svg", frame, /* @__PURE__ */ react.createElement("rect", {
+		x: "4.4",
+		y: "3",
+		width: "2.8",
+		height: "10",
+		rx: "0.8",
+		fill: "currentColor"
+	}), /* @__PURE__ */ react.createElement("rect", {
+		x: "8.8",
+		y: "3",
+		width: "2.8",
+		height: "10",
+		rx: "0.8",
+		fill: "currentColor"
+	}));
+	return /* @__PURE__ */ react.createElement("svg", frame, /* @__PURE__ */ react.createElement("path", {
+		d: "M4.6 3 12.6 8l-8 5z",
+		fill: "currentColor"
+	}));
+}
+/** 播放条：回到第一帧 / 前一帧 / 播放暂停 / 下一帧 / 跳到最后一帧（纯图标，标题即无障碍名） */
+function TransportBar(props) {
+	const max = Math.max(props.maxFrame, 0);
+	const atStart = props.frame <= 0;
+	const atEnd = props.frame >= max;
+	const buttons = [
+		{
+			kind: "first",
+			title: translate("transport.first"),
+			onClick: props.onFirst,
+			disabled: atStart
+		},
+		{
+			kind: "prev",
+			title: translate("transport.prev"),
+			onClick: props.onPrev,
+			disabled: atStart
+		},
+		{
+			kind: props.playing ? "pause" : "play",
+			title: props.playing ? translate("transport.pause") : translate("transport.play"),
+			onClick: props.onTogglePlay,
+			disabled: max <= 0
+		},
+		{
+			kind: "next",
+			title: translate("transport.next"),
+			onClick: props.onNext,
+			disabled: atEnd
+		},
+		{
+			kind: "last",
+			title: translate("transport.last"),
+			onClick: props.onLast,
+			disabled: atEnd
+		}
+	];
+	return /* @__PURE__ */ react.createElement("div", {
+		className: "kinemesh-transport",
+		role: "group",
+		"aria-label": translate("transport.label")
+	}, buttons.map((button) => /* @__PURE__ */ react.createElement("button", {
+		key: button.kind + "-" + button.title,
+		type: "button",
+		className: "kinemesh-iconbtn kinemesh-transportbtn",
+		"data-kind": button.kind,
+		title: button.title,
+		"aria-label": button.title,
+		onClick: button.onClick,
+		disabled: button.disabled
+	}, /* @__PURE__ */ react.createElement(TransportGlyph, { kind: button.kind }))));
+}
 function MotionTimeline(props) {
 	const dragging = react.useRef(false);
 	const normalized = normalizeEnergySeries(props.energy);
-	if (normalized.length === 0) return null;
-	const points = energyPoints(normalized, TIMELINE_VB_W, TIMELINE_CURVE_H).map(([x, y]) => `${x},${y}`).join(" ");
+	const hasCurve = normalized.length > 0;
+	const points = hasCurve ? energyPoints(normalized, TIMELINE_VB_W, TIMELINE_CURVE_H).map(([x, y]) => `${x},${y}`).join(" ") : "";
 	const playheadX = frameToPercent(props.frame, props.maxFrame) / 100 * TIMELINE_VB_W;
 	const ticks = frameTicks(props.maxFrame);
 	const seekFromEvent = (event) => {
@@ -47931,7 +48076,7 @@ function MotionTimeline(props) {
 		const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
 		props.onSeek(Math.round(ratio * props.maxFrame));
 	};
-	return /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timeline" }, /* @__PURE__ */ react.createElement("svg", {
+	return /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timeline" }, /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timelinehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-timelinehint" }, hasCurve ? translate("timeline.hint") : translate("timeline.hintNoCurve")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-framelabel" }, `f${props.frame} / f${Math.max(props.maxFrame, 0)}`)), /* @__PURE__ */ react.createElement("svg", {
 		viewBox: `0 0 ${TIMELINE_VB_W} ${TIMELINE_VB_H}`,
 		preserveAspectRatio: "none",
 		role: "img",
@@ -47957,12 +48102,12 @@ function MotionTimeline(props) {
 		stroke: "rgba(230,190,90,0.55)",
 		strokeDasharray: "4 3",
 		strokeWidth: "1"
-	}, /* @__PURE__ */ react.createElement("title", null, `循环区间 frame ${props.loopFrames.start}–${props.loopFrames.end}（loopCheck.bestLoopRange）`)), /* @__PURE__ */ react.createElement("polyline", {
+	}, /* @__PURE__ */ react.createElement("title", null, `循环区间 frame ${props.loopFrames.start}–${props.loopFrames.end}（loopCheck.bestLoopRange）`)), hasCurve && /* @__PURE__ */ react.createElement("polyline", {
 		points,
 		fill: "none",
 		stroke: "var(--dsw-alias-brand-primary, #4c8bf5)",
 		strokeWidth: "1.5"
-	}), props.segments.map((segment, index) => {
+	}), hasCurve && props.segments.map((segment, index) => {
 		const start = frameToPercent(segment.frameStart ?? 0, props.maxFrame);
 		const end = frameToPercent(segment.frameEnd ?? segment.frameStart ?? 0, props.maxFrame);
 		const x = start / 100 * TIMELINE_VB_W;
@@ -48012,7 +48157,7 @@ function MotionTimeline(props) {
 				transform: `translateX(${first ? "0" : last ? "-100%" : "-50%"})`
 			}
 		}, tick);
-	})), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-timelinehint" }, translate("timeline.hint")));
+	})));
 }
 function PreviewPane(props) {
 	const showPathInput = props.showPathInput !== false;
@@ -48268,6 +48413,14 @@ function PreviewPane(props) {
 		setFrame(next);
 		viewerRef.current?.seekFrame(next);
 	};
+	/** 播放条跳转（0.7.0）：播放中先暂停再定位——逐帧/首尾是「检查某一帧」的语义，不该继续跑 */
+	const stepTo = (target) => {
+		if (playing) {
+			viewerRef.current?.pause();
+			setPlaying(false);
+		}
+		seek(clampFrame(target, state.maxFrame));
+	};
 	const changeMode = (next) => {
 		setMode(next);
 		viewerRef.current?.setMode(next);
@@ -48356,28 +48509,23 @@ function PreviewPane(props) {
 		onDragOver,
 		onDragLeave,
 		onDrop
-	}, state.phase !== "ready" && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-placeholder" }, state.phase === "loading" ? translate("pane.placeholderLoading") : showPathInput ? translate("pane.placeholderPath") : translate("pane.placeholderPage"), state.phase === "empty" && /* @__PURE__ */ react.createElement("span", { className: "kinemesh-dropzone-hint" }, translate("pane.dropHint"))), dragOver && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-dropmask" }, translate("pane.dropActive"))), state.phase === "ready" && clip !== "" && analysis.data !== null && /* @__PURE__ */ react.createElement(MotionTimeline, {
-		frames: analysis.data.frames,
-		energy: analysis.data.energy,
-		segments: analysis.data.segments,
+	}, state.phase !== "ready" && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-placeholder" }, state.phase === "loading" ? translate("pane.placeholderLoading") : showPathInput ? translate("pane.placeholderPath") : translate("pane.placeholderPage"), state.phase === "empty" && /* @__PURE__ */ react.createElement("span", { className: "kinemesh-dropzone-hint" }, translate("pane.dropHint"))), dragOver && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-dropmask" }, translate("pane.dropActive"))), state.phase === "ready" && clip !== "" && /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(TransportBar, {
+		playing,
+		frame,
+		maxFrame: state.maxFrame,
+		onFirst: () => stepTo(0),
+		onPrev: () => stepTo(stepFrame(frame, -1, state.maxFrame)),
+		onTogglePlay: togglePlay,
+		onNext: () => stepTo(stepFrame(frame, 1, state.maxFrame)),
+		onLast: () => stepTo(state.maxFrame)
+	}), /* @__PURE__ */ react.createElement(MotionTimeline, {
+		energy: analysis.data?.energy ?? [],
+		segments: analysis.data?.segments ?? [],
 		loopFrames,
 		maxFrame: state.maxFrame,
 		frame,
 		onSeek: seek
-	}), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-controls" }, /* @__PURE__ */ react.createElement("button", {
-		type: "button",
-		className: "kinemesh-btn",
-		onClick: togglePlay,
-		disabled: state.phase !== "ready" || clip === ""
-	}, playing ? translate("pane.pause") : translate("pane.play")), /* @__PURE__ */ react.createElement("input", {
-		className: "kinemesh-slider",
-		type: "range",
-		min: 0,
-		max: Math.max(state.maxFrame, 1),
-		value: frame,
-		onChange: (event) => seek(Number(event.target.value)),
-		disabled: state.phase !== "ready" || clip === ""
-	}), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-frame" }, "f", frame, " / f", Math.max(state.maxFrame, 0))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), digestHeadline !== "" && /* @__PURE__ */ react.createElement("span", {
+	})), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), digestHeadline !== "" && /* @__PURE__ */ react.createElement("span", {
 		className: "kinemesh-chip",
 		title: translate("pane.digestChipTitle")
 	}, `digest ${digestHeadline}`), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), allowSend && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("pane.footHint")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
@@ -48597,6 +48745,7 @@ function apply(ctx) {
 exports.MODEL_FILE_EXTENSIONS = MODEL_FILE_EXTENSIONS;
 exports.StandalonePreviewPage = StandalonePreviewPage;
 exports.apply = apply;
+exports.clampFrame = clampFrame;
 exports.clearPaneMemories = clearPaneMemories;
 exports.computeTickStep = computeTickStep;
 exports.energyPoints = energyPoints;
@@ -48612,6 +48761,7 @@ exports.readPaneMemory = readPaneMemory;
 exports.resolveRestoreTarget = resolveRestoreTarget;
 exports.segmentColor = segmentColor;
 exports.shouldShowPreviewTab = shouldShowPreviewTab;
+exports.stepFrame = stepFrame;
 exports.writePaneMemory = writePaneMemory;
     })(module, module.exports, require);
     return module.exports;
