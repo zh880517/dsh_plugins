@@ -53,7 +53,7 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 | `--normalize <name>` | height / none（缺省 height，数值单位为身高倍数） |
 | `--vocab <file>` | kinemesh-vocab.json 词汇表路径（缺省按 资产同目录 &gt; 工作区 &gt; builtin 发现） |
 | `--bone-map <file>` | kinemesh-bones.json 映射文件路径（缺省按 资产同目录 &gt; 工作区 发现） |
-| `--out <dir>` | 中间文件输出目录（缺省系统临时目录；读不到时用它指向工作区重跑） |
+| `--out <dir>` | 中间文件输出目录（缺省 `<当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/`；读不到时用它指向工作区重跑） |
 
 强度档位口径（两列表见 motion-summary.json 的 constants）：**分段档 = max(均值档, 峰值档)**
 （爆发短段不被均值稀释），**全片档只按均值**（整片节奏口径）——比较两部动画整体强度用全片档，
@@ -61,7 +61,8 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 
 成功返回 `{ok, dir, files:[{name,bytes,what}], summaryDigest, warnings?, hint?}`：`summaryDigest`
 内联分段表 + 全片统计 + loopCheck + **keyframeRender 配方**（关键帧号 × front/side × skeleton）；
-输出在系统临时目录时会带 `hint` 提醒。`render` 选项：
+产物缺省落在**当前工作目录下的 `.kinemeshtmp/run-<时间戳>-<pid>/`**（0.9.2 起不再散落到系统临时目录，
+该目录通常在 host 的 `.gitignore` 里）——落在缺省目录时会带 `hint` 提醒。`render` 选项：
 
 | 选项 | 说明 |
 |---|---|
@@ -69,10 +70,14 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 | `--frames 0,15,30` | 帧号列表（≤64 个，按 30fps 换算 time=frame/30）；或 `--frame 30` 单帧 |
 | `--view-preset <name>` | front / side / back / three-quarter / orbit8（八方位连拍） |
 | `--azimuth/--elevation/--distance/--target x,y,z/--fov` | 自定义球坐标视角（与 preset 二选一） |
-| `--mode <name>` | default / solid / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需） |
+| `--mode <name>` | default / solid / wireframe / skeleton / bones-overlay；**省略 = 按模型自动选**（无 mesh→skeleton；贴图解不出来→solid 素模；有可用贴图→default。贴图缺失的资产用 default 会渲成黑剪影，这正是自动选要解决的） |
 | `--bone-labels <batch>` | 骨骼名文字标注（B.4，与 `--mode skeleton` / `bones-overlay` 联用）：`auto`（第 1 批）/ 批次号（1 起，stride 分批防叠）/ `all`（全部骨骼名，允许重叠，调试） |
 | `--width/--height` | 像素尺寸（缺省 1280×720） |
-| `--out-dir <dir>` | PNG 输出目录（缺省系统临时目录） |
+| `--out-dir <dir>` | PNG 输出目录（缺省 `<当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/`） |
+
+**取景（0.8.0）**：只给 `--view-preset`（或什么都不给）时，**逐帧按当前帧身体包围盒精确取景**——
+带 root motion 的动作（冲刺/突进/跳跃位移）不会跑出画面，身体漂移超过自身半径 15% 时 warnings 会提示；
+显式给 `--azimuth/--elevation/--distance/--target/--fov` 则按你指定的**固定构图**渲染，不做逐帧跟拍。
 
 `skeleton` 选项（DSH 工具 `kinemesh_skeleton` / MCP 同名同参）：
 
@@ -80,7 +85,7 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 |---|---|
 | `--shots <name>` | auto（缺省，CORE15 有缺口才渲染标注截图）/ none（只出 report）/ all（全量批次） |
 | `--bone-map <file>` | kinemesh-bones.json 映射文件路径（缺省按 资产同目录 &gt; 工作区 发现） |
-| `--out <dir>` | 输出目录（缺省系统临时目录；report 与 labels-*.png 都落这里） |
+| `--out <dir>` | 输出目录（缺省 `<当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/`；report 与 labels-*.png 都落这里） |
 
 通用：`--out` 与 `--out-dir` 互为别名（所有子命令两个名字都接受）；**未知选项直接三段式报错**
 （不静默忽略）——拼错选项名会立刻被告知，用 `--help` 查全部选项。

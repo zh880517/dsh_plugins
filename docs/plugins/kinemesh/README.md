@@ -18,10 +18,22 @@
 - **`kinemesh_skeleton`**（Agent 工具，M7）：骨架识别与映射——skeleton-report（约定识别 / 覆盖统计 /
   结构统计）+ 骨骼名标注截图交 AI 读图定案，结论写 `kinemesh-bones.json` 确定性消费；关键参数：
   `shots`（auto 缺省有缺口才出图 / none / all）、`boneMap`（参数 > 资产同目录 > cwd 发现）、`out`。
+- **`kinemesh_render`**（Agent 工具）：按视角（`view` 球坐标或 `viewPreset` front/side/back/
+  three-quarter/orbit8）+ 帧号渲染 PNG。渲染模式 default / solid / wireframe / skeleton /
+  bones-overlay，**省略 `mode` 时按模型自动选**（无 mesh→skeleton；贴图解不出来→solid；有可用贴图→
+  default）；只给视角预设时**逐帧按身体包围盒精确取景**，带 root motion 的动作不会跑出画面，
+  显式给 view 则按指定构图。需要本机 playwright + chromium。
+- **预览面板（0.6.0 起三入口）**：左侧侧边栏「动析」独立预览页 / `/kinemesh` 命令 / 会话「模型预览」
+  页签。预览能力：拖转视角、播放条（首帧·逐帧·播放暂停·末帧）与播放速度 0.1×～2×、轨道条拖帧 + 强度
+  曲线 + 三档刻度、显示方式（素模 / 贴图 / 线框互斥 + 独立「叠加骨架」）、载入后自动选显示模式、
+  **「锁定位移 / 锁定旋转」去掉 root motion 原地播放**、角色根节点 XYZ 参考轴（可开关）、左下角全局轴
+  指示器、发送给 AI 分析（附动作分析 digest）。
 - 本地只读分析：只读模型文件本身，不联网、不写模型所在目录。
 
-当前版本 0.5.0：M1–M7 已全部实施——四工具 `kinemesh_info` / `kinemesh_render` / `kinemesh_analyze` /
-`kinemesh_skeleton` 三出口同名同参，M6/M7 状态见 [design.md](./design.md) §5。
+当前版本 0.9.2：M1–M7 的四个工具 `kinemesh_info` / `kinemesh_render` / `kinemesh_analyze` /
+`kinemesh_skeleton` 三出口同名同参；0.6.0–0.9.2 迭加了预览交互（播放条/轨道/速度、显示方式拆分、
+自动选模式、root motion 开关、轴参考）与截图取景（自动模式、逐帧取景），以及产物临时目录收口到
+`<cwd>/.kinemeshtmp/`；状态见 [design.md](./design.md) §5 与 §6.10。
 
 ## 安装
 
@@ -43,7 +55,9 @@ git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/kinemesh
 ## 数据与权限
 
 - 不建数据库、不写 `~` 下任何目录；`kinemesh_info` 只读 Agent 给出的路径。
-- 后续截图功能默认把 PNG 写到系统临时目录（路径可指定）。
+- 截图 / 分析中间文件 / 命令附件缺省写到**当前工作目录下的 `.kinemeshtmp/run-<时间戳>-<pid>/`**
+  （0.9.2 起，不再散落到系统临时目录；`KINEMESH_TMP_DIR` 可覆盖根目录，cwd 不可写时自动退回
+  系统临时目录，路径可显式指定）。
 
 ## 开发
 

@@ -9,7 +9,7 @@ DSH 侧就是 Plugins 里的多张卡片，各自安装、开关、卸载、升�
 |---|---|---|---|
 | aiworkflow | 把流程画成图，Agent 一次只领一步 | `git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/aiworkflow` | [docs/plugins/aiworkflow](docs/plugins/aiworkflow/README.md) |
 | handoff | 用一次摘要把整个会话后缀换成一份可复核的交接单 | `git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/handoff` | [docs/plugins/handoff](docs/plugins/handoff/README.md) |
-| kinemesh | 游戏三维模型/动画资源的 AI 预览与分析（动析）：动画片段/骨骼/网格信息、单位体检、按视角截图、动作分析与骨架识别 | `git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/kinemesh` | [docs/plugins/kinemesh](docs/plugins/kinemesh/README.md) |
+| kinemesh | 游戏三维模型/动画资源的 AI 预览与分析（动析）：动画片段/骨骼/网格信息、单位体检、按视角截图、动作分析与骨架识别；三入口（侧边栏独立预览页 / `/kinemesh` 命令 / 会话页签），预览支持显示方式切换、root motion 锁定、轴参考 | `git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/kinemesh` | [docs/plugins/kinemesh](docs/plugins/kinemesh/README.md) |
 
 ## 安装
 
