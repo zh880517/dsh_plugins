@@ -55839,13 +55839,13 @@ server.tool("kinemesh_skeleton", "骨架识别与映射（本地只读）：产�
 		return errorResult(error, `识别 ${rawPath} 的骨架`);
 	}
 });
-server.tool("kinemesh_render", "按视角 + 帧号渲染模型截图，PNG 落盘返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8）；渲染模式 default / wireframe / skeleton / bones-overlay。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板一致。", {
+server.tool("kinemesh_render", "按视角 + 帧号渲染模型截图，PNG 落盘返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8）；渲染模式 default / solid / wireframe / skeleton / bones-overlay。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板一致。", {
 	path: string().describe("模型文件路径"),
 	clip: string().optional().describe("动画片段名（先 kinemesh_info 查）；静态模型省略"),
 	frames: array(number().int().nonnegative()).optional().describe("帧号列表（≤64 个，按 30fps 换算 time=frame/30；必填语义在 handler 校验，缺了给三段式指引）"),
 	view: record(string(), unknown()).optional().describe("完整视角对象 {\"camera\":{\"azimuth\":45,\"elevation\":15,\"distance\":3.2,\"target\":[0,1,0],\"fov\":40}}"),
 	viewPreset: string().optional().describe("front / side / back / three-quarter / orbit8；与 view 二选一"),
-	mode: string().optional().describe("default / wireframe / skeleton / bones-overlay"),
+	mode: string().optional().describe("default / solid / wireframe / skeleton / bones-overlay"),
 	boneLabels: union([
 		literal("auto"),
 		literal("all"),

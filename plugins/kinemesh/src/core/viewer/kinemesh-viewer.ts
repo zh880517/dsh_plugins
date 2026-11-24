@@ -13,7 +13,7 @@ import {
   type ViewState,
   type ViewMode,
 } from '../viewstate.js';
-import { normalizePreviewMaterial } from './material.js';
+import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
 import type { CanonicalScene } from '../types.js';
 
 /** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
@@ -84,8 +84,8 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   // ———————— 预览光照（0.6.4）———————
   // 原配置（hemi 1.1 + 单方向光 1.6）在深色舞台上看 Unity/Max 导出资产几乎是黑剪影。
   // 改为「环境光 + 半球光 + 主光 + 两侧补光」的四向布光：正面/侧面都有光，避免背光面全黑。
-  const ambient = new THREE.AmbientLight(0xffffff, 1.5);
-  const hemi = new THREE.HemisphereLight(0xf2f6ff, 0x2a2f38, 2.0);
+  const ambient = new THREE.AmbientLight(0xffffff, 2.2);
+  const hemi = new THREE.HemisphereLight(0xf2f6ff, 0x2a2f38, 2.4);
   const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
   keyLight.position.set(4, 8, 6);
   const fillLight = new THREE.DirectionalLight(0xdce6ff, 1.2);
@@ -96,6 +96,11 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
 
   let grid = new THREE.GridHelper(10, 10, 0x555a63, 0x3a3e45);
   scene.add(grid);
+
+  /** solid 素模模式共享材质（0.6.5）：中性灰 + 受光照，保证任何资产都能看清轮廓 */
+  const solidMaterial = new THREE.MeshLambertMaterial({ color: 0xcfd6e0 });
+  /** 贴图异步复查定时器（换模型/卸载时清理） */
+  let textureCheckTimer: number | null = null;
 
   let model: THREE.Object3D | null = null;
   let modelRawClips: THREE.AnimationClip[] = [];
@@ -168,6 +173,15 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       const mesh = child as THREE.Mesh;
       if (!mesh.isMesh) return;
       mesh.visible = mode !== 'skeleton';
+      // solid 素模（0.6.5）：用共享中性灰材质替换原材质，一键看清几何/动作，不受贴图与材质问题影响
+      const stored = (mesh.userData as Record<string, unknown>).kinemeshOriginalMaterial as THREE.Material | THREE.Material[] | undefined;
+      if (mode === 'solid') {
+        if (stored !== undefined && (mesh.userData as Record<string, unknown>).kinemeshOriginalMaterial !== null) {
+          mesh.material = solidMaterial;
+        }
+      } else if (stored !== undefined) {
+        mesh.material = stored;
+      }
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const material of materials) {
         const wireframeFlag = material as THREE.MeshBasicMaterial;
@@ -176,7 +190,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         }
       }
     });
-    grid.visible = mode === 'default';
+    grid.visible = mode === 'default' || mode === 'solid';
   }
 
   const handle: ViewerHandle = {
@@ -191,17 +205,45 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
           mesh.geometry.computeVertexNormals();
         }
       });
-      // 材质兜底（0.6.4）：FBX/Unity 导出常见两种「加光也黑」——
-      // ① metalness=1 且无环境贴图（物理光照下只反射环境，无环境即纯黑）→ 降 metalness、升 roughness；
-      // ② 贴图没加载成功 → 用中性灰兜底，保住几何轮廓可见。只动渲染用副本，不改源文件。
+      // 材质兜底（0.6.4/0.6.5）：Unity/Max 导出资产在预览里常呈黑剪影，逐层修——
+      // ① metalness 过高且无环境贴图 → 黑；② 贴图失败 + 深色 → 黑；③ 顶点色全黑 → color×0 恒黑。
+      // 贴图是异步加载的：先同步归一一次，再在纹理解码结束后复查（TGA 等不受支持格式会保持空 image）。
       model.traverse((child) => {
         const mesh = child as THREE.Mesh;
         if (!mesh.isMesh) return;
+        // 记录原始材质，供 solid 素模模式替换 / 其它模式还原
+        (mesh.userData as Record<string, unknown>).kinemeshOriginalMaterial = mesh.material;
+        const colorAttribute = mesh.geometry.getAttribute('color');
+        if (isVertexColorAllDark(colorAttribute)) {
+          // 顶点色全零：关掉材质顶点色开关（几何数据不动，截图管线同样受益）
+          const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const material of materials) {
+            if (material !== undefined && material !== null) {
+              (material as THREE.MeshStandardMaterial).vertexColors = false;
+              material.needsUpdate = true;
+            }
+          }
+        }
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         for (const material of materials) {
           if (material !== undefined && material !== null) normalizePreviewMaterial(material);
         }
       });
+      // 贴图异步复查：解码失败（image 仍为空）就把 map 摘掉换成中性灰，避免黑贴图盖住颜色
+      if (textureCheckTimer !== null) window.clearTimeout(textureCheckTimer);
+      textureCheckTimer = window.setTimeout(() => {
+        textureCheckTimer = null;
+        model?.traverse((child) => {
+          const mesh = child as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const material of materials) {
+            if (material === undefined || material === null) continue;
+            normalizePreviewMaterial(material);
+          }
+        });
+        renderer.render(scene, camera);
+      }, 1200);
       scene.add(model);
       // B.4 标注的目标索引：名字 → 对象（重名取首个命中；换模型即作废重建）
       namedObjects = new Map<string, THREE.Object3D>();
@@ -384,6 +426,10 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     },
 
     dispose() {
+      if (textureCheckTimer !== null) {
+        window.clearTimeout(textureCheckTimer);
+        textureCheckTimer = null;
+      }
       if (resizeObserver !== null) {
         resizeObserver.disconnect();
         resizeObserver = null;

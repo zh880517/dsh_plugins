@@ -39,3 +39,24 @@ export function normalizePreviewMaterial(material: THREE.Material): boolean {
   if (changed) standard.needsUpdate = true;
   return changed;
 }
+
+/** 几何顶点色是否「全零/全暗」——是则材质 vertexColors 应关闭（0.6.5） */
+export function isVertexColorAllDark(colorAttribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined): boolean {
+  if (colorAttribute === undefined) return false;
+  const count = colorAttribute.count;
+  if (count === 0) return false;
+  const itemSize = colorAttribute.itemSize;
+  // 抽样上限 512 个顶点：只看是否「整体暗」，不必遍历全部
+  const stride = Math.max(1, Math.floor(count / 512));
+  let checked = 0;
+  for (let index = 0; index < count; index += stride) {
+    let maxComponent = 0;
+    for (let component = 0; component < Math.min(itemSize, 3); component += 1) {
+      maxComponent = Math.max(maxComponent, colorAttribute.getComponent(index, component));
+    }
+    if (maxComponent > 0.06) return false;
+    checked += 1;
+    if (checked >= 512) break;
+  }
+  return true;
+}

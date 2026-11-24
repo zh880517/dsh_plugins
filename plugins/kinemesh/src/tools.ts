@@ -556,7 +556,7 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
     description:
       '按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。' +
       '视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，' +
-      'orbit8 = 八方位连拍）；渲染模式 default / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需）。' +
+      'orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需）。' +
       'boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，' +
       '骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。',
     parameters: {
@@ -575,7 +575,7 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
           additionalProperties: true,
         },
         viewPreset: { type: 'string', description: 'front / side / back / three-quarter / orbit8；与 view 二选一' },
-        mode: { type: 'string', description: 'default / wireframe / skeleton / bones-overlay，缺省 default' },
+        mode: { type: 'string', description: 'default / solid / wireframe / skeleton / bones-overlay，缺省 default' },
         boneLabels: {
           anyOf: [
             { type: 'string', enum: ['auto', 'all'] },

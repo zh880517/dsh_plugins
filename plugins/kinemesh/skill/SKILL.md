@@ -69,7 +69,7 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 | `--frames 0,15,30` | 帧号列表（≤64 个，按 30fps 换算 time=frame/30）；或 `--frame 30` 单帧 |
 | `--view-preset <name>` | front / side / back / three-quarter / orbit8（八方位连拍） |
 | `--azimuth/--elevation/--distance/--target x,y,z/--fov` | 自定义球坐标视角（与 preset 二选一） |
-| `--mode <name>` | default / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需） |
+| `--mode <name>` | default / solid / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需） |
 | `--bone-labels <batch>` | 骨骼名文字标注（B.4，与 `--mode skeleton` / `bones-overlay` 联用）：`auto`（第 1 批）/ 批次号（1 起，stride 分批防叠）/ `all`（全部骨骼名，允许重叠，调试） |
 | `--width/--height` | 像素尺寸（缺省 1280×720） |
 | `--out-dir <dir>` | PNG 输出目录（缺省系统临时目录） |

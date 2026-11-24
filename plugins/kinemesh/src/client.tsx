@@ -19,7 +19,7 @@ const CONVERSATION_VIEW_SLOT = 'conversation.view';
 const ENTRY_ID = 'kinemesh-launcher';
 const PANEL_ID = 'kinemesh';
 const PREVIEW_TAB_ID = 'kinemesh-preview';
-const VIEW_MODES: ViewMode[] = ['default', 'wireframe', 'skeleton', 'bones-overlay'];
+const VIEW_MODES: ViewMode[] = ['default', 'solid', 'wireframe', 'skeleton', 'bones-overlay'];
 
 // ———————— 预览状态记忆（0.6.0）———————
 // 切换侧边栏面板/会话页签时组件会卸载，React state 随之丢失；把「已打开模型 + clip + 帧 + 模式」

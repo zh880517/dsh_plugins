@@ -3,7 +3,7 @@
 // 本模块是纯逻辑（无 three.js / DOM），校验与换算三处共用；三维换算的向量版在 viewer 里做。
 import { KinemeshError } from './errors.js';
 
-export type ViewMode = 'default' | 'wireframe' | 'skeleton' | 'bones-overlay';
+export type ViewMode = 'default' | 'solid' | 'wireframe' | 'skeleton' | 'bones-overlay';
 export type ViewPreset = 'front' | 'side' | 'back' | 'three-quarter' | 'orbit8';
 
 export interface ViewStateCamera {

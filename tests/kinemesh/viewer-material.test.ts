@@ -3,11 +3,37 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
+  isVertexColorAllDark,
   normalizePreviewMaterial,
   PREVIEW_FALLBACK_COLOR,
   PREVIEW_METALNESS_MAX,
   PREVIEW_ROUGHNESS_MIN,
 } from '../../plugins/kinemesh/src/core/viewer/material.js';
+
+describe('顶点色全黑检测（0.6.5：Unity 导出常见 LayerElementColor 全 0 → 任何光都黑）', () => {
+  function colorAttr(values: number[]): THREE.BufferAttribute {
+    return new THREE.BufferAttribute(new Float32Array(values), 3);
+  }
+
+  it('全零 → 判为全黑（应关闭 vertexColors）', () => {
+    expect(isVertexColorAllDark(colorAttr(new Array(90).fill(0)))).toBe(true);
+  });
+
+  it('只要有明显亮色 → 不是全黑（保留顶点色）', () => {
+    const values = new Array(90).fill(0);
+    values[30] = 0.8;
+    expect(isVertexColorAllDark(colorAttr(values))).toBe(false);
+  });
+
+  it('接近黑的微弱值（0.05 以下）仍按全黑处理；超过阈值（0.06）不算', () => {
+    expect(isVertexColorAllDark(colorAttr(new Array(90).fill(0.05)))).toBe(true);
+    expect(isVertexColorAllDark(colorAttr(new Array(90).fill(0.07)))).toBe(false);
+  });
+
+  it('没有顶点色层 → 不算全黑（不动材质）', () => {
+    expect(isVertexColorAllDark(undefined)).toBe(false);
+  });
+});
 
 describe('预览材质兜底：metalness 过高（物理光照 + 无环境贴图 = 纯黑）', () => {
   it('metalness 1.0 → 降到上限，并把 roughness 抬到下限', () => {

@@ -40145,6 +40145,23 @@ function normalizePreviewMaterial(material) {
 	if (changed) standard.needsUpdate = true;
 	return changed;
 }
+/** 几何顶点色是否「全零/全暗」——是则材质 vertexColors 应关闭（0.6.5） */
+function isVertexColorAllDark(colorAttribute) {
+	if (colorAttribute === void 0) return false;
+	const count = colorAttribute.count;
+	if (count === 0) return false;
+	const itemSize = colorAttribute.itemSize;
+	const stride = Math.max(1, Math.floor(count / 512));
+	let checked = 0;
+	for (let index = 0; index < count; index += stride) {
+		let maxComponent = 0;
+		for (let component = 0; component < Math.min(itemSize, 3); component += 1) maxComponent = Math.max(maxComponent, colorAttribute.getComponent(index, component));
+		if (maxComponent > .06) return false;
+		checked += 1;
+		if (checked >= 512) break;
+	}
+	return true;
+}
 //#endregion
 //#region
 /** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
@@ -40167,8 +40184,8 @@ function mountViewer(container, options = {}) {
 	camera.position.set(2, 2, 2);
 	const controls = new OrbitControls(camera, renderer.domElement);
 	controls.enableDamping = false;
-	const ambient = new AmbientLight(16777215, 1.5);
-	const hemi = new HemisphereLight(15922943, 2764600, 2);
+	const ambient = new AmbientLight(16777215, 2.2);
+	const hemi = new HemisphereLight(15922943, 2764600, 2.4);
 	const keyLight = new DirectionalLight(16777215, 2.4);
 	keyLight.position.set(4, 8, 6);
 	const fillLight = new DirectionalLight(14477055, 1.2);
@@ -40178,6 +40195,10 @@ function mountViewer(container, options = {}) {
 	scene.add(ambient, hemi, keyLight, fillLight, rimLight);
 	let grid = new GridHelper(10, 10, 5593699, 3817029);
 	scene.add(grid);
+	/** solid 素模模式共享材质（0.6.5）：中性灰 + 受光照，保证任何资产都能看清轮廓 */
+	const solidMaterial = new MeshLambertMaterial({ color: 13620960 });
+	/** 贴图异步复查定时器（换模型/卸载时清理） */
+	let textureCheckTimer = null;
 	let model = null;
 	let modelRawClips = [];
 	let mixer = null;
@@ -40249,13 +40270,17 @@ function mountViewer(container, options = {}) {
 			const mesh = child;
 			if (!mesh.isMesh) return;
 			mesh.visible = mode !== "skeleton";
+			const stored = mesh.userData.kinemeshOriginalMaterial;
+			if (mode === "solid") {
+				if (stored !== void 0 && mesh.userData.kinemeshOriginalMaterial !== null) mesh.material = solidMaterial;
+			} else if (stored !== void 0) mesh.material = stored;
 			const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 			for (const material of materials) {
 				const wireframeFlag = material;
 				if (wireframeFlag.wireframe !== void 0) wireframeFlag.wireframe = mode === "wireframe";
 			}
 		});
-		grid.visible = mode === "default";
+		grid.visible = mode === "default" || mode === "solid";
 	}
 	const handle = {
 		loadScene(target) {
@@ -40269,9 +40294,31 @@ function mountViewer(container, options = {}) {
 			model.traverse((child) => {
 				const mesh = child;
 				if (!mesh.isMesh) return;
+				mesh.userData.kinemeshOriginalMaterial = mesh.material;
+				if (isVertexColorAllDark(mesh.geometry.getAttribute("color"))) {
+					const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+					for (const material of materials) if (material !== void 0 && material !== null) {
+						material.vertexColors = false;
+						material.needsUpdate = true;
+					}
+				}
 				const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 				for (const material of materials) if (material !== void 0 && material !== null) normalizePreviewMaterial(material);
 			});
+			if (textureCheckTimer !== null) window.clearTimeout(textureCheckTimer);
+			textureCheckTimer = window.setTimeout(() => {
+				textureCheckTimer = null;
+				model?.traverse((child) => {
+					const mesh = child;
+					if (!mesh.isMesh) return;
+					const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+					for (const material of materials) {
+						if (material === void 0 || material === null) continue;
+						normalizePreviewMaterial(material);
+					}
+				});
+				renderer.render(scene, camera);
+			}, 1200);
 			scene.add(model);
 			namedObjects = /* @__PURE__ */ new Map();
 			model.traverse((child) => {
@@ -40447,6 +40494,10 @@ function mountViewer(container, options = {}) {
 			return firstFrame;
 		},
 		dispose() {
+			if (textureCheckTimer !== null) {
+				window.clearTimeout(textureCheckTimer);
+				textureCheckTimer = null;
+			}
 			if (resizeObserver !== null) {
 				resizeObserver.disconnect();
 				resizeObserver = null;
@@ -47415,6 +47466,7 @@ var PANEL_ID = "kinemesh";
 var PREVIEW_TAB_ID = "kinemesh-preview";
 var VIEW_MODES = [
 	"default",
+	"solid",
 	"wireframe",
 	"skeleton",
 	"bones-overlay"

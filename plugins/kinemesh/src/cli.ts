@@ -47,7 +47,7 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       --view-preset <name>     front / side / back / three-quarter / orbit8（八方位连拍）
       --azimuth <deg> --elevation <deg> --distance <n> --target x,y,z --fov <deg>
                                自定义球坐标视角（与 --view-preset 二选一）
-      --mode <name>            default / wireframe / skeleton / bones-overlay
+      --mode <name>            default / solid / wireframe / skeleton / bones-overlay
       --bone-labels <batch>    骨骼名文字标注（B.4，与 --mode skeleton|bones-overlay 联用）：
                                auto（缺省第 1 批）/ all（全部骨骼名，允许重叠，调试）/ 批次号（1 起，
                                stride 分批防叠；骨架识别单批读图用）
