@@ -1,19 +1,20 @@
 // 动画片段重绑定（0.10.0「独立 mesh 文件」）：把动作文件里的 AnimationClip 轨道改成
 // mesh 场景的骨骼名，让同一个 AnimationMixer 直接驱动 mesh 骨架。
 //
-// 适用场景：动作-only 的 FBX 与角色 mesh FBX 来自同一套 rig 的分两次导出——
-// 动画轨道名与 mesh 骨骼名一致（或只差命名空间前缀）时，按名字换轨道前缀即可；
-// 只导出部分骨骼的动作（如 5 根脊柱的受击附加动画）也能绑定，未命中的 mesh 骨骼保持 rest 姿态。
+// 适用场景：动作-only 的 FBX 与角色 mesh FBX 来自同一套 rig 的分两次导出。
+// 0.10.0–0.10.3 只按名字换轨道前缀（加根骨骼静止姿态差校正）；真实资产 Haylee 暴露：
+// 分两次导出的两个文件 bind pose / up-axis 可能不同（一个 Z-up 一个 Y-up），
+// 直接搬局部值会让肢体朝向错位（「旋转不对」）。
 //
-// 0.10.1（真实资产 Haylee 暴露）：同一套 rig 分两次导出时，根骨骼（Bip001 / Hips 等顶层被动画节点）
-// 的**静止朝向**可能不同（典型：mesh 导 Z-up、动作导 Y-up，FBXLoader 只给 mesh 根节点加 −90°X 旋转，
-// 两个文件的骨骼局部数据因此整体差一个根旋转）。直接搬局部值会让角色「躺倒」。
-// 修法：只看映射链的根骨骼，按两边静止姿态差做一次校正——
-//   q_t(t) = q_t_rest · q_s_rest⁻¹ · q_s(t)
-//   p_t(t) = p_t_rest + R(q_t_rest·q_s_rest⁻¹)·(p_s(t) − p_s_rest)
-// 子骨骼局部值保持原样即可（父链朝向被校正后，整条链在世界空间对齐）。
+// 0.10.4 改为**世界姿态对齐烘焙**（不是逐骨静止差，也不是只换名字）：
+//   · 用动画文件自己的骨架把片段求值出来（AnimationMixer），逐个采样时刻算世界矩阵；
+//   · 把世界姿态经场景朝向映射 C = mesh 场景根 · 动画场景根⁻¹ 对齐到 mesh 空间；
+//   · 再按 mesh 骨架层级反解局部 TRS，写成新片段（只覆盖「该片段真正驱动的节点」）。
+// 这样预览里看到的姿态 = 动画文件自己的姿态（整体刚体变换到 mesh 坐标系），
+// 不会因为 bind pose 不同把肢体角度算歪；根位移/旋转仍留在根骨骼轨道上，
+// root motion 锁定等预览功能不受影响。
 //
-// 纯 three 对象操作（Node / 浏览器都能跑），Node 端可用真实 Object3D/AnimationClip 直测。
+// 纯 three 对象操作（Node / 浏览器都能跑）；轨道都是新建的，不修改入参场景。
 import * as THREE from 'three';
 import { buildNodeIndex, matchNode, type NodeIndex } from './names.js';
 
@@ -39,7 +40,9 @@ export interface ClipBindingReport {
   unmatchedNodeCount: number;
   /** 通过命名空间归一化（mixamorig: / Armature| 等）才命中的轨道数 */
   renamedTracks: number;
-  /** 做了「静止姿态差」校正的根骨骼名（两边根朝向不同时非空） */
+  /** 按世界姿态对齐重定向（烘焙）的节点数；0 = 直接搬局部值（给了动画场景根时才烘焙） */
+  retargetedBones: number;
+  /** 静止姿态与 mesh 不同的映射链根骨骼名（bind pose / up-axis 差异的可读线索） */
   correctedRoots: string[];
   /** 是否至少命中一条轨道（false = 动画与 mesh 骨骼完全不匹配，调用方应报错） */
   ok: boolean;
@@ -55,22 +58,11 @@ export interface ClipBindingResult {
 /** 动画轨道里命中的节点名去重上限（报告里只列前 12 个，避免长清单灌爆 token） */
 const MAX_UNMATCHED_NODES = 12;
 
-/** 根骨骼静止姿态差校正数据（两边局部 rest 值） */
-interface RootCorrection {
-  /** targetRest · sourceRest⁻¹ 的旋转：delta 从源根局部空间转到目标根局部空间 */
-  rotation: THREE.Quaternion;
-  targetPosition: THREE.Vector3;
-  targetScale: THREE.Vector3;
-  sourcePosition: THREE.Vector3;
-  sourceScale: THREE.Vector3;
-  targetName: string;
-}
-
 /**
  * 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
- * 命中则换轨道名前缀，未命中则丢弃；给了 sourceRoot（动画文件自己的场景根）时，
- * 对映射链的根骨骼按两边静止姿态差做校正（修跨导出 up-axis / 根朝向差异导致的「躺倒」）。
- * 不修改入参 clips / mesh / sourceRoot（轨道都是 clone 的），可以安全地在只读分析里调用。
+ * 命中则换轨道名前缀、未命中丢弃；给了 sourceRoot（动画文件自己的场景根）时，
+ * 用「世界姿态对齐烘焙」把动作姿态精确转到 mesh 空间（修 bind pose / up-axis 差异）。
+ * 不修改入参 clips / mesh / sourceRoot。
  */
 export function bindClipsToModel(
   mesh: THREE.Object3D,
@@ -83,14 +75,12 @@ export function bindClipsToModel(
   const unseen = new Set<string>();
   let totalTracks = 0;
   let matchedTracks = 0;
-  const parsedNames = new Map<THREE.KeyframeTrack, { nodeName: string; property: string }>();
 
   for (const clip of clips) {
     for (const track of clip.tracks) {
       totalTracks += 1;
       const parsed = THREE.PropertyBinding.parseTrackName(track.name);
       const nodeName = typeof parsed.nodeName === 'string' ? parsed.nodeName : '';
-      parsedNames.set(track, { nodeName, property: typeof parsed.propertyName === 'string' ? parsed.propertyName : '' });
       if (nodeName === '') continue;
       if (resolved.has(nodeName)) {
         matchedTracks += 1;
@@ -106,69 +96,46 @@ export function bindClipsToModel(
     }
   }
 
-  // 映射链的根骨骼（没有 mapped 祖先的 mesh 骨骼）→ 用两边静止姿态差校正
-  const matchedTargets = new Set([...resolved.values()].map((entry) => entry.target));
-  const corrections = buildRootCorrections(matchedTargets, sourceRoot);
-
-  // 第二遍：生成绑定后的轨道
-  const matchedBones = new Set<THREE.Object3D>();
-  const matchedNodes = new Set<string>();
   let renamedTracks = 0;
-  const boundClips: THREE.AnimationClip[] = [];
-  for (const clip of clips) {
-    const tracks: THREE.KeyframeTrack[] = [];
-    for (const track of clip.tracks) {
-      const info = parsedNames.get(track);
-      const nodeName = info?.nodeName ?? '';
-      if (nodeName === '') {
-        // 非节点轨道（理论上动画轨道都有节点名）：原样保留，不参与命中统计
-        tracks.push(track);
-        continue;
-      }
-      const entry = resolved.get(nodeName);
-      if (entry === undefined) continue; // 未命中：丢弃
-      if (!matchedNodes.has(nodeName)) {
-        matchedNodes.add(nodeName);
-        if ((entry.target as THREE.Bone).isBone) matchedBones.add(entry.target);
-      }
-      // three 的 parseTrackName 已能忽略 mixamorig: 这类前缀：解析出的 nodeName 与目标同名时沿用原轨道名
-      const nameMatches = entry.target.name === nodeName;
-      const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${info?.property ?? ''}`;
-      const targetName = nameMatches ? track.name : `${entry.target.name}${suffix}`;
-      const correction = corrections.get(entry.target);
-      if (correction !== undefined) {
-        const corrected = correctTrack(track, info?.property ?? '', correction);
-        if (corrected !== null) {
-          corrected.name = targetName;
-          tracks.push(corrected);
-          if (!nameMatches) renamedTracks += 1;
-          continue;
-        }
-      }
-      if (nameMatches) {
-        tracks.push(track);
-        continue;
-      }
-      const renamed = track.clone();
-      renamed.name = targetName;
-      renamedTracks += 1;
-      tracks.push(renamed);
+  for (const [nodeName, entry] of resolved) if (entry.target.name !== nodeName) renamedTracks += 1;
+
+  const matchedBones = new Set<THREE.Object3D>();
+  for (const entry of resolved.values()) {
+    if ((entry.target as THREE.Bone).isBone && (entry.target as THREE.Bone).isBone !== undefined) matchedBones.add(entry.target);
+  }
+  const matchedTargets = new Set([...resolved.values()].map((entry) => entry.target));
+  const matchedRoots = findMatchedRoots(matchedTargets);
+
+  let boundClips: THREE.AnimationClip[] = [];
+  let retargetedBones = 0;
+  let correctedRoots: string[] = [];
+  if (sourceRoot !== undefined) {
+    const baked = bakeWorldAlignedClips(mesh, clips, resolved, sourceRoot);
+    if (baked !== null) {
+      boundClips = baked.clips;
+      retargetedBones = baked.bones;
+      correctedRoots = baked.correctedRoots;
     }
-    boundClips.push(new THREE.AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
+  }
+  if (boundClips.length === 0) {
+    // 没有动画场景根（单测 / 只给轨道）时退回「换轨道名 + 未命中丢弃」。
+    // 世界姿态对齐需要动画自己的骨架做参考；缺少时只能按名字对齐。
+    boundClips = remapTracksOnly(clips, resolved);
   }
 
   const report: ClipBindingReport = {
     meshNodes: index.count,
     meshBones: index.bones,
-    animNodes: matchedNodes.size + unseen.size,
-    matchedNodes: matchedNodes.size,
+    animNodes: matchedTargets.size + unseen.size,
+    matchedNodes: matchedTargets.size,
     matchedBones: matchedBones.size,
     totalTracks,
     matchedTracks,
     unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
     unmatchedNodeCount: unseen.size,
     renamedTracks,
-    correctedRoots: [...corrections.keys()].map((target) => target.name),
+    retargetedBones,
+    correctedRoots,
     ok: matchedTracks > 0,
     warnings: [],
   };
@@ -176,90 +143,179 @@ export function bindClipsToModel(
   return { clips: boundClips, report };
 }
 
-/** 找出映射链根骨骼并计算校正量（只对「两边都有、且静止朝向/位置不同」的根骨骼） */
-function buildRootCorrections(matchedTargets: Set<THREE.Object3D>, sourceRoot?: THREE.Object3D): Map<THREE.Object3D, RootCorrection> {
-  const corrections = new Map<THREE.Object3D, RootCorrection>();
-  if (sourceRoot === undefined) return corrections;
-  const sourceBones = new Map<string, THREE.Bone>();
-  sourceRoot.traverse((child) => {
-    if ((child as THREE.Bone).isBone) sourceBones.set(child.name, child as THREE.Bone);
-  });
-  if (sourceBones.size === 0) return corrections;
+/** 映射链的根骨骼：命中目标里没有命中祖先的那些（Bip001 / Hips 等） */
+function findMatchedRoots(matchedTargets: Set<THREE.Object3D>): Set<THREE.Object3D> {
+  const roots = new Set<THREE.Object3D>();
   for (const target of matchedTargets) {
-    if ((target as THREE.Bone).isBone !== true) continue;
-    if (hasMatchedAncestor(target, matchedTargets)) continue;
-    const source = sourceBones.get(target.name);
+    let parent = target.parent;
+    let hasMatchedAncestor = false;
+    while (parent !== null && parent !== undefined) {
+      if (matchedTargets.has(parent)) {
+        hasMatchedAncestor = true;
+        break;
+      }
+      parent = parent.parent;
+    }
+    if (!hasMatchedAncestor) roots.add(target);
+  }
+  return roots;
+}
+
+/** 无动画场景根时的降级路径：换轨道名前缀 / 丢弃未命中轨道（原 0.10.0 行为） */
+function remapTracksOnly(
+  clips: readonly THREE.AnimationClip[],
+  resolved: Map<string, { target: THREE.Object3D; via: 'exact' | 'normalized' }>,
+): THREE.AnimationClip[] {
+  const out: THREE.AnimationClip[] = [];
+  for (const clip of clips) {
+    const tracks: THREE.KeyframeTrack[] = [];
+    for (const track of clip.tracks) {
+      const parsed = THREE.PropertyBinding.parseTrackName(track.name);
+      const nodeName = typeof parsed.nodeName === 'string' ? parsed.nodeName : '';
+      if (nodeName === '') {
+        tracks.push(track);
+        continue;
+      }
+      const entry = resolved.get(nodeName);
+      if (entry === undefined) continue;
+      if (entry.target.name === nodeName) {
+        tracks.push(track);
+        continue;
+      }
+      const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${parsed.propertyName}`;
+      const renamed = track.clone();
+      renamed.name = `${entry.target.name}${suffix}`;
+      tracks.push(renamed);
+    }
+    out.push(new THREE.AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
+  }
+  return out;
+}
+
+interface BakedClips {
+  clips: THREE.AnimationClip[];
+  bones: number;
+  correctedRoots: string[];
+}
+
+/**
+ * 世界姿态对齐烘焙：动画骨架逐采样时刻求值 → 世界矩阵 → 按 mesh 层级反解局部 TRS。
+ * 两个文件都被 FBXLoader 统一到 Y-up 世界，所以直接复制动画骨架的世界姿态即可；
+ * mesh 场景根的旋转由反解出的局部值自动吸收（再乘场景根矩阵会二次旋转，Sword 资产实测会躺倒）。
+ * 只烘焙「该片段轨道真正驱动的命中节点」；其余骨骼保持 mesh 自己的 rest 局部值。
+ */
+function bakeWorldAlignedClips(
+  mesh: THREE.Object3D,
+  clips: readonly THREE.AnimationClip[],
+  resolved: Map<string, { target: THREE.Object3D; via: 'exact' | 'normalized' }>,
+  sourceRoot: THREE.Object3D,
+): BakedClips | null {
+  const sourceNodes = new Map<string, THREE.Object3D>();
+  sourceRoot.traverse((child) => {
+    if (child.name !== '' && !sourceNodes.has(child.name)) sourceNodes.set(child.name, child);
+  });
+  const targetToSource = new Map<THREE.Object3D, THREE.Object3D>();
+  for (const [nodeName, entry] of resolved) {
+    const source = sourceNodes.get(entry.target.name) ?? sourceNodes.get(nodeName);
+    if (source !== undefined) targetToSource.set(entry.target, source);
+  }
+  if (targetToSource.size === 0) return null;
+
+  mesh.updateMatrixWorld(true);
+  sourceRoot.updateMatrixWorld(true);
+
+  // mesh 上的全部节点（按父→子顺序）与静止局部矩阵
+  const nodes: THREE.Object3D[] = [];
+  mesh.traverse((node) => {
+    if (node !== mesh) nodes.push(node);
+  });
+  const restLocal = new Map<THREE.Object3D, THREE.Matrix4>();
+  for (const node of nodes) restLocal.set(node, node.matrix.clone());
+  const targetSet = new Set(targetToSource.keys());
+
+  // 静止姿态差诊断（给报告/警告）：映射链根骨骼的局部 rest 是否与动画不同
+  const correctedRoots: string[] = [];
+  for (const root of findMatchedRoots(targetSet)) {
+    const source = targetToSource.get(root);
     if (source === undefined) continue;
-    const targetRest = { p: target.position, q: target.quaternion, s: target.scale };
-    const sourceRest = { p: source.position, q: source.quaternion, s: source.scale };
-    const rotation = targetRest.q.clone().multiply(sourceRest.q.clone().invert());
-    const positionDelta = targetRest.p.distanceTo(sourceRest.p);
-    const rotationDelta = rotation.angleTo(new THREE.Quaternion());
-    const scaleDelta = targetRest.s.distanceTo(sourceRest.s);
-    if (positionDelta < 1e-4 && rotationDelta < 1e-3 && scaleDelta < 1e-4) continue; // 静止姿态一致：无需校正
-    corrections.set(target, {
-      rotation,
-      targetPosition: targetRest.p.clone(),
-      targetScale: targetRest.s.clone(),
-      sourcePosition: sourceRest.p.clone(),
-      sourceScale: sourceRest.s.clone(),
-      targetName: target.name,
-    });
+    const angular = root.quaternion.angleTo(source.quaternion);
+    const linear = root.position.distanceTo(source.position);
+    if (angular > 0.01 || linear > 1e-3) correctedRoots.push(root.name);
   }
-  return corrections;
-}
 
-function hasMatchedAncestor(target: THREE.Object3D, matchedTargets: Set<THREE.Object3D>): boolean {
-  let parent = target.parent;
-  while (parent !== null && parent !== undefined) {
-    if (matchedTargets.has(parent)) return true;
-    parent = parent.parent;
-  }
-  return false;
-}
+  const bakedClips: THREE.AnimationClip[] = [];
+  let bakedBones = 0;
+  const localMatrix = new THREE.Matrix4();
+  const desiredWorld = new Map<THREE.Object3D, THREE.Matrix4>();
 
-/** 单条轨道按根校正量做静止姿态差变换（position/quaternion/scale；其它属性原样返回 null） */
-function correctTrack(track: THREE.KeyframeTrack, property: string, correction: RootCorrection): THREE.KeyframeTrack | null {
-  const values = track.values;
-  if (property === 'quaternion') {
-    const out = new Float32Array(values.length);
-    const q = new THREE.Quaternion();
-    for (let index = 0; index + 3 < values.length; index += 4) {
-      q.set(values[index]!, values[index + 1]!, values[index + 2]!, values[index + 3]!);
-      q.premultiply(correction.rotation);
-      out[index] = q.x;
-      out[index + 1] = q.y;
-      out[index + 2] = q.z;
-      out[index + 3] = q.w;
+  for (const clip of clips) {
+    // 该片段真正驱动的命中节点
+    const animated = new Set<THREE.Object3D>();
+    const times = new Set<number>();
+    for (const track of clip.tracks) {
+      const parsed = THREE.PropertyBinding.parseTrackName(track.name);
+      const nodeName = typeof parsed.nodeName === 'string' ? parsed.nodeName : '';
+      if (nodeName === '') continue;
+      const entry = resolved.get(nodeName);
+      if (entry !== undefined && targetToSource.has(entry.target)) animated.add(entry.target);
+      for (const time of track.times) times.add(Math.round(time * 1000) / 1000);
     }
-    return new THREE.QuaternionKeyframeTrack(track.name, track.times, out);
-  }
-  if (property === 'position') {
-    const out = new Float32Array(values.length);
-    const point = new THREE.Vector3();
-    for (let index = 0; index + 2 < values.length; index += 3) {
-      point.set(
-        values[index]! - correction.sourcePosition.x,
-        values[index + 1]! - correction.sourcePosition.y,
-        values[index + 2]! - correction.sourcePosition.z,
-      );
-      point.applyQuaternion(correction.rotation);
-      out[index] = correction.targetPosition.x + point.x;
-      out[index + 1] = correction.targetPosition.y + point.y;
-      out[index + 2] = correction.targetPosition.z + point.z;
+    const sampleTimes = [...times].sort((left, right) => left - right);
+    if (sampleTimes.length === 0) {
+      bakedClips.push(new THREE.AnimationClip(clip.name, clip.duration, [], clip.blendMode));
+      continue;
     }
-    return new THREE.VectorKeyframeTrack(track.name, track.times, out);
-  }
-  if (property === 'scale') {
-    const out = new Float32Array(values.length);
-    for (let index = 0; index + 2 < values.length; index += 3) {
-      out[index] = correction.targetScale.x * (values[index]! / (correction.sourceScale.x || 1));
-      out[index + 1] = correction.targetScale.y * (values[index + 1]! / (correction.sourceScale.y || 1));
-      out[index + 2] = correction.targetScale.z * (values[index + 2]! / (correction.sourceScale.z || 1));
+    // 采样缓冲（每个被驱动节点的 position/quaternion/scale 关键值）
+    const buffers = new Map<THREE.Object3D, { p: number[]; q: number[]; s: number[] }>();
+    for (const target of animated) buffers.set(target, { p: [], q: [], s: [] });
+
+    const mixer = new THREE.AnimationMixer(sourceRoot);
+    const action = mixer.clipAction(clip);
+    action.reset().play();
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+
+    for (const time of sampleTimes) {
+      mixer.setTime(time);
+      sourceRoot.updateMatrixWorld(true);
+      desiredWorld.clear();
+      for (const node of nodes) {
+        const parentWorld =
+          node.parent !== null && node.parent !== mesh && desiredWorld.has(node.parent)
+            ? desiredWorld.get(node.parent)!
+            : mesh.matrixWorld;
+        const source = targetToSource.get(node);
+        let world: THREE.Matrix4;
+        if (source !== undefined) {
+          // 两个文件都已被 loader 统一到 Y-up 世界；直接复制动画骨架的世界姿态，
+          // 由反解的局部值自动吸收 mesh 场景根的旋转（不能再用场景根矩阵做映射，会二次旋转）
+          world = source.matrixWorld.clone();
+        } else {
+          // 未被动画驱动：按 mesh 自己的静止局部值跟随父链
+          world = parentWorld.clone().multiply(restLocal.get(node)!);
+        }
+        desiredWorld.set(node, world);
+        const buffer = animated.has(node) ? buffers.get(node) : undefined;
+        if (buffer === undefined) continue;
+        localMatrix.copy(parentWorld).invert().multiply(world);
+        localMatrix.decompose(position, quaternion, scale);
+        buffer.p.push(position.x, position.y, position.z);
+        buffer.q.push(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+        buffer.s.push(scale.x, scale.y, scale.z);
+      }
     }
-    return new THREE.VectorKeyframeTrack(track.name, track.times, out);
+    action.stop();
+    const tracks: THREE.KeyframeTrack[] = [];
+    for (const [target, buffer] of buffers) {
+      tracks.push(new THREE.VectorKeyframeTrack(`${target.name}.position`, sampleTimes, buffer.p));
+      tracks.push(new THREE.QuaternionKeyframeTrack(`${target.name}.quaternion`, sampleTimes, buffer.q));
+      tracks.push(new THREE.VectorKeyframeTrack(`${target.name}.scale`, sampleTimes, buffer.s));
+      if ((target as THREE.Bone).isBone) bakedBones += 1;
+    }
+    bakedClips.push(new THREE.AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
   }
-  return null;
+  return { clips: bakedClips, bones: bakedBones, correctedRoots };
 }
 
 /** 由报告派生人话 warnings（截图/预览/工具直接透传） */
@@ -279,12 +335,13 @@ function bindingWarnings(report: ClipBindingReport): string[] {
     );
   }
   if (report.renamedTracks > 0) {
-    warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
+    warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 个节点（如 mixamorig: / Armature| 前缀）。`);
   }
-  if (report.correctedRoots.length > 0) {
+  if (report.retargetedBones > 0) {
+    const roots = report.correctedRoots.length > 0 ? `（根骨骼静止姿态不同：${report.correctedRoots.join('、')}）` : '';
     warnings.push(
-      `动画与 mesh 的根骨骼静止朝向/位置不同（跨导出/坐标系差异，典型是 Z-up 与 Y-up 混用）：` +
-        `已按静止姿态差校正根骨骼 ${report.correctedRoots.join('、')} 的轨道。`,
+      `动画与 mesh 的骨骼静止姿态/坐标系不同（bind pose 或 Z-up/Y-up 差异）：已按「世界姿态对齐」烘焙重定向 ` +
+        `${report.retargetedBones} 根骨骼的轨道，预览姿态与动画文件自身一致${roots}。`,
     );
   }
   return warnings;
@@ -301,9 +358,13 @@ export function bindingFacts(report: ClipBindingReport): string[] {
       `未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join('、')}${report.unmatchedNodeCount > report.unmatchedNodes.length ? ' …' : ''}）——这些节点的动作不会显示。`,
     );
   }
-  if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
-  if (report.correctedRoots.length > 0) {
-    facts.push(`根骨骼静止姿态差校正：${report.correctedRoots.join('、')}（两边 up-axis/根朝向不同）。`);
+  if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 个节点经命名空间归一化后命中。`);
+  if (report.retargetedBones > 0) {
+    facts.push(
+      `世界姿态对齐烘焙重定向 ${report.retargetedBones} 根骨骼（bind pose / 跨导出差异）` +
+        (report.correctedRoots.length > 0 ? `，根骨骼 rest 不同：${report.correctedRoots.join('、')}` : '') +
+        '。',
+    );
   }
   return facts;
 }

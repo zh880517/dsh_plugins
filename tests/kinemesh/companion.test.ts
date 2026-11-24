@@ -123,7 +123,7 @@ describe('bindClipsToModel：动画轨道按骨骼名绑定到 mesh 骨架', () 
     expect(clips[0]!.tracks).toHaveLength(0);
   });
 
-  // ———————— 0.10.1：根骨骼静止姿态差校正（真实资产 Haylee：mesh 导 Z-up、动作导 Y-up） ————————
+  // ———————— 0.10.4：世界姿态对齐烘焙（真实资产 Haylee：mesh/动作 bind pose 或 up-axis 不同） ————————
 
   /** 造一对根骨骼 rest 朝向不同的场景：mesh 根 = Rx(-90°)，动作根 = identity；子骨骼同名 */
   function rotatedRig(meshRootQuaternion: THREE.Quaternion, rootPosition: [number, number, number], childPosition: [number, number, number]) {
@@ -140,7 +140,7 @@ describe('bindClipsToModel：动画轨道按骨骼名绑定到 mesh 骨架', () 
     return { root, top, child };
   }
 
-  it('根骨骼 rest 朝向不同：按静止姿态差校正根轨道，子骨骼轨道保持原样', () => {
+  it('世界姿态对齐烘焙：绑定后 mesh 骨骼的世界姿态 = 动画骨架的世界姿态（不再「旋转不对」）', () => {
     const mesh = rotatedRig(
       new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2),
       [0, 0, 0],
@@ -155,34 +155,37 @@ describe('bindClipsToModel：动画轨道按骨骼名绑定到 mesh 骨架', () 
     ]);
 
     const { clips, report } = bindClipsToModel(mesh.root, [clip], anim.root);
-    expect(report.correctedRoots).toEqual(['Bip001']);
-    expect(report.warnings.join('\n')).toContain('根骨骼静止朝向');
-    const rootTrack = clips[0]!.tracks.find((track) => track.name === 'Bip001.quaternion') as THREE.QuaternionKeyframeTrack;
-    // 校正后：q_t = q_meshRest · q_animRest⁻¹ · q_anim(t) = Rx(-90°) · turn
-    const expected = new THREE.Quaternion()
-      .setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2)
-      .multiply(turn);
-    const actual = new THREE.Quaternion(
-      rootTrack.values[4]!,
-      rootTrack.values[5]!,
-      rootTrack.values[6]!,
-      rootTrack.values[7]!,
-    );
-    expect(actual.angleTo(expected)).toBeLessThan(5e-3);
-    // 子骨骼不是映射链根：局部轨道原样保留
-    const childTrack = clips[0]!.tracks.find((track) => track.name === 'Bip001_Spine.quaternion') as THREE.QuaternionKeyframeTrack;
-    const childValues = Array.from(childTrack.values.slice(4));
-    expect(childValues[1]).toBeCloseTo(0.1, 5);
-    expect(childValues[3]).toBeCloseTo(0.995, 5);
+    expect(report.correctedRoots).toEqual(['Bip001']); // 根骨骼 rest 不同 → 可读线索
+    expect(report.retargetedBones).toBe(2); // 片段驱动 2 根骨骼 → 全部烘焙
+    expect(report.warnings.join('\n')).toContain('世界姿态对齐');
+
+    // 动画骨架求值到同一时刻，绑定后的 mesh 骨骼世界矩阵应与它一致（世界姿态复制）
+    const animMixer = new THREE.AnimationMixer(anim.root);
+    animMixer.clipAction(clip).play();
+    animMixer.setTime(1);
+    anim.root.updateMatrixWorld(true);
+
+    const meshMixer = new THREE.AnimationMixer(mesh.root);
+    meshMixer.clipAction(clips[0]!).play();
+    meshMixer.setTime(1);
+    mesh.root.updateMatrixWorld(true);
+
+    const animTop = anim.top.getWorldPosition(new THREE.Vector3());
+    const meshTop = mesh.top.getWorldPosition(new THREE.Vector3());
+    expect(meshTop.distanceTo(animTop)).toBeLessThan(1e-4);
+    const animChild = anim.child.getWorldPosition(new THREE.Vector3());
+    const meshChild = mesh.child.getWorldPosition(new THREE.Vector3());
+    expect(meshChild.distanceTo(animChild)).toBeLessThan(1e-4);
   });
 
-  it('根骨骼静止姿态一致（跨导出但同 up-axis）：不做校正', () => {
+  it('没有动画场景根时退回换轨道名路径；静态姿态一致时 correctedRoots 为空', () => {
     const mesh = rotatedRig(new THREE.Quaternion(), [0, 0, 0], [0, 0, 1]);
     const anim = rotatedRig(new THREE.Quaternion(), [0, 0, 0], [0, 0, 1]);
     const clip = quaternionClip('Attack', ['Bip001']);
     const { report } = bindClipsToModel(mesh.root, [clip], anim.root);
-    expect(report.correctedRoots).toEqual([]);
-    expect(report.warnings.join('\n')).not.toContain('根骨骼静止朝向');
+    expect(report.correctedRoots).toEqual([]); // 静止姿态一致：没有根骨骼差异线索
+    expect(report.retargetedBones).toBe(1); // 有动画场景根 → 仍然按世界姿态烘焙（结果与 raw 等价）
+    expect(report.warnings.join('\n')).toContain('世界姿态对齐');
   });
 });
 

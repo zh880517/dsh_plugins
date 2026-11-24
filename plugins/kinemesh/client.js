@@ -48185,9 +48185,9 @@ function matchNode(index, nodeName) {
 var MAX_UNMATCHED_NODES = 12;
 /**
 * 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
-* 命中则换轨道名前缀，未命中则丢弃；给了 sourceRoot（动画文件自己的场景根）时，
-* 对映射链的根骨骼按两边静止姿态差做校正（修跨导出 up-axis / 根朝向差异导致的「躺倒」）。
-* 不修改入参 clips / mesh / sourceRoot（轨道都是 clone 的），可以安全地在只读分析里调用。
+* 命中则换轨道名前缀、未命中丢弃；给了 sourceRoot（动画文件自己的场景根）时，
+* 用「世界姿态对齐烘焙」把动作姿态精确转到 mesh 空间（修 bind pose / up-axis 差异）。
+* 不修改入参 clips / mesh / sourceRoot。
 */
 function bindClipsToModel(mesh, clips, sourceRoot) {
 	const index = buildNodeIndex(mesh);
@@ -48195,15 +48195,10 @@ function bindClipsToModel(mesh, clips, sourceRoot) {
 	const unseen = /* @__PURE__ */ new Set();
 	let totalTracks = 0;
 	let matchedTracks = 0;
-	const parsedNames = /* @__PURE__ */ new Map();
 	for (const clip of clips) for (const track of clip.tracks) {
 		totalTracks += 1;
 		const parsed = PropertyBinding.parseTrackName(track.name);
 		const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
-		parsedNames.set(track, {
-			nodeName,
-			property: typeof parsed.propertyName === "string" ? parsed.propertyName : ""
-		});
 		if (nodeName === "") continue;
 		if (resolved.has(nodeName)) {
 			matchedTracks += 1;
@@ -48220,62 +48215,37 @@ function bindClipsToModel(mesh, clips, sourceRoot) {
 		});
 		matchedTracks += 1;
 	}
-	const corrections = buildRootCorrections(new Set([...resolved.values()].map((entry) => entry.target)), sourceRoot);
-	const matchedBones = /* @__PURE__ */ new Set();
-	const matchedNodes = /* @__PURE__ */ new Set();
 	let renamedTracks = 0;
-	const boundClips = [];
-	for (const clip of clips) {
-		const tracks = [];
-		for (const track of clip.tracks) {
-			const info = parsedNames.get(track);
-			const nodeName = info?.nodeName ?? "";
-			if (nodeName === "") {
-				tracks.push(track);
-				continue;
-			}
-			const entry = resolved.get(nodeName);
-			if (entry === void 0) continue;
-			if (!matchedNodes.has(nodeName)) {
-				matchedNodes.add(nodeName);
-				if (entry.target.isBone) matchedBones.add(entry.target);
-			}
-			const nameMatches = entry.target.name === nodeName;
-			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${info?.property ?? ""}`;
-			const targetName = nameMatches ? track.name : `${entry.target.name}${suffix}`;
-			const correction = corrections.get(entry.target);
-			if (correction !== void 0) {
-				const corrected = correctTrack(track, info?.property ?? "", correction);
-				if (corrected !== null) {
-					corrected.name = targetName;
-					tracks.push(corrected);
-					if (!nameMatches) renamedTracks += 1;
-					continue;
-				}
-			}
-			if (nameMatches) {
-				tracks.push(track);
-				continue;
-			}
-			const renamed = track.clone();
-			renamed.name = targetName;
-			renamedTracks += 1;
-			tracks.push(renamed);
+	for (const [nodeName, entry] of resolved) if (entry.target.name !== nodeName) renamedTracks += 1;
+	const matchedBones = /* @__PURE__ */ new Set();
+	for (const entry of resolved.values()) if (entry.target.isBone && entry.target.isBone !== void 0) matchedBones.add(entry.target);
+	const matchedTargets = new Set([...resolved.values()].map((entry) => entry.target));
+	findMatchedRoots(matchedTargets);
+	let boundClips = [];
+	let retargetedBones = 0;
+	let correctedRoots = [];
+	if (sourceRoot !== void 0) {
+		const baked = bakeWorldAlignedClips(mesh, clips, resolved, sourceRoot);
+		if (baked !== null) {
+			boundClips = baked.clips;
+			retargetedBones = baked.bones;
+			correctedRoots = baked.correctedRoots;
 		}
-		boundClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
 	}
+	if (boundClips.length === 0) boundClips = remapTracksOnly(clips, resolved);
 	const report = {
 		meshNodes: index.count,
 		meshBones: index.bones,
-		animNodes: matchedNodes.size + unseen.size,
-		matchedNodes: matchedNodes.size,
+		animNodes: matchedTargets.size + unseen.size,
+		matchedNodes: matchedTargets.size,
 		matchedBones: matchedBones.size,
 		totalTracks,
 		matchedTracks,
 		unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
 		unmatchedNodeCount: unseen.size,
 		renamedTracks,
-		correctedRoots: [...corrections.keys()].map((target) => target.name),
+		retargetedBones,
+		correctedRoots,
 		ok: matchedTracks > 0,
 		warnings: []
 	};
@@ -48285,92 +48255,151 @@ function bindClipsToModel(mesh, clips, sourceRoot) {
 		report
 	};
 }
-/** 找出映射链根骨骼并计算校正量（只对「两边都有、且静止朝向/位置不同」的根骨骼） */
-function buildRootCorrections(matchedTargets, sourceRoot) {
-	const corrections = /* @__PURE__ */ new Map();
-	if (sourceRoot === void 0) return corrections;
-	const sourceBones = /* @__PURE__ */ new Map();
-	sourceRoot.traverse((child) => {
-		if (child.isBone) sourceBones.set(child.name, child);
-	});
-	if (sourceBones.size === 0) return corrections;
+/** 映射链的根骨骼：命中目标里没有命中祖先的那些（Bip001 / Hips 等） */
+function findMatchedRoots(matchedTargets) {
+	const roots = /* @__PURE__ */ new Set();
 	for (const target of matchedTargets) {
-		if (target.isBone !== true) continue;
-		if (hasMatchedAncestor(target, matchedTargets)) continue;
-		const source = sourceBones.get(target.name);
+		let parent = target.parent;
+		let hasMatchedAncestor = false;
+		while (parent !== null && parent !== void 0) {
+			if (matchedTargets.has(parent)) {
+				hasMatchedAncestor = true;
+				break;
+			}
+			parent = parent.parent;
+		}
+		if (!hasMatchedAncestor) roots.add(target);
+	}
+	return roots;
+}
+/** 无动画场景根时的降级路径：换轨道名前缀 / 丢弃未命中轨道（原 0.10.0 行为） */
+function remapTracksOnly(clips, resolved) {
+	const out = [];
+	for (const clip of clips) {
+		const tracks = [];
+		for (const track of clip.tracks) {
+			const parsed = PropertyBinding.parseTrackName(track.name);
+			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			if (nodeName === "") {
+				tracks.push(track);
+				continue;
+			}
+			const entry = resolved.get(nodeName);
+			if (entry === void 0) continue;
+			if (entry.target.name === nodeName) {
+				tracks.push(track);
+				continue;
+			}
+			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${parsed.propertyName}`;
+			const renamed = track.clone();
+			renamed.name = `${entry.target.name}${suffix}`;
+			tracks.push(renamed);
+		}
+		out.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
+	}
+	return out;
+}
+/**
+* 世界姿态对齐烘焙：动画骨架逐采样时刻求值 → 世界矩阵 → 按 mesh 层级反解局部 TRS。
+* 两个文件都被 FBXLoader 统一到 Y-up 世界，所以直接复制动画骨架的世界姿态即可；
+* mesh 场景根的旋转由反解出的局部值自动吸收（再乘场景根矩阵会二次旋转，Sword 资产实测会躺倒）。
+* 只烘焙「该片段轨道真正驱动的命中节点」；其余骨骼保持 mesh 自己的 rest 局部值。
+*/
+function bakeWorldAlignedClips(mesh, clips, resolved, sourceRoot) {
+	const sourceNodes = /* @__PURE__ */ new Map();
+	sourceRoot.traverse((child) => {
+		if (child.name !== "" && !sourceNodes.has(child.name)) sourceNodes.set(child.name, child);
+	});
+	const targetToSource = /* @__PURE__ */ new Map();
+	for (const [nodeName, entry] of resolved) {
+		const source = sourceNodes.get(entry.target.name) ?? sourceNodes.get(nodeName);
+		if (source !== void 0) targetToSource.set(entry.target, source);
+	}
+	if (targetToSource.size === 0) return null;
+	mesh.updateMatrixWorld(true);
+	sourceRoot.updateMatrixWorld(true);
+	const nodes = [];
+	mesh.traverse((node) => {
+		if (node !== mesh) nodes.push(node);
+	});
+	const restLocal = /* @__PURE__ */ new Map();
+	for (const node of nodes) restLocal.set(node, node.matrix.clone());
+	const targetSet = new Set(targetToSource.keys());
+	const correctedRoots = [];
+	for (const root of findMatchedRoots(targetSet)) {
+		const source = targetToSource.get(root);
 		if (source === void 0) continue;
-		const targetRest = {
-			p: target.position,
-			q: target.quaternion,
-			s: target.scale
-		};
-		const sourceRest = {
-			p: source.position,
-			q: source.quaternion,
-			s: source.scale
-		};
-		const rotation = targetRest.q.clone().multiply(sourceRest.q.clone().invert());
-		const positionDelta = targetRest.p.distanceTo(sourceRest.p);
-		const rotationDelta = rotation.angleTo(new Quaternion());
-		const scaleDelta = targetRest.s.distanceTo(sourceRest.s);
-		if (positionDelta < 1e-4 && rotationDelta < .001 && scaleDelta < 1e-4) continue;
-		corrections.set(target, {
-			rotation,
-			targetPosition: targetRest.p.clone(),
-			targetScale: targetRest.s.clone(),
-			sourcePosition: sourceRest.p.clone(),
-			sourceScale: sourceRest.s.clone(),
-			targetName: target.name
+		const angular = root.quaternion.angleTo(source.quaternion);
+		const linear = root.position.distanceTo(source.position);
+		if (angular > .01 || linear > .001) correctedRoots.push(root.name);
+	}
+	const bakedClips = [];
+	let bakedBones = 0;
+	const localMatrix = new Matrix4();
+	const desiredWorld = /* @__PURE__ */ new Map();
+	for (const clip of clips) {
+		const animated = /* @__PURE__ */ new Set();
+		const times = /* @__PURE__ */ new Set();
+		for (const track of clip.tracks) {
+			const parsed = PropertyBinding.parseTrackName(track.name);
+			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			if (nodeName === "") continue;
+			const entry = resolved.get(nodeName);
+			if (entry !== void 0 && targetToSource.has(entry.target)) animated.add(entry.target);
+			for (const time of track.times) times.add(Math.round(time * 1e3) / 1e3);
+		}
+		const sampleTimes = [...times].sort((left, right) => left - right);
+		if (sampleTimes.length === 0) {
+			bakedClips.push(new AnimationClip(clip.name, clip.duration, [], clip.blendMode));
+			continue;
+		}
+		const buffers = /* @__PURE__ */ new Map();
+		for (const target of animated) buffers.set(target, {
+			p: [],
+			q: [],
+			s: []
 		});
-	}
-	return corrections;
-}
-function hasMatchedAncestor(target, matchedTargets) {
-	let parent = target.parent;
-	while (parent !== null && parent !== void 0) {
-		if (matchedTargets.has(parent)) return true;
-		parent = parent.parent;
-	}
-	return false;
-}
-/** 单条轨道按根校正量做静止姿态差变换（position/quaternion/scale；其它属性原样返回 null） */
-function correctTrack(track, property, correction) {
-	const values = track.values;
-	if (property === "quaternion") {
-		const out = new Float32Array(values.length);
-		const q = new Quaternion();
-		for (let index = 0; index + 3 < values.length; index += 4) {
-			q.set(values[index], values[index + 1], values[index + 2], values[index + 3]);
-			q.premultiply(correction.rotation);
-			out[index] = q.x;
-			out[index + 1] = q.y;
-			out[index + 2] = q.z;
-			out[index + 3] = q.w;
+		const mixer = new AnimationMixer(sourceRoot);
+		const action = mixer.clipAction(clip);
+		action.reset().play();
+		const position = new Vector3();
+		const quaternion = new Quaternion();
+		const scale = new Vector3();
+		for (const time of sampleTimes) {
+			mixer.setTime(time);
+			sourceRoot.updateMatrixWorld(true);
+			desiredWorld.clear();
+			for (const node of nodes) {
+				const parentWorld = node.parent !== null && node.parent !== mesh && desiredWorld.has(node.parent) ? desiredWorld.get(node.parent) : mesh.matrixWorld;
+				const source = targetToSource.get(node);
+				let world;
+				if (source !== void 0) world = source.matrixWorld.clone();
+				else world = parentWorld.clone().multiply(restLocal.get(node));
+				desiredWorld.set(node, world);
+				const buffer = animated.has(node) ? buffers.get(node) : void 0;
+				if (buffer === void 0) continue;
+				localMatrix.copy(parentWorld).invert().multiply(world);
+				localMatrix.decompose(position, quaternion, scale);
+				buffer.p.push(position.x, position.y, position.z);
+				buffer.q.push(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+				buffer.s.push(scale.x, scale.y, scale.z);
+			}
 		}
-		return new QuaternionKeyframeTrack(track.name, track.times, out);
-	}
-	if (property === "position") {
-		const out = new Float32Array(values.length);
-		const point = new Vector3();
-		for (let index = 0; index + 2 < values.length; index += 3) {
-			point.set(values[index] - correction.sourcePosition.x, values[index + 1] - correction.sourcePosition.y, values[index + 2] - correction.sourcePosition.z);
-			point.applyQuaternion(correction.rotation);
-			out[index] = correction.targetPosition.x + point.x;
-			out[index + 1] = correction.targetPosition.y + point.y;
-			out[index + 2] = correction.targetPosition.z + point.z;
+		action.stop();
+		const tracks = [];
+		for (const [target, buffer] of buffers) {
+			tracks.push(new VectorKeyframeTrack(`${target.name}.position`, sampleTimes, buffer.p));
+			tracks.push(new QuaternionKeyframeTrack(`${target.name}.quaternion`, sampleTimes, buffer.q));
+			tracks.push(new VectorKeyframeTrack(`${target.name}.scale`, sampleTimes, buffer.s));
+			if (target.isBone) bakedBones += 1;
 		}
-		return new VectorKeyframeTrack(track.name, track.times, out);
+		bakedClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
 	}
-	if (property === "scale") {
-		const out = new Float32Array(values.length);
-		for (let index = 0; index + 2 < values.length; index += 3) {
-			out[index] = correction.targetScale.x * (values[index] / (correction.sourceScale.x || 1));
-			out[index + 1] = correction.targetScale.y * (values[index + 1] / (correction.sourceScale.y || 1));
-			out[index + 2] = correction.targetScale.z * (values[index + 2] / (correction.sourceScale.z || 1));
-		}
-		return new VectorKeyframeTrack(track.name, track.times, out);
-	}
-	return null;
+	return {
+		clips: bakedClips,
+		bones: bakedBones,
+		correctedRoots
+	};
 }
 /** 由报告派生人话 warnings（截图/预览/工具直接透传） */
 function bindingWarnings(report) {
@@ -48383,8 +48412,11 @@ function bindingWarnings(report) {
 		const sample = report.unmatchedNodes.join("、");
 		warnings.push(`动画有 ${report.unmatchedNodeCount} 个节点在 mesh 骨架里没有对应骨骼，已忽略（常见于动作里带的道具/相机/IK 辅助节点）：${sample}${report.unmatchedNodeCount > MAX_UNMATCHED_NODES ? " …" : ""}`);
 	}
-	if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
-	if (report.correctedRoots.length > 0) warnings.push(`动画与 mesh 的根骨骼静止朝向/位置不同（跨导出/坐标系差异，典型是 Z-up 与 Y-up 混用）：已按静止姿态差校正根骨骼 ${report.correctedRoots.join("、")} 的轨道。`);
+	if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 个节点（如 mixamorig: / Armature| 前缀）。`);
+	if (report.retargetedBones > 0) {
+		const roots = report.correctedRoots.length > 0 ? `（根骨骼静止姿态不同：${report.correctedRoots.join("、")}）` : "";
+		warnings.push(`动画与 mesh 的骨骼静止姿态/坐标系不同（bind pose 或 Z-up/Y-up 差异）：已按「世界姿态对齐」烘焙重定向 ${report.retargetedBones} 根骨骼的轨道，预览姿态与动画文件自身一致${roots}。`);
+	}
 	return warnings;
 }
 /** 报告 → 给 AI 读的中文事实句（info/CLI/MCP 共用，数值不重复计算） */
@@ -48392,8 +48424,8 @@ function bindingFacts(report) {
 	const facts = [];
 	facts.push(`动画驱动 mesh 骨架的 ${report.matchedBones}/${report.meshBones} 根骨骼；轨道命中 ${report.matchedTracks}/${report.totalTracks}。`);
 	if (report.unmatchedNodeCount > 0) facts.push(`未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join("、")}${report.unmatchedNodeCount > report.unmatchedNodes.length ? " …" : ""}）——这些节点的动作不会显示。`);
-	if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
-	if (report.correctedRoots.length > 0) facts.push(`根骨骼静止姿态差校正：${report.correctedRoots.join("、")}（两边 up-axis/根朝向不同）。`);
+	if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 个节点经命名空间归一化后命中。`);
+	if (report.retargetedBones > 0) facts.push(`世界姿态对齐烘焙重定向 ${report.retargetedBones} 根骨骼（bind pose / 跨导出差异）` + (report.correctedRoots.length > 0 ? `，根骨骼 rest 不同：${report.correctedRoots.join("、")}` : "") + "。");
 	return facts;
 }
 //#endregion

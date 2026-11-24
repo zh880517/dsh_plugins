@@ -18,6 +18,11 @@ const MAX_FILES = 400;
 const MAX_RESULTS = 6;
 /** 无法便宜抽骨骼名的格式（二进制 FBX），最多解析几个候选来评分 */
 const MAX_PARSE_CANDIDATES = 4;
+/**
+ * 自动配对的最低骨骼覆盖率：低于它说明只是「部分骨骼同名」（典型是跨角色的附加/受击动画，
+ * 5 根脊柱骨在任意双足角色上都能对上），不应自动绑定——显式 mesh 参数仍然可用。
+ */
+const MIN_AUTO_COVERAGE = 0.35;
 export interface CompanionMeshMatch {
   path: string;
   name: string;
@@ -142,6 +147,8 @@ export async function findCompanionMeshes(
     const stats = scoreBones(boneNames, animationKeys);
     if (animationKeys.size > 0 && stats.matchedBones === 0) continue; // 骨骼一根都对不上：不可能是它的 mesh
     const coverage = stats.meshBones > 0 ? stats.matchedBones / stats.meshBones : 0;
+    // 覆盖率太低（只有部分骨骼同名，典型是跨角色的附加动画）→ 不自动绑定，避免把动作套到别的角色上
+    if (animationKeys.size > 0 && coverage < MIN_AUTO_COVERAGE) continue;
     matches.push({
       path: probe.path,
       name: probe.name,

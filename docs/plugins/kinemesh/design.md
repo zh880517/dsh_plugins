@@ -1,11 +1,11 @@
 # kinemesh（动析）架构设计
 
-> 状态：v0.10.3（**M1–M7 已实施**：M6 动作分析与 M7 骨架识别随 0.5.0 发布；0.6.0–0.9.x 为预览交互与
+> 状态：v0.10.4（**M1–M7 已实施**：M6 动作分析与 M7 骨架识别随 0.5.0 发布；0.6.0–0.9.x 为预览交互与
 > 截图取景的连续迭代——三入口重构、播放条/轨道/速度、显示方式拆分、载入自动选模式、逐帧取景、
 > root motion 开关与根节点参考轴、产物临时目录收口；0.10.0 新增**独立 mesh 文件绑定**，0.10.1 改为
-> **内容匹配（骨骼覆盖率）+ 根骨骼静止姿态差校正 + 独立预览页左侧层级列表**；0.10.2 把格式/配对判定全部收口到
-> **文件内容**（不依赖文件名/扩展名）；0.10.3 补齐全拖拽自动配对（已打开网格复用 / 先动画后网格补配 / Host 旧版提示），逐条见 §6.10 / §6.11 与
-> 各条款括注的版本号）。
+> **内容匹配（骨骼覆盖率）**、0.10.2 格式/配对判定全收口到文件内容、0.10.3 补齐全拖拽自动配对、
+> 0.10.4 绑定改为**世界姿态对齐烘焙**（bind pose/up-axis 差异下姿态与动画一致、脚落地）并加自动配对
+> 覆盖率下限；独立预览页带**左侧层级列表**。逐条见 §6.10 / §6.11 与各条款括注的版本号）。
 > M1 设计输入来自 `docs/dev/2026-11-18-kinemesh-design.md`（已按 docs/dev 生命周期删除）；
 > M6/M7 设计输入来自 `docs/dev/2026-11-18-kinemesh-motion-analysis-design.md`（草稿 v0.1–v0.9，
 > 经 14 条拍板决策定稿，结论已全部回写本文，草稿已删除）。本文是长期有效的正式文档。
@@ -801,19 +801,23 @@ kinemesh_analyze(path, {
 - **角色自动识别**（`core/bind/roles.ts`，纯逻辑）：网格优先 mesh 参数文件，其次 `path` 自带；
   动画优先 `path`，其次 mesh 参数文件（两个参数传反也能纠正）；两侧都缺网格/动画 → 三段式。
   网格与动画同源（同一文件）→ 不绑定、警告说明哪一侧没用上。
-- **骨骼名绑定**（`core/bind/remap.ts`，纯 three 对象操作）：逐轨道用
-  `THREE.PropertyBinding.parseTrackName` 取 nodeName → 精确名 > 归一化名（去 `mixamorig:` /
-  `Armature|` / `Root|` 等命名空间、空格转下划线、小写，另收 `PropertyBinding` 清洗形）→
-  命中则克隆轨道并换前缀；未命中丢弃并记入报告。**部分骨骼动画可用**（如 5 根脊柱的受击附加动画：
-  命中骨骼被驱动、其余保持 rest）；0 命中 → `KinemeshError` 三段式（提示来自同一套 rig、可分别
-  `info`/`skeleton` 对比骨骼名）。不做重定向：单位/初始朝向差异不修正，这是 retarget 的范畴。
+- **骨骼名绑定 + 世界姿态对齐烘焙（0.10.4 定型，`core/bind/remap.ts`，纯 three 对象操作）**：
+  逐轨道用 `THREE.PropertyBinding.parseTrackName` 取 nodeName → 精确名 > 归一化名（去 `mixamorig:` /
+  `Armature|` / `Root|` 等命名空间、空格转下划线、小写，另收 `PropertyBinding` 清洗形）。
+  命中后**不再直接搬局部值**：用动画文件自己的骨架 `AnimationMixer` 逐采样时刻（轨道关键时间并集）求值，
+  把**世界矩阵**按 mesh 骨架层级反解成本地 TRS 写成新轨道（只覆盖该片段真正驱动的节点，其余保持 mesh rest）。
+  两个文件都被 loader 统一到 Y-up 世界，所以直接复制动画骨架世界姿态即可（再乘场景根矩阵会二次旋转——
+  Sword 资产实测会躺倒）。这样 bind pose / Z-up-Y-up 混用时预览姿态与动画文件自身一致、脚落地；
+  未命中节点丢弃并记入报告；0 命中 → `KinemeshError` 三段式。**部分骨骼动画仍可用**（如 5 根脊柱的
+  受击附加动画：只烘焙这 5 根，其余保持 rest），但自动配对不会选它（见覆盖率下限）。
 - **同资产网格发现（0.10.1 改为内容匹配、0.10.2 连枚举都按内容，`core/bind/scan.ts`）**：动作文件附近的本目录 / 上一级 /
   上两级，各向下 3 层、最多 400 个模型文件。先用**便宜的内容探测**（不解析场景）筛出「真的有网格」的
   文件：ASCII FBX 看 `Geometry:` 段、二进制 FBX 看节点名 `Geometry`、glTF/GLB 看 `meshes`/`skins`；
   同时 ASCII FBX 与 glTF 能直接抽骨骼名（`Model: …, "LimbNode"` / `skins[].joints`），二进制 FBX 只对
   排序靠前的少量候选解析一次补骨骼名。候选按**骨骼名覆盖率**（命中动作骨骼数 / 网格骨骼数）排序，
   同分看文件体积（小者优先，LOD 天然胜出）与目录距离；**完全不看文件名/目录名**（用户明确要求：
-  命名仅供参考、不能依赖）。进程内按「路径 + mtime + 大小」缓存探测结果。
+  命名仅供参考、不能依赖）。**覆盖率 < 35% 不参与自动配对**（0.10.4：跨角色的 5 骨附加动画在任意双足
+  角色上都能「命中」，自动绑定会套错人；显式 `mesh` 参数不受限）。进程内按「路径 + mtime + 大小」缓存探测结果。
   - 工具侧（`core/bind/auto.ts`）：仅当 `path` 文件确实没有网格时触发，取覆盖率最高者绑定并在
     `warnings` 说明「已按文件内容自动识别同资产的网格文件「…」（骨骼命中 71/80（89%））」+ 其它候选；
     无候选则退回骨架并提示用 `mesh` 显式指定。
@@ -826,13 +830,13 @@ kinemesh_analyze(path, {
   `/kinemesh` 命令的附件与手写路径、预览页拖入文件同样按内容判定是否模型（非模型/读不到列入忽略说明）。
   多个网格候选骨骼覆盖率并列时，`warnings` 列出候选并说明「已按体积从小到大选」，各项目对 LOD/皮肤
   变体的取舍不同，用 `mesh` 参数显式指定即可。
-- **根骨骼静止姿态差校正（0.10.1，真实资产 Haylee 暴露）**：同一套 rig 分两次导出时，映射链根骨骼的
-  静止局部变换可能不同（典型：mesh 导出 Z-up、动作导出 Y-up，FBXLoader 只给 mesh 根节点加 −90°X 旋转）。
-  直接搬局部值会让角色「躺倒」。`bindClipsToModel(mesh, clips, sourceRoot)` 现在对「没有 mapped 祖先的
-  映射根骨骼」做一次校正：`q_t(t)=q_t_rest·q_s_rest⁻¹·q_s(t)`、
-  `p_t(t)=p_t_rest+R(q_t_rest·q_s_rest⁻¹)·(p_s(t)−p_s_rest)`（scale 同比）；子骨骼局部值不动（父链朝向
-  校正后整链在世界空间对齐）。校正结果写进 `report.correctedRoots` 与 facts/warnings，可被 AI 引用；
-  两边静止姿态一致时自动跳过（不影响 tankclaw 这类原本正确的资产）。
+- **世界姿态对齐烘焙（0.10.4，真实资产 Haylee Bow/Sword 暴露）**：同一套 rig 分两次导出时 bind pose /
+  up-axis 可能不同。实测：`F_R0201_Bow_Attack01-1.FBX` 是 Z-up、`F_R0201_Sword_Attack01.FBX` 是 Y-up，
+  而 mesh 是 Z-up；只搬局部值会让 Sword 躺倒/肢体错位，只校正根骨骼会让 Bow 整体被多转一个角度、
+  脚离地约 3cm。`bindClipsToModel(mesh, clips, sourceRoot)` 现在：用动画骨架求值 → 采样时刻取世界矩阵 →
+  按 mesh 层级 `local = parentWorld⁻¹ · animWorld` 反解（只处理命中且被片段驱动的节点）→ 写成 position/
+  quaternion/scale 轨道。烘焙后实测 Bow/Sword 逐帧**脚底最低点 ≈ 0.000**（不再悬空），
+  `report.retargetedBones` / facts 记录烘焙骨骼数（通常 = 片段驱动骨骼数）。
 - **合成与三出口共用**（`core/bind/bundle.ts`，浏览器安全）：`loadSceneFromData` / `sceneFacts` /
   `bindScenes`（= `planCompanion` + `applyPlan`）/ `loadSceneWithCompanion`。截图页桥
   `load(b64, name, companionB64?, companionName?)` 在页面内加载两个文件并绑定，保证「预览 = 截图」；
@@ -850,16 +854,18 @@ kinemesh_analyze(path, {
 - **输出统计口径**：`matchedNodes`（命中 mesh 命名节点数）与 `matchedBones`（其中骨骼数）分开统计——
   动画也可能驱动 mesh 上的非骨骼节点（武器网格等）；facts 用「动画驱动 mesh 骨架的
   matchedBones/meshBones 根骨骼；轨道命中 matchedTracks/totalTracks」。
-- **测试（0.10.1 更新）**：`tests/kinemesh/companion.test.ts`（轨道重绑定/命名空间/部分骨骼/完全不匹配、
-  根骨骼静止姿态差校正 + 一致时跳过、角色识别与三段式、内容扫描按覆盖率排序/排除无网格与不匹配者、
-  info `mesh` 体检、预览 chip 文案）；`opened-assets.test.ts`（层级列表记录/网格根+动作子节点/删除子树）；
+- **测试（0.10.4 更新）**：`tests/kinemesh/companion.test.ts`（轨道重绑定/命名空间/部分骨骼/完全不匹配、
+  世界姿态对齐烘焙后 mesh 骨骼世界姿态 = 动画骨架世界姿态、rest 一致时 correctedRoots 为空、
+  角色识别与三段式、内容扫描按覆盖率排序/排除无网格与不匹配者、info `mesh` 体检、预览 chip 文案）；
+  `opened-assets.test.ts`（层级列表记录/网格根+动作子节点/删除子树）；
   `screenshot.int.test.ts` 新增「绑定渲染 / 参数传反 / 骨骼完全对不上」三例；`host-routes.test.ts` 加
   companions 路由（内容扫描）与 analyze 带 mesh 的消息；`cli.test.ts` 加 `info --mesh` / `render --mesh`；
-  fixtures 新增 mesh-only 与 animation-only GLB。真实资产实测（0.10.1）：
-  - tankclaw 受击附加动画自动识别网格，5/88 骨、轨道 18/18；
-  - Haylee `F_R0201_Sword_Attack01.FBX`（Y-up 动作）+ `Basics/F_R0201_lod_Skin.FBX`（Z-up mesh）：
-    内容扫描在 ~1.7s 内选中所给 lod mesh（骨骼命中 71/80（89%），R0202 皮肤 83% 落选），
-    根骨骼校正后攻击动作正常直立（校正前整具躺倒），轨道 213/213。
+  fixtures 新增 mesh-only 与 animation-only GLB。真实资产实测（0.10.4）：
+  - Haylee Sword（Y-up 动作）+ Basics lod skin（Z-up mesh）：内容扫描选中 lod mesh（71/80 = 89%），
+    世界姿态烘焙后攻击姿态直立、脚底最低点 ≈ 0.000，轨道 213/213；
+  - Haylee Bow（Z-up 动作）+ 同一 mesh：烘焙后姿势与动画文件一致（不再被多转、不再悬空），逐帧 minY ≈ 0.000；
+  - tankclaw 5 骨脊柱附加动画：覆盖率 6% < 35% → 不再自动套到别的角色（退回骨架，提示显式 `mesh`）；
+  - tacy / 同 up-axis 全骨架动画：烘焙结果与动画自身姿态一致（等价于直接搬局部值）。
 
 ## 7. M7 骨架识别与映射（已实施）
 需求（用户拍板）：AI 要能识别骨架类型（约定）与身体部件（头/胳膊/手/腿/脚）；命名不标准的 rig，

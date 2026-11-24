@@ -119,6 +119,22 @@ var RGBAFormat = 1023;
 */
 var RedFormat = 1028;
 /**
+* Animations are played with a chosen number of repetitions, each time jumping from
+* the end of the clip directly to its beginning.
+*
+* @type {number}
+* @constant
+*/
+var LoopRepeat = 2201;
+/**
+* Animations are played with a chosen number of repetitions, alternately playing forward
+* and backward.
+*
+* @type {number}
+* @constant
+*/
+var LoopPingPong = 2202;
+/**
 * Discrete interpolation mode for keyframe tracks.
 *
 * @type {number}
@@ -177,6 +193,14 @@ var WrapAroundEnding = 2402;
 * @constant
 */
 var NormalAnimationBlendMode = 2500;
+/**
+* Additive animation blend mode. Can be used to layer motions on top of
+* each other to build complex performances from smaller re-usable assets.
+*
+* @type {number}
+* @constant
+*/
+var AdditiveAnimationBlendMode = 2501;
 /**
 * sRGB color space.
 *
@@ -22422,6 +22446,193 @@ var ImageBitmapLoader = class extends Loader {
 		return this;
 	}
 };
+/**
+* Buffered scene graph property that allows weighted accumulation; used internally.
+*/
+var PropertyMixer = class {
+	/**
+	* Constructs a new property mixer.
+	*
+	* @param {PropertyBinding} binding - The property binding.
+	* @param {string} typeName - The keyframe track type name.
+	* @param {number} valueSize - The keyframe track value size.
+	*/
+	constructor(binding, typeName, valueSize) {
+		/**
+		* The property binding.
+		*
+		* @type {PropertyBinding}
+		*/
+		this.binding = binding;
+		/**
+		* The keyframe track value size.
+		*
+		* @type {number}
+		*/
+		this.valueSize = valueSize;
+		let mixFunction, mixFunctionAdditive, setIdentity;
+		switch (typeName) {
+			case "quaternion":
+				mixFunction = this._slerp;
+				mixFunctionAdditive = this._slerpAdditive;
+				setIdentity = this._setAdditiveIdentityQuaternion;
+				this.buffer = new Float64Array(valueSize * 6);
+				this._workIndex = 5;
+				break;
+			case "string":
+			case "bool":
+				mixFunction = this._select;
+				mixFunctionAdditive = this._select;
+				setIdentity = this._setAdditiveIdentityOther;
+				this.buffer = new Array(valueSize * 5);
+				break;
+			default:
+				mixFunction = this._lerp;
+				mixFunctionAdditive = this._lerpAdditive;
+				setIdentity = this._setAdditiveIdentityNumeric;
+				this.buffer = new Float64Array(valueSize * 5);
+		}
+		this._mixBufferRegion = mixFunction;
+		this._mixBufferRegionAdditive = mixFunctionAdditive;
+		this._setIdentity = setIdentity;
+		this._origIndex = 3;
+		this._addIndex = 4;
+		/**
+		* Accumulated weight of the property binding.
+		*
+		* @type {number}
+		* @default 0
+		*/
+		this.cumulativeWeight = 0;
+		/**
+		* Accumulated additive weight of the property binding.
+		*
+		* @type {number}
+		* @default 0
+		*/
+		this.cumulativeWeightAdditive = 0;
+		/**
+		* Number of active keyframe tracks currently using this property binding.
+		*
+		* @type {number}
+		* @default 0
+		*/
+		this.useCount = 0;
+		/**
+		* Number of keyframe tracks referencing this property binding.
+		*
+		* @type {number}
+		* @default 0
+		*/
+		this.referenceCount = 0;
+	}
+	/**
+	* Accumulates data in the `incoming` region into `accu<i>`.
+	*
+	* @param {number} accuIndex - The accumulation index.
+	* @param {number} weight - The weight.
+	*/
+	accumulate(accuIndex, weight) {
+		const buffer = this.buffer, stride = this.valueSize, offset = accuIndex * stride + stride;
+		let currentWeight = this.cumulativeWeight;
+		if (currentWeight === 0) {
+			for (let i = 0; i !== stride; ++i) buffer[offset + i] = buffer[i];
+			currentWeight = weight;
+		} else {
+			currentWeight += weight;
+			const mix = weight / currentWeight;
+			this._mixBufferRegion(buffer, offset, 0, mix, stride);
+		}
+		this.cumulativeWeight = currentWeight;
+	}
+	/**
+	* Accumulates data in the `incoming` region into `add`.
+	*
+	* @param {number} weight - The weight.
+	*/
+	accumulateAdditive(weight) {
+		const buffer = this.buffer, stride = this.valueSize, offset = stride * this._addIndex;
+		if (this.cumulativeWeightAdditive === 0) this._setIdentity();
+		this._mixBufferRegionAdditive(buffer, offset, 0, weight, stride);
+		this.cumulativeWeightAdditive += weight;
+	}
+	/**
+	* Applies the state of `accu<i>` to the binding when accus differ.
+	*
+	* @param {number} accuIndex - The accumulation index.
+	*/
+	apply(accuIndex) {
+		const stride = this.valueSize, buffer = this.buffer, offset = accuIndex * stride + stride, weight = this.cumulativeWeight, weightAdditive = this.cumulativeWeightAdditive, binding = this.binding;
+		this.cumulativeWeight = 0;
+		this.cumulativeWeightAdditive = 0;
+		if (weight < 1) {
+			const originalValueOffset = stride * this._origIndex;
+			this._mixBufferRegion(buffer, offset, originalValueOffset, 1 - weight, stride);
+		}
+		if (weightAdditive > 0) this._mixBufferRegionAdditive(buffer, offset, this._addIndex * stride, 1, stride);
+		for (let i = stride, e = stride + stride; i !== e; ++i) if (buffer[i] !== buffer[i + stride]) {
+			binding.setValue(buffer, offset);
+			break;
+		}
+	}
+	/**
+	* Remembers the state of the bound property and copy it to both accus.
+	*/
+	saveOriginalState() {
+		const binding = this.binding;
+		const buffer = this.buffer, stride = this.valueSize, originalValueOffset = stride * this._origIndex;
+		binding.getValue(buffer, originalValueOffset);
+		for (let i = stride, e = originalValueOffset; i !== e; ++i) buffer[i] = buffer[originalValueOffset + i % stride];
+		this._setIdentity();
+		this.cumulativeWeight = 0;
+		this.cumulativeWeightAdditive = 0;
+	}
+	/**
+	* Applies the state previously taken via {@link PropertyMixer#saveOriginalState} to the binding.
+	*/
+	restoreOriginalState() {
+		const originalValueOffset = this.valueSize * 3;
+		this.binding.setValue(this.buffer, originalValueOffset);
+	}
+	_setAdditiveIdentityNumeric() {
+		const startIndex = this._addIndex * this.valueSize;
+		const endIndex = startIndex + this.valueSize;
+		for (let i = startIndex; i < endIndex; i++) this.buffer[i] = 0;
+	}
+	_setAdditiveIdentityQuaternion() {
+		this._setAdditiveIdentityNumeric();
+		this.buffer[this._addIndex * this.valueSize + 3] = 1;
+	}
+	_setAdditiveIdentityOther() {
+		const startIndex = this._origIndex * this.valueSize;
+		const targetIndex = this._addIndex * this.valueSize;
+		for (let i = 0; i < this.valueSize; i++) this.buffer[targetIndex + i] = this.buffer[startIndex + i];
+	}
+	_select(buffer, dstOffset, srcOffset, t, stride) {
+		if (t >= .5) for (let i = 0; i !== stride; ++i) buffer[dstOffset + i] = buffer[srcOffset + i];
+	}
+	_slerp(buffer, dstOffset, srcOffset, t) {
+		Quaternion.slerpFlat(buffer, dstOffset, buffer, dstOffset, buffer, srcOffset, t);
+	}
+	_slerpAdditive(buffer, dstOffset, srcOffset, t, stride) {
+		const workOffset = this._workIndex * stride;
+		Quaternion.multiplyQuaternionsFlat(buffer, workOffset, buffer, dstOffset, buffer, srcOffset);
+		Quaternion.slerpFlat(buffer, dstOffset, buffer, dstOffset, buffer, workOffset, t);
+	}
+	_lerp(buffer, dstOffset, srcOffset, t, stride) {
+		const s = 1 - t;
+		for (let i = 0; i !== stride; ++i) {
+			const j = dstOffset + i;
+			buffer[j] = buffer[j] * s + buffer[srcOffset + i] * t;
+		}
+	}
+	_lerpAdditive(buffer, dstOffset, srcOffset, t, stride) {
+		for (let i = 0; i !== stride; ++i) {
+			const j = dstOffset + i;
+			buffer[j] = buffer[j] + buffer[srcOffset + i] * t;
+		}
+	}
+};
 var _RESERVED_CHARS_RE = "\\[\\]\\.:\\/";
 var _reservedRe = /* @__PURE__ */ new RegExp("[\\[\\]\\.:\\/]", "g");
 var _wordChar = "[^\\[\\]\\.:\\/]";
@@ -22821,6 +23032,993 @@ PropertyBinding.prototype.SetterByBindingTypeAndVersioning = [
 		PropertyBinding.prototype._setValue_fromArray_setMatrixWorldNeedsUpdate
 	]
 ];
+/**
+* An instance of `AnimationAction` schedules the playback of an animation which is
+* stored in {@link AnimationClip}.
+*/
+var AnimationAction = class {
+	/**
+	* Constructs a new animation action.
+	*
+	* @param {AnimationMixer} mixer - The mixer that is controlled by this action.
+	* @param {AnimationClip} clip - The animation clip that holds the actual keyframes.
+	* @param {?Object3D} [localRoot=null] - The root object on which this action is performed.
+	* @param {(NormalAnimationBlendMode|AdditiveAnimationBlendMode)} [blendMode] - The blend mode.
+	*/
+	constructor(mixer, clip, localRoot = null, blendMode = clip.blendMode) {
+		this._mixer = mixer;
+		this._clip = clip;
+		this._localRoot = localRoot;
+		/**
+		* Defines how the animation is blended/combined when two or more animations
+		* are simultaneously played.
+		*
+		* @type {(NormalAnimationBlendMode|AdditiveAnimationBlendMode)}
+		*/
+		this.blendMode = blendMode;
+		const tracks = clip.tracks, nTracks = tracks.length, interpolants = new Array(nTracks);
+		const interpolantSettings = {
+			endingStart: ZeroCurvatureEnding,
+			endingEnd: ZeroCurvatureEnding
+		};
+		for (let i = 0; i !== nTracks; ++i) {
+			const interpolant = tracks[i].createInterpolant(null);
+			interpolants[i] = interpolant;
+			interpolant.settings = interpolantSettings;
+		}
+		this._interpolantSettings = interpolantSettings;
+		this._interpolants = interpolants;
+		this._propertyBindings = new Array(nTracks);
+		this._cacheIndex = null;
+		this._byClipCacheIndex = null;
+		this._timeScaleInterpolant = null;
+		this._restoreTimeScale = null;
+		this._weightInterpolant = null;
+		/**
+		* The loop mode, set via {@link AnimationAction#setLoop}.
+		*
+		* @type {(LoopRepeat|LoopOnce|LoopPingPong)}
+		* @default LoopRepeat
+		*/
+		this.loop = LoopRepeat;
+		this._loopCount = -1;
+		this._startTime = null;
+		/**
+		* The local time of this action (in seconds, starting with `0`).
+		*
+		* The value gets clamped or wrapped to `[0,clip.duration]` (according to the
+		* loop state).
+		*
+		* @type {number}
+		* @default 0
+		*/
+		this.time = 0;
+		/**
+		* Scaling factor for the {@link AnimationAction#time}. A value of `0` causes the
+		* animation to pause. Negative values cause the animation to play backwards.
+		*
+		* @type {number}
+		* @default 1
+		*/
+		this.timeScale = 1;
+		this._effectiveTimeScale = 1;
+		/**
+		* The degree of influence of this action (in the interval `[0, 1]`). Values
+		* between `0` (no impact) and `1` (full impact) can be used to blend between
+		* several actions.
+		*
+		* @type {number}
+		* @default 1
+		*/
+		this.weight = 1;
+		this._effectiveWeight = 1;
+		/**
+		* The number of repetitions of the performed clip over the course of this action.
+		* Can be set via {@link AnimationAction#setLoop}.
+		*
+		* Setting this number has no effect if {@link AnimationAction#loop} is set to
+		* `THREE:LoopOnce`.
+		*
+		* @type {number}
+		* @default Infinity
+		*/
+		this.repetitions = Infinity;
+		/**
+		* If set to `true`, the playback of the action is paused.
+		*
+		* @type {boolean}
+		* @default false
+		*/
+		this.paused = false;
+		/**
+		* If set to `false`, the action is disabled so it has no impact.
+		*
+		* When the action is re-enabled, the animation continues from its current
+		* time (setting `enabled` to `false` doesn't reset the action).
+		*
+		* @type {boolean}
+		* @default true
+		*/
+		this.enabled = true;
+		/**
+		* If set to true the animation will automatically be paused on its last frame.
+		*
+		* If set to false, {@link AnimationAction#enabled} will automatically be switched
+		* to `false` when the last loop of the action has finished, so that this action has
+		* no further impact.
+		*
+		* Note: This member has no impact if the action is interrupted (it
+		* has only an effect if its last loop has really finished).
+		*
+		* @type {boolean}
+		* @default false
+		*/
+		this.clampWhenFinished = false;
+		/**
+		* Enables smooth interpolation without separate clips for start, loop and end.
+		*
+		* @type {boolean}
+		* @default true
+		*/
+		this.zeroSlopeAtStart = true;
+		/**
+		* Enables smooth interpolation without separate clips for start, loop and end.
+		*
+		* @type {boolean}
+		* @default true
+		*/
+		this.zeroSlopeAtEnd = true;
+	}
+	/**
+	* Starts the playback of the animation.
+	*
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	play() {
+		this._mixer._activateAction(this);
+		return this;
+	}
+	/**
+	* Stops the playback of the animation.
+	*
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	stop() {
+		this._mixer._deactivateAction(this);
+		return this.reset();
+	}
+	/**
+	* Resets the playback of the animation.
+	*
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	reset() {
+		this.paused = false;
+		this.enabled = true;
+		this.time = 0;
+		this._loopCount = -1;
+		this._startTime = null;
+		return this.stopFading().stopWarping();
+	}
+	/**
+	* Returns `true` if the animation is running.
+	*
+	* @return {boolean} Whether the animation is running or not.
+	*/
+	isRunning() {
+		return this.enabled && !this.paused && this.timeScale !== 0 && this._startTime === null && this._mixer._isActiveAction(this);
+	}
+	/**
+	* Returns `true` when {@link AnimationAction#play} has been called.
+	*
+	* @return {boolean} Whether the animation is scheduled or not.
+	*/
+	isScheduled() {
+		return this._mixer._isActiveAction(this);
+	}
+	/**
+	* Defines the time when the animation should start.
+	*
+	* @param {number} time - The start time in seconds.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	startAt(time) {
+		this._startTime = time;
+		return this;
+	}
+	/**
+	* Configures the loop settings for this action.
+	*
+	* @param {(LoopRepeat|LoopOnce|LoopPingPong)} mode - The loop mode.
+	* @param {number} repetitions - The number of repetitions.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	setLoop(mode, repetitions) {
+		this.loop = mode;
+		this.repetitions = repetitions;
+		return this;
+	}
+	/**
+	* Sets the effective weight of this action.
+	*
+	* An action has no effect and thus an effective weight of zero when the
+	* action is disabled.
+	*
+	* @param {number} weight - The weight to set.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	setEffectiveWeight(weight) {
+		this.weight = weight;
+		this._effectiveWeight = this.enabled ? weight : 0;
+		return this.stopFading();
+	}
+	/**
+	* Returns the effective weight of this action.
+	*
+	* @return {number} The effective weight.
+	*/
+	getEffectiveWeight() {
+		return this._effectiveWeight;
+	}
+	/**
+	* Fades the animation in by increasing its weight gradually from `0` to `1`,
+	* within the passed time interval.
+	*
+	* @param {number} duration - The duration of the fade.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	fadeIn(duration) {
+		return this._scheduleFading(duration, 0, 1);
+	}
+	/**
+	* Fades the animation out by decreasing its weight gradually from `1` to `0`,
+	* within the passed time interval.
+	*
+	* @param {number} duration - The duration of the fade.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	fadeOut(duration) {
+		return this._scheduleFading(duration, 1, 0);
+	}
+	/**
+	* Causes this action to fade in and the given action to fade out,
+	* within the passed time interval.
+	*
+	* @param {AnimationAction} fadeOutAction - The animation action to fade out.
+	* @param {number} duration - The duration of the fade.
+	* @param {boolean} [warp=false] - Whether warping should be used or not.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	crossFadeFrom(fadeOutAction, duration, warp = false) {
+		fadeOutAction.fadeOut(duration);
+		this.fadeIn(duration);
+		if (warp === true) {
+			const fadeInDuration = this._clip.duration, fadeOutDuration = fadeOutAction._clip.duration, startEndRatio = fadeOutDuration / fadeInDuration, endStartRatio = fadeInDuration / fadeOutDuration;
+			fadeOutAction._restoreTimeScale = fadeOutAction.timeScale;
+			this._restoreTimeScale = this.timeScale;
+			fadeOutAction.warp(1, startEndRatio, duration);
+			this.warp(endStartRatio, 1, duration);
+		}
+		return this;
+	}
+	/**
+	* Causes this action to fade out and the given action to fade in,
+	* within the passed time interval.
+	*
+	* @param {AnimationAction} fadeInAction - The animation action to fade in.
+	* @param {number} duration - The duration of the fade.
+	* @param {boolean} [warp=false] - Whether warping should be used or not.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	crossFadeTo(fadeInAction, duration, warp = false) {
+		return fadeInAction.crossFadeFrom(this, duration, warp);
+	}
+	/**
+	* Stops any fading which is applied to this action.
+	*
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	stopFading() {
+		const weightInterpolant = this._weightInterpolant;
+		if (weightInterpolant !== null) {
+			this._weightInterpolant = null;
+			this._mixer._takeBackControlInterpolant(weightInterpolant);
+		}
+		return this;
+	}
+	/**
+	* Sets the effective time scale of this action.
+	*
+	* An action has no effect and thus an effective time scale of zero when the
+	* action is paused.
+	*
+	* @param {number} timeScale - The time scale to set.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	setEffectiveTimeScale(timeScale) {
+		this.timeScale = timeScale;
+		this._effectiveTimeScale = this.paused ? 0 : timeScale;
+		return this.stopWarping();
+	}
+	/**
+	* Returns the effective time scale of this action.
+	*
+	* @return {number} The effective time scale.
+	*/
+	getEffectiveTimeScale() {
+		return this._effectiveTimeScale;
+	}
+	/**
+	* Sets the duration for a single loop of this action.
+	*
+	* @param {number} duration - The duration to set.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	setDuration(duration) {
+		this.timeScale = this._clip.duration / duration;
+		return this.stopWarping();
+	}
+	/**
+	* Synchronizes this action with the passed other action.
+	*
+	* @param {AnimationAction} action - The action to sync with.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	syncWith(action) {
+		this.time = action.time;
+		this.timeScale = action.timeScale;
+		return this.stopWarping();
+	}
+	/**
+	* Decelerates this animation's speed to `0` within the passed time interval.
+	*
+	* @param {number} duration - The duration.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	halt(duration) {
+		return this.warp(this._effectiveTimeScale, 0, duration);
+	}
+	/**
+	* Changes the playback speed, within the passed time interval, by modifying
+	* {@link AnimationAction#timeScale} gradually from `startTimeScale` to
+	* `endTimeScale`.
+	*
+	* @param {number} startTimeScale - The start time scale.
+	* @param {number} endTimeScale - The end time scale.
+	* @param {number} duration - The duration.
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	warp(startTimeScale, endTimeScale, duration) {
+		const mixer = this._mixer, now = mixer.time, timeScale = this.timeScale;
+		let interpolant = this._timeScaleInterpolant;
+		if (interpolant === null) {
+			interpolant = mixer._lendControlInterpolant();
+			this._timeScaleInterpolant = interpolant;
+		}
+		const times = interpolant.parameterPositions, values = interpolant.sampleValues;
+		times[0] = now;
+		times[1] = now + duration;
+		values[0] = startTimeScale / timeScale;
+		values[1] = endTimeScale / timeScale;
+		return this;
+	}
+	/**
+	* Stops any scheduled warping which is applied to this action.
+	*
+	* @return {AnimationAction} A reference to this animation action.
+	*/
+	stopWarping() {
+		const timeScaleInterpolant = this._timeScaleInterpolant;
+		if (timeScaleInterpolant !== null) {
+			this._timeScaleInterpolant = null;
+			this._mixer._takeBackControlInterpolant(timeScaleInterpolant);
+		}
+		this._restoreTimeScale = null;
+		return this;
+	}
+	/**
+	* Returns the animation mixer of this animation action.
+	*
+	* @return {AnimationMixer} The animation mixer.
+	*/
+	getMixer() {
+		return this._mixer;
+	}
+	/**
+	* Returns the animation clip of this animation action.
+	*
+	* @return {AnimationClip} The animation clip.
+	*/
+	getClip() {
+		return this._clip;
+	}
+	/**
+	* Returns the root object of this animation action.
+	*
+	* @return {Object3D} The root object.
+	*/
+	getRoot() {
+		return this._localRoot || this._mixer._root;
+	}
+	_update(time, deltaTime, timeDirection, accuIndex) {
+		if (!this.enabled) {
+			this._updateWeight(time);
+			return;
+		}
+		const startTime = this._startTime;
+		if (startTime !== null) {
+			const timeRunning = (time - startTime) * timeDirection;
+			if (timeRunning < 0 || timeDirection === 0) deltaTime = 0;
+			else {
+				this._startTime = null;
+				deltaTime = timeDirection * timeRunning;
+			}
+		}
+		deltaTime *= this._updateTimeScale(time);
+		const clipTime = this._updateTime(deltaTime);
+		const weight = this._updateWeight(time);
+		if (weight > 0) {
+			const interpolants = this._interpolants;
+			const propertyMixers = this._propertyBindings;
+			switch (this.blendMode) {
+				case AdditiveAnimationBlendMode:
+					for (let j = 0, m = interpolants.length; j !== m; ++j) {
+						interpolants[j].evaluate(clipTime);
+						propertyMixers[j].accumulateAdditive(weight);
+					}
+					break;
+				case NormalAnimationBlendMode:
+				default: for (let j = 0, m = interpolants.length; j !== m; ++j) {
+					interpolants[j].evaluate(clipTime);
+					propertyMixers[j].accumulate(accuIndex, weight);
+				}
+			}
+		}
+	}
+	_updateWeight(time) {
+		let weight = 0;
+		if (this.enabled) {
+			weight = this.weight;
+			const interpolant = this._weightInterpolant;
+			if (interpolant !== null) {
+				const interpolantValue = interpolant.evaluate(time)[0];
+				weight *= interpolantValue;
+				if (time > interpolant.parameterPositions[1]) {
+					this.stopFading();
+					if (interpolantValue === 0) this.enabled = false;
+				}
+			}
+		}
+		this._effectiveWeight = weight;
+		return weight;
+	}
+	_updateTimeScale(time) {
+		let timeScale = 0;
+		if (!this.paused) {
+			timeScale = this.timeScale;
+			const interpolant = this._timeScaleInterpolant;
+			if (interpolant !== null) {
+				const interpolantValue = interpolant.evaluate(time)[0];
+				timeScale *= interpolantValue;
+				if (time > interpolant.parameterPositions[1]) {
+					if (timeScale === 0) this.paused = true;
+					else {
+						if (this._restoreTimeScale !== null) timeScale = this._restoreTimeScale;
+						this.timeScale = timeScale;
+					}
+					this.stopWarping();
+				}
+			}
+		}
+		this._effectiveTimeScale = timeScale;
+		return timeScale;
+	}
+	_updateTime(deltaTime) {
+		const duration = this._clip.duration;
+		const loop = this.loop;
+		let time = this.time + deltaTime;
+		let loopCount = this._loopCount;
+		const pingPong = loop === LoopPingPong;
+		if (deltaTime === 0) {
+			if (loopCount === -1) return time;
+			return pingPong && (loopCount & 1) === 1 ? duration - time : time;
+		}
+		if (loop === 2200) {
+			if (loopCount === -1) {
+				this._loopCount = 0;
+				this._setEndings(true, true, false);
+			}
+			handle_stop: {
+				if (time >= duration) time = duration;
+				else if (time < 0) time = 0;
+				else {
+					this.time = time;
+					break handle_stop;
+				}
+				if (this.clampWhenFinished) this.paused = true;
+				else this.enabled = false;
+				this.time = time;
+				this._mixer.dispatchEvent({
+					type: "finished",
+					action: this,
+					direction: deltaTime < 0 ? -1 : 1
+				});
+			}
+		} else {
+			if (loopCount === -1) {
+				if (deltaTime >= 0) {
+					loopCount = 0;
+					this._setEndings(true, this.repetitions === 0, pingPong);
+				} else this._setEndings(this.repetitions === 0, true, pingPong);
+			}
+			if (time >= duration || time < 0) {
+				const loopDelta = Math.floor(time / duration);
+				time -= duration * loopDelta;
+				loopCount += Math.abs(loopDelta);
+				const pending = this.repetitions - loopCount;
+				if (pending <= 0) {
+					if (this.clampWhenFinished) this.paused = true;
+					else this.enabled = false;
+					time = deltaTime > 0 ? duration : 0;
+					this.time = time;
+					this._mixer.dispatchEvent({
+						type: "finished",
+						action: this,
+						direction: deltaTime > 0 ? 1 : -1
+					});
+				} else {
+					if (pending === 1) {
+						const atStart = deltaTime < 0;
+						this._setEndings(atStart, !atStart, pingPong);
+					} else this._setEndings(false, false, pingPong);
+					this._loopCount = loopCount;
+					this.time = time;
+					this._mixer.dispatchEvent({
+						type: "loop",
+						action: this,
+						loopDelta
+					});
+				}
+			} else {
+				this._loopCount = loopCount;
+				this.time = time;
+			}
+			if (pingPong && (loopCount & 1) === 1) return duration - time;
+		}
+		return time;
+	}
+	_setEndings(atStart, atEnd, pingPong) {
+		const settings = this._interpolantSettings;
+		if (pingPong) {
+			settings.endingStart = ZeroSlopeEnding;
+			settings.endingEnd = ZeroSlopeEnding;
+		} else {
+			if (atStart) settings.endingStart = this.zeroSlopeAtStart ? ZeroSlopeEnding : ZeroCurvatureEnding;
+			else settings.endingStart = WrapAroundEnding;
+			if (atEnd) settings.endingEnd = this.zeroSlopeAtEnd ? ZeroSlopeEnding : ZeroCurvatureEnding;
+			else settings.endingEnd = WrapAroundEnding;
+		}
+	}
+	_scheduleFading(duration, weightNow, weightThen) {
+		const mixer = this._mixer, now = mixer.time;
+		let interpolant = this._weightInterpolant;
+		if (interpolant === null) {
+			interpolant = mixer._lendControlInterpolant();
+			this._weightInterpolant = interpolant;
+		}
+		const times = interpolant.parameterPositions, values = interpolant.sampleValues;
+		times[0] = now;
+		values[0] = weightNow;
+		times[1] = now + duration;
+		values[1] = weightThen;
+		return this;
+	}
+};
+var _controlInterpolantsResultBuffer = /* @__PURE__ */ new Float32Array(1);
+/**
+* `AnimationMixer` is a player for animations on a particular object in
+* the scene. When multiple objects in the scene are animated independently,
+* one `AnimationMixer` may be used for each object.
+*/
+var AnimationMixer = class extends EventDispatcher {
+	/**
+	* Constructs a new animation mixer.
+	*
+	* @param {Object3D} root - The object whose animations shall be played by this mixer.
+	*/
+	constructor(root) {
+		super();
+		this._root = root;
+		this._initMemoryManager();
+		this._accuIndex = 0;
+		/**
+		* The global mixer time (in seconds; starting with `0` on the mixer's creation).
+		*
+		* @type {number}
+		* @default 0
+		*/
+		this.time = 0;
+		/**
+		* A scaling factor for the global time.
+		*
+		* Note: Setting this member to `0` and later back to `1` is a
+		* possibility to pause/unpause all actions that are controlled by this
+		* mixer.
+		*
+		* @type {number}
+		* @default 1
+		*/
+		this.timeScale = 1;
+		if (typeof __THREE_DEVTOOLS__ !== "undefined") __THREE_DEVTOOLS__.dispatchEvent(new CustomEvent("observe", { detail: this }));
+	}
+	_bindAction(action, prototypeAction) {
+		const root = action._localRoot || this._root, tracks = action._clip.tracks, nTracks = tracks.length, bindings = action._propertyBindings, interpolants = action._interpolants, rootUuid = root.uuid, bindingsByRoot = this._bindingsByRootAndName;
+		let bindingsByName = bindingsByRoot[rootUuid];
+		if (bindingsByName === void 0) {
+			bindingsByName = {};
+			bindingsByRoot[rootUuid] = bindingsByName;
+		}
+		for (let i = 0; i !== nTracks; ++i) {
+			const track = tracks[i], trackName = track.name;
+			let binding = bindingsByName[trackName];
+			if (binding !== void 0) {
+				++binding.referenceCount;
+				bindings[i] = binding;
+			} else {
+				binding = bindings[i];
+				if (binding !== void 0) {
+					if (binding._cacheIndex === null) {
+						++binding.referenceCount;
+						this._addInactiveBinding(binding, rootUuid, trackName);
+					}
+					continue;
+				}
+				const path = prototypeAction && prototypeAction._propertyBindings[i].binding.parsedPath;
+				binding = new PropertyMixer(PropertyBinding.create(root, trackName, path), track.ValueTypeName, track.getValueSize());
+				++binding.referenceCount;
+				this._addInactiveBinding(binding, rootUuid, trackName);
+				bindings[i] = binding;
+			}
+			interpolants[i].resultBuffer = binding.buffer;
+		}
+	}
+	_activateAction(action) {
+		if (!this._isActiveAction(action)) {
+			if (action._cacheIndex === null) {
+				const rootUuid = (action._localRoot || this._root).uuid, clipUuid = action._clip.uuid, actionsForClip = this._actionsByClip[clipUuid];
+				this._bindAction(action, actionsForClip && actionsForClip.knownActions[0]);
+				this._addInactiveAction(action, clipUuid, rootUuid);
+			}
+			const bindings = action._propertyBindings;
+			for (let i = 0, n = bindings.length; i !== n; ++i) {
+				const binding = bindings[i];
+				if (binding.useCount++ === 0) {
+					this._lendBinding(binding);
+					binding.saveOriginalState();
+				}
+			}
+			this._lendAction(action);
+		}
+	}
+	_deactivateAction(action) {
+		if (this._isActiveAction(action)) {
+			const bindings = action._propertyBindings;
+			for (let i = 0, n = bindings.length; i !== n; ++i) {
+				const binding = bindings[i];
+				if (--binding.useCount === 0) {
+					binding.restoreOriginalState();
+					this._takeBackBinding(binding);
+				}
+			}
+			this._takeBackAction(action);
+		}
+	}
+	_initMemoryManager() {
+		this._actions = [];
+		this._nActiveActions = 0;
+		this._actionsByClip = {};
+		this._bindings = [];
+		this._nActiveBindings = 0;
+		this._bindingsByRootAndName = {};
+		this._controlInterpolants = [];
+		this._nActiveControlInterpolants = 0;
+		const scope = this;
+		this.stats = {
+			actions: {
+				get total() {
+					return scope._actions.length;
+				},
+				get inUse() {
+					return scope._nActiveActions;
+				}
+			},
+			bindings: {
+				get total() {
+					return scope._bindings.length;
+				},
+				get inUse() {
+					return scope._nActiveBindings;
+				}
+			},
+			controlInterpolants: {
+				get total() {
+					return scope._controlInterpolants.length;
+				},
+				get inUse() {
+					return scope._nActiveControlInterpolants;
+				}
+			}
+		};
+	}
+	_isActiveAction(action) {
+		const index = action._cacheIndex;
+		return index !== null && index < this._nActiveActions;
+	}
+	_addInactiveAction(action, clipUuid, rootUuid) {
+		const actions = this._actions, actionsByClip = this._actionsByClip;
+		let actionsForClip = actionsByClip[clipUuid];
+		if (actionsForClip === void 0) {
+			actionsForClip = {
+				knownActions: [action],
+				actionByRoot: {}
+			};
+			action._byClipCacheIndex = 0;
+			actionsByClip[clipUuid] = actionsForClip;
+		} else {
+			const knownActions = actionsForClip.knownActions;
+			action._byClipCacheIndex = knownActions.length;
+			knownActions.push(action);
+		}
+		action._cacheIndex = actions.length;
+		actions.push(action);
+		actionsForClip.actionByRoot[rootUuid] = action;
+	}
+	_removeInactiveAction(action) {
+		const actions = this._actions, lastInactiveAction = actions[actions.length - 1], cacheIndex = action._cacheIndex;
+		lastInactiveAction._cacheIndex = cacheIndex;
+		actions[cacheIndex] = lastInactiveAction;
+		actions.pop();
+		action._cacheIndex = null;
+		const clipUuid = action._clip.uuid, actionsByClip = this._actionsByClip, actionsForClip = actionsByClip[clipUuid], knownActionsForClip = actionsForClip.knownActions, lastKnownAction = knownActionsForClip[knownActionsForClip.length - 1], byClipCacheIndex = action._byClipCacheIndex;
+		lastKnownAction._byClipCacheIndex = byClipCacheIndex;
+		knownActionsForClip[byClipCacheIndex] = lastKnownAction;
+		knownActionsForClip.pop();
+		action._byClipCacheIndex = null;
+		const actionByRoot = actionsForClip.actionByRoot, rootUuid = (action._localRoot || this._root).uuid;
+		delete actionByRoot[rootUuid];
+		if (knownActionsForClip.length === 0) delete actionsByClip[clipUuid];
+		this._removeInactiveBindingsForAction(action);
+	}
+	_removeInactiveBindingsForAction(action) {
+		const bindings = action._propertyBindings;
+		for (let i = 0, n = bindings.length; i !== n; ++i) {
+			const binding = bindings[i];
+			if (--binding.referenceCount === 0) this._removeInactiveBinding(binding);
+		}
+	}
+	_lendAction(action) {
+		const actions = this._actions, prevIndex = action._cacheIndex, lastActiveIndex = this._nActiveActions++, firstInactiveAction = actions[lastActiveIndex];
+		action._cacheIndex = lastActiveIndex;
+		actions[lastActiveIndex] = action;
+		firstInactiveAction._cacheIndex = prevIndex;
+		actions[prevIndex] = firstInactiveAction;
+	}
+	_takeBackAction(action) {
+		const actions = this._actions, prevIndex = action._cacheIndex, firstInactiveIndex = --this._nActiveActions, lastActiveAction = actions[firstInactiveIndex];
+		action._cacheIndex = firstInactiveIndex;
+		actions[firstInactiveIndex] = action;
+		lastActiveAction._cacheIndex = prevIndex;
+		actions[prevIndex] = lastActiveAction;
+	}
+	_addInactiveBinding(binding, rootUuid, trackName) {
+		const bindingsByRoot = this._bindingsByRootAndName, bindings = this._bindings;
+		let bindingByName = bindingsByRoot[rootUuid];
+		if (bindingByName === void 0) {
+			bindingByName = {};
+			bindingsByRoot[rootUuid] = bindingByName;
+		}
+		bindingByName[trackName] = binding;
+		binding._cacheIndex = bindings.length;
+		bindings.push(binding);
+	}
+	_removeInactiveBinding(binding) {
+		const bindings = this._bindings, propBinding = binding.binding, rootUuid = propBinding.rootNode.uuid, trackName = propBinding.path, bindingsByRoot = this._bindingsByRootAndName, bindingByName = bindingsByRoot[rootUuid], lastInactiveBinding = bindings[bindings.length - 1], cacheIndex = binding._cacheIndex;
+		lastInactiveBinding._cacheIndex = cacheIndex;
+		bindings[cacheIndex] = lastInactiveBinding;
+		bindings.pop();
+		delete bindingByName[trackName];
+		if (Object.keys(bindingByName).length === 0) delete bindingsByRoot[rootUuid];
+	}
+	_lendBinding(binding) {
+		const bindings = this._bindings, prevIndex = binding._cacheIndex, lastActiveIndex = this._nActiveBindings++, firstInactiveBinding = bindings[lastActiveIndex];
+		binding._cacheIndex = lastActiveIndex;
+		bindings[lastActiveIndex] = binding;
+		firstInactiveBinding._cacheIndex = prevIndex;
+		bindings[prevIndex] = firstInactiveBinding;
+	}
+	_takeBackBinding(binding) {
+		const bindings = this._bindings, prevIndex = binding._cacheIndex, firstInactiveIndex = --this._nActiveBindings, lastActiveBinding = bindings[firstInactiveIndex];
+		binding._cacheIndex = firstInactiveIndex;
+		bindings[firstInactiveIndex] = binding;
+		lastActiveBinding._cacheIndex = prevIndex;
+		bindings[prevIndex] = lastActiveBinding;
+	}
+	_lendControlInterpolant() {
+		const interpolants = this._controlInterpolants, lastActiveIndex = this._nActiveControlInterpolants++;
+		let interpolant = interpolants[lastActiveIndex];
+		if (interpolant === void 0) {
+			interpolant = new LinearInterpolant(/* @__PURE__ */ new Float32Array(2), /* @__PURE__ */ new Float32Array(2), 1, _controlInterpolantsResultBuffer);
+			interpolant.__cacheIndex = lastActiveIndex;
+			interpolants[lastActiveIndex] = interpolant;
+		}
+		return interpolant;
+	}
+	_takeBackControlInterpolant(interpolant) {
+		const interpolants = this._controlInterpolants, prevIndex = interpolant.__cacheIndex, firstInactiveIndex = --this._nActiveControlInterpolants, lastActiveInterpolant = interpolants[firstInactiveIndex];
+		interpolant.__cacheIndex = firstInactiveIndex;
+		interpolants[firstInactiveIndex] = interpolant;
+		lastActiveInterpolant.__cacheIndex = prevIndex;
+		interpolants[prevIndex] = lastActiveInterpolant;
+	}
+	/**
+	* Returns an instance of {@link AnimationAction} for the passed clip.
+	*
+	* If an action fitting the clip and root parameters doesn't yet exist, it
+	* will be created by this method. Calling this method several times with the
+	* same clip and root parameters always returns the same action.
+	*
+	* @param {AnimationClip|string} clip - An animation clip or alternatively the name of the animation clip.
+	* @param {Object3D} [optionalRoot] - An alternative root object.
+	* @param {(NormalAnimationBlendMode|AdditiveAnimationBlendMode)} [blendMode] - The blend mode.
+	* @return {?AnimationAction} The animation action.
+	*/
+	clipAction(clip, optionalRoot, blendMode) {
+		const root = optionalRoot || this._root, rootUuid = root.uuid;
+		let clipObject = typeof clip === "string" ? AnimationClip.findByName(root, clip) : clip;
+		const clipUuid = clipObject !== null ? clipObject.uuid : clip;
+		const actionsForClip = this._actionsByClip[clipUuid];
+		let prototypeAction = null;
+		if (blendMode === void 0) {
+			if (clipObject !== null) blendMode = clipObject.blendMode;
+			else blendMode = NormalAnimationBlendMode;
+		}
+		if (actionsForClip !== void 0) {
+			const existingAction = actionsForClip.actionByRoot[rootUuid];
+			if (existingAction !== void 0 && existingAction.blendMode === blendMode) return existingAction;
+			prototypeAction = actionsForClip.knownActions[0];
+			if (clipObject === null) clipObject = prototypeAction._clip;
+		}
+		if (clipObject === null) return null;
+		const newAction = new AnimationAction(this, clipObject, optionalRoot, blendMode);
+		this._bindAction(newAction, prototypeAction);
+		this._addInactiveAction(newAction, clipUuid, rootUuid);
+		return newAction;
+	}
+	/**
+	* Returns an existing animation action for the passed clip.
+	*
+	* @param {AnimationClip|string} clip - An animation clip or alternatively the name of the animation clip.
+	* @param {Object3D} [optionalRoot] - An alternative root object.
+	* @return {?AnimationAction} The animation action. Returns `null` if no action was found.
+	*/
+	existingAction(clip, optionalRoot) {
+		const root = optionalRoot || this._root, rootUuid = root.uuid, clipObject = typeof clip === "string" ? AnimationClip.findByName(root, clip) : clip, clipUuid = clipObject ? clipObject.uuid : clip, actionsForClip = this._actionsByClip[clipUuid];
+		if (actionsForClip !== void 0) return actionsForClip.actionByRoot[rootUuid] || null;
+		return null;
+	}
+	/**
+	* Deactivates all previously scheduled actions on this mixer.
+	*
+	* @return {AnimationMixer} A reference to this animation mixer.
+	*/
+	stopAllAction() {
+		const actions = this._actions, nActions = this._nActiveActions;
+		for (let i = nActions - 1; i >= 0; --i) actions[i].stop();
+		return this;
+	}
+	/**
+	* Advances the global mixer time and updates the animation.
+	*
+	* This is usually done in the render loop by passing the delta
+	* time from {@link Clock} or {@link Timer}.
+	*
+	* @param {number} deltaTime - The delta time in seconds.
+	* @return {AnimationMixer} A reference to this animation mixer.
+	*/
+	update(deltaTime) {
+		deltaTime *= this.timeScale;
+		const actions = this._actions, nActions = this._nActiveActions, time = this.time += deltaTime, timeDirection = Math.sign(deltaTime), accuIndex = this._accuIndex ^= 1;
+		for (let i = 0; i !== nActions; ++i) actions[i]._update(time, deltaTime, timeDirection, accuIndex);
+		const bindings = this._bindings, nBindings = this._nActiveBindings;
+		for (let i = 0; i !== nBindings; ++i) bindings[i].apply(accuIndex);
+		return this;
+	}
+	/**
+	* Sets the global mixer to a specific time and updates the animation accordingly.
+	*
+	* This is useful when you need to jump to an exact time in an animation. The
+	* input parameter will be scaled by {@link AnimationMixer#timeScale}
+	*
+	* @param {number} time - The time to set in seconds.
+	* @return {AnimationMixer} A reference to this animation mixer.
+	*/
+	setTime(time) {
+		this.time = 0;
+		for (let i = 0; i < this._actions.length; i++) this._actions[i].time = 0;
+		return this.update(time);
+	}
+	/**
+	* Returns this mixer's root object.
+	*
+	* @return {Object3D} The mixer's root object.
+	*/
+	getRoot() {
+		return this._root;
+	}
+	/**
+	* Deallocates all memory resources for a clip. Before using this method make
+	* sure to call {@link AnimationAction#stop} for all related actions.
+	*
+	* @param {AnimationClip} clip - The clip to uncache.
+	*/
+	uncacheClip(clip) {
+		const actions = this._actions, clipUuid = clip.uuid, actionsByClip = this._actionsByClip, actionsForClip = actionsByClip[clipUuid];
+		if (actionsForClip !== void 0) {
+			const actionsToRemove = actionsForClip.knownActions;
+			for (let i = 0, n = actionsToRemove.length; i !== n; ++i) {
+				const action = actionsToRemove[i];
+				this._deactivateAction(action);
+				const cacheIndex = action._cacheIndex, lastInactiveAction = actions[actions.length - 1];
+				action._cacheIndex = null;
+				action._byClipCacheIndex = null;
+				lastInactiveAction._cacheIndex = cacheIndex;
+				actions[cacheIndex] = lastInactiveAction;
+				actions.pop();
+				this._removeInactiveBindingsForAction(action);
+			}
+			delete actionsByClip[clipUuid];
+		}
+	}
+	/**
+	* Deallocates all memory resources for a root object. Before using this
+	* method make sure to call {@link AnimationAction#stop} for all related
+	* actions or alternatively {@link AnimationMixer#stopAllAction} when the
+	* mixer operates on a single root.
+	*
+	* @param {Object3D} root - The root object to uncache.
+	*/
+	uncacheRoot(root) {
+		const rootUuid = root.uuid, actionsByClip = this._actionsByClip;
+		for (const clipUuid in actionsByClip) {
+			const action = actionsByClip[clipUuid].actionByRoot[rootUuid];
+			if (action !== void 0) {
+				this._deactivateAction(action);
+				this._removeInactiveAction(action);
+			}
+		}
+		const bindingByName = this._bindingsByRootAndName[rootUuid];
+		if (bindingByName !== void 0) for (const trackName in bindingByName) {
+			const binding = bindingByName[trackName];
+			binding.restoreOriginalState();
+			this._removeInactiveBinding(binding);
+		}
+	}
+	/**
+	* Deallocates all memory resources for an action. The action is identified by the
+	* given clip and an optional root object. Before using this method make
+	* sure to call {@link AnimationAction#stop} to deactivate the action.
+	*
+	* @param {AnimationClip|string} clip - An animation clip or alternatively the name of the animation clip.
+	* @param {Object3D} [optionalRoot] - An alternative root object.
+	*/
+	uncacheAction(clip, optionalRoot) {
+		const action = this.existingAction(clip, optionalRoot);
+		if (action !== null) {
+			this._deactivateAction(action);
+			this._removeInactiveAction(action);
+		}
+	}
+};
 /**
 * Represents a 2x2 matrix.
 *
@@ -30441,6 +31639,11 @@ var MAX_FILES = 400;
 var MAX_RESULTS = 6;
 /** 无法便宜抽骨骼名的格式（二进制 FBX），最多解析几个候选来评分 */
 var MAX_PARSE_CANDIDATES = 4;
+/**
+* 自动配对的最低骨骼覆盖率：低于它说明只是「部分骨骼同名」（典型是跨角色的附加/受击动画，
+* 5 根脊柱骨在任意双足角色上都能对上），不应自动绑定——显式 mesh 参数仍然可用。
+*/
+var MIN_AUTO_COVERAGE = .35;
 var probeCache = /* @__PURE__ */ new Map();
 /** 从场景对象收集骨骼名（给自动扫描/候选报告用） */
 function collectBoneNames(root) {
@@ -30501,6 +31704,7 @@ async function findCompanionMeshes(absPath, animationBoneNames, options = {}) {
 		const stats = scoreBones(boneNames, animationKeys);
 		if (animationKeys.size > 0 && stats.matchedBones === 0) continue;
 		const coverage = stats.meshBones > 0 ? stats.matchedBones / stats.meshBones : 0;
+		if (animationKeys.size > 0 && coverage < MIN_AUTO_COVERAGE) continue;
 		matches.push({
 			path: probe.path,
 			name: probe.name,
@@ -34222,9 +35426,9 @@ function missingMeshWarning() {
 var MAX_UNMATCHED_NODES = 12;
 /**
 * 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
-* 命中则换轨道名前缀，未命中则丢弃；给了 sourceRoot（动画文件自己的场景根）时，
-* 对映射链的根骨骼按两边静止姿态差做校正（修跨导出 up-axis / 根朝向差异导致的「躺倒」）。
-* 不修改入参 clips / mesh / sourceRoot（轨道都是 clone 的），可以安全地在只读分析里调用。
+* 命中则换轨道名前缀、未命中丢弃；给了 sourceRoot（动画文件自己的场景根）时，
+* 用「世界姿态对齐烘焙」把动作姿态精确转到 mesh 空间（修 bind pose / up-axis 差异）。
+* 不修改入参 clips / mesh / sourceRoot。
 */
 function bindClipsToModel(mesh, clips, sourceRoot) {
 	const index = buildNodeIndex(mesh);
@@ -34232,15 +35436,10 @@ function bindClipsToModel(mesh, clips, sourceRoot) {
 	const unseen = /* @__PURE__ */ new Set();
 	let totalTracks = 0;
 	let matchedTracks = 0;
-	const parsedNames = /* @__PURE__ */ new Map();
 	for (const clip of clips) for (const track of clip.tracks) {
 		totalTracks += 1;
 		const parsed = PropertyBinding.parseTrackName(track.name);
 		const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
-		parsedNames.set(track, {
-			nodeName,
-			property: typeof parsed.propertyName === "string" ? parsed.propertyName : ""
-		});
 		if (nodeName === "") continue;
 		if (resolved.has(nodeName)) {
 			matchedTracks += 1;
@@ -34257,62 +35456,37 @@ function bindClipsToModel(mesh, clips, sourceRoot) {
 		});
 		matchedTracks += 1;
 	}
-	const corrections = buildRootCorrections(new Set([...resolved.values()].map((entry) => entry.target)), sourceRoot);
-	const matchedBones = /* @__PURE__ */ new Set();
-	const matchedNodes = /* @__PURE__ */ new Set();
 	let renamedTracks = 0;
-	const boundClips = [];
-	for (const clip of clips) {
-		const tracks = [];
-		for (const track of clip.tracks) {
-			const info = parsedNames.get(track);
-			const nodeName = info?.nodeName ?? "";
-			if (nodeName === "") {
-				tracks.push(track);
-				continue;
-			}
-			const entry = resolved.get(nodeName);
-			if (entry === void 0) continue;
-			if (!matchedNodes.has(nodeName)) {
-				matchedNodes.add(nodeName);
-				if (entry.target.isBone) matchedBones.add(entry.target);
-			}
-			const nameMatches = entry.target.name === nodeName;
-			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${info?.property ?? ""}`;
-			const targetName = nameMatches ? track.name : `${entry.target.name}${suffix}`;
-			const correction = corrections.get(entry.target);
-			if (correction !== void 0) {
-				const corrected = correctTrack(track, info?.property ?? "", correction);
-				if (corrected !== null) {
-					corrected.name = targetName;
-					tracks.push(corrected);
-					if (!nameMatches) renamedTracks += 1;
-					continue;
-				}
-			}
-			if (nameMatches) {
-				tracks.push(track);
-				continue;
-			}
-			const renamed = track.clone();
-			renamed.name = targetName;
-			renamedTracks += 1;
-			tracks.push(renamed);
+	for (const [nodeName, entry] of resolved) if (entry.target.name !== nodeName) renamedTracks += 1;
+	const matchedBones = /* @__PURE__ */ new Set();
+	for (const entry of resolved.values()) if (entry.target.isBone && entry.target.isBone !== void 0) matchedBones.add(entry.target);
+	const matchedTargets = new Set([...resolved.values()].map((entry) => entry.target));
+	findMatchedRoots(matchedTargets);
+	let boundClips = [];
+	let retargetedBones = 0;
+	let correctedRoots = [];
+	if (sourceRoot !== void 0) {
+		const baked = bakeWorldAlignedClips(mesh, clips, resolved, sourceRoot);
+		if (baked !== null) {
+			boundClips = baked.clips;
+			retargetedBones = baked.bones;
+			correctedRoots = baked.correctedRoots;
 		}
-		boundClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
 	}
+	if (boundClips.length === 0) boundClips = remapTracksOnly(clips, resolved);
 	const report = {
 		meshNodes: index.count,
 		meshBones: index.bones,
-		animNodes: matchedNodes.size + unseen.size,
-		matchedNodes: matchedNodes.size,
+		animNodes: matchedTargets.size + unseen.size,
+		matchedNodes: matchedTargets.size,
 		matchedBones: matchedBones.size,
 		totalTracks,
 		matchedTracks,
 		unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
 		unmatchedNodeCount: unseen.size,
 		renamedTracks,
-		correctedRoots: [...corrections.keys()].map((target) => target.name),
+		retargetedBones,
+		correctedRoots,
 		ok: matchedTracks > 0,
 		warnings: []
 	};
@@ -34322,92 +35496,151 @@ function bindClipsToModel(mesh, clips, sourceRoot) {
 		report
 	};
 }
-/** 找出映射链根骨骼并计算校正量（只对「两边都有、且静止朝向/位置不同」的根骨骼） */
-function buildRootCorrections(matchedTargets, sourceRoot) {
-	const corrections = /* @__PURE__ */ new Map();
-	if (sourceRoot === void 0) return corrections;
-	const sourceBones = /* @__PURE__ */ new Map();
-	sourceRoot.traverse((child) => {
-		if (child.isBone) sourceBones.set(child.name, child);
-	});
-	if (sourceBones.size === 0) return corrections;
+/** 映射链的根骨骼：命中目标里没有命中祖先的那些（Bip001 / Hips 等） */
+function findMatchedRoots(matchedTargets) {
+	const roots = /* @__PURE__ */ new Set();
 	for (const target of matchedTargets) {
-		if (target.isBone !== true) continue;
-		if (hasMatchedAncestor(target, matchedTargets)) continue;
-		const source = sourceBones.get(target.name);
+		let parent = target.parent;
+		let hasMatchedAncestor = false;
+		while (parent !== null && parent !== void 0) {
+			if (matchedTargets.has(parent)) {
+				hasMatchedAncestor = true;
+				break;
+			}
+			parent = parent.parent;
+		}
+		if (!hasMatchedAncestor) roots.add(target);
+	}
+	return roots;
+}
+/** 无动画场景根时的降级路径：换轨道名前缀 / 丢弃未命中轨道（原 0.10.0 行为） */
+function remapTracksOnly(clips, resolved) {
+	const out = [];
+	for (const clip of clips) {
+		const tracks = [];
+		for (const track of clip.tracks) {
+			const parsed = PropertyBinding.parseTrackName(track.name);
+			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			if (nodeName === "") {
+				tracks.push(track);
+				continue;
+			}
+			const entry = resolved.get(nodeName);
+			if (entry === void 0) continue;
+			if (entry.target.name === nodeName) {
+				tracks.push(track);
+				continue;
+			}
+			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${parsed.propertyName}`;
+			const renamed = track.clone();
+			renamed.name = `${entry.target.name}${suffix}`;
+			tracks.push(renamed);
+		}
+		out.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
+	}
+	return out;
+}
+/**
+* 世界姿态对齐烘焙：动画骨架逐采样时刻求值 → 世界矩阵 → 按 mesh 层级反解局部 TRS。
+* 两个文件都被 FBXLoader 统一到 Y-up 世界，所以直接复制动画骨架的世界姿态即可；
+* mesh 场景根的旋转由反解出的局部值自动吸收（再乘场景根矩阵会二次旋转，Sword 资产实测会躺倒）。
+* 只烘焙「该片段轨道真正驱动的命中节点」；其余骨骼保持 mesh 自己的 rest 局部值。
+*/
+function bakeWorldAlignedClips(mesh, clips, resolved, sourceRoot) {
+	const sourceNodes = /* @__PURE__ */ new Map();
+	sourceRoot.traverse((child) => {
+		if (child.name !== "" && !sourceNodes.has(child.name)) sourceNodes.set(child.name, child);
+	});
+	const targetToSource = /* @__PURE__ */ new Map();
+	for (const [nodeName, entry] of resolved) {
+		const source = sourceNodes.get(entry.target.name) ?? sourceNodes.get(nodeName);
+		if (source !== void 0) targetToSource.set(entry.target, source);
+	}
+	if (targetToSource.size === 0) return null;
+	mesh.updateMatrixWorld(true);
+	sourceRoot.updateMatrixWorld(true);
+	const nodes = [];
+	mesh.traverse((node) => {
+		if (node !== mesh) nodes.push(node);
+	});
+	const restLocal = /* @__PURE__ */ new Map();
+	for (const node of nodes) restLocal.set(node, node.matrix.clone());
+	const targetSet = new Set(targetToSource.keys());
+	const correctedRoots = [];
+	for (const root of findMatchedRoots(targetSet)) {
+		const source = targetToSource.get(root);
 		if (source === void 0) continue;
-		const targetRest = {
-			p: target.position,
-			q: target.quaternion,
-			s: target.scale
-		};
-		const sourceRest = {
-			p: source.position,
-			q: source.quaternion,
-			s: source.scale
-		};
-		const rotation = targetRest.q.clone().multiply(sourceRest.q.clone().invert());
-		const positionDelta = targetRest.p.distanceTo(sourceRest.p);
-		const rotationDelta = rotation.angleTo(new Quaternion());
-		const scaleDelta = targetRest.s.distanceTo(sourceRest.s);
-		if (positionDelta < 1e-4 && rotationDelta < .001 && scaleDelta < 1e-4) continue;
-		corrections.set(target, {
-			rotation,
-			targetPosition: targetRest.p.clone(),
-			targetScale: targetRest.s.clone(),
-			sourcePosition: sourceRest.p.clone(),
-			sourceScale: sourceRest.s.clone(),
-			targetName: target.name
+		const angular = root.quaternion.angleTo(source.quaternion);
+		const linear = root.position.distanceTo(source.position);
+		if (angular > .01 || linear > .001) correctedRoots.push(root.name);
+	}
+	const bakedClips = [];
+	let bakedBones = 0;
+	const localMatrix = new Matrix4();
+	const desiredWorld = /* @__PURE__ */ new Map();
+	for (const clip of clips) {
+		const animated = /* @__PURE__ */ new Set();
+		const times = /* @__PURE__ */ new Set();
+		for (const track of clip.tracks) {
+			const parsed = PropertyBinding.parseTrackName(track.name);
+			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			if (nodeName === "") continue;
+			const entry = resolved.get(nodeName);
+			if (entry !== void 0 && targetToSource.has(entry.target)) animated.add(entry.target);
+			for (const time of track.times) times.add(Math.round(time * 1e3) / 1e3);
+		}
+		const sampleTimes = [...times].sort((left, right) => left - right);
+		if (sampleTimes.length === 0) {
+			bakedClips.push(new AnimationClip(clip.name, clip.duration, [], clip.blendMode));
+			continue;
+		}
+		const buffers = /* @__PURE__ */ new Map();
+		for (const target of animated) buffers.set(target, {
+			p: [],
+			q: [],
+			s: []
 		});
-	}
-	return corrections;
-}
-function hasMatchedAncestor(target, matchedTargets) {
-	let parent = target.parent;
-	while (parent !== null && parent !== void 0) {
-		if (matchedTargets.has(parent)) return true;
-		parent = parent.parent;
-	}
-	return false;
-}
-/** 单条轨道按根校正量做静止姿态差变换（position/quaternion/scale；其它属性原样返回 null） */
-function correctTrack(track, property, correction) {
-	const values = track.values;
-	if (property === "quaternion") {
-		const out = new Float32Array(values.length);
-		const q = new Quaternion();
-		for (let index = 0; index + 3 < values.length; index += 4) {
-			q.set(values[index], values[index + 1], values[index + 2], values[index + 3]);
-			q.premultiply(correction.rotation);
-			out[index] = q.x;
-			out[index + 1] = q.y;
-			out[index + 2] = q.z;
-			out[index + 3] = q.w;
+		const mixer = new AnimationMixer(sourceRoot);
+		const action = mixer.clipAction(clip);
+		action.reset().play();
+		const position = new Vector3();
+		const quaternion = new Quaternion();
+		const scale = new Vector3();
+		for (const time of sampleTimes) {
+			mixer.setTime(time);
+			sourceRoot.updateMatrixWorld(true);
+			desiredWorld.clear();
+			for (const node of nodes) {
+				const parentWorld = node.parent !== null && node.parent !== mesh && desiredWorld.has(node.parent) ? desiredWorld.get(node.parent) : mesh.matrixWorld;
+				const source = targetToSource.get(node);
+				let world;
+				if (source !== void 0) world = source.matrixWorld.clone();
+				else world = parentWorld.clone().multiply(restLocal.get(node));
+				desiredWorld.set(node, world);
+				const buffer = animated.has(node) ? buffers.get(node) : void 0;
+				if (buffer === void 0) continue;
+				localMatrix.copy(parentWorld).invert().multiply(world);
+				localMatrix.decompose(position, quaternion, scale);
+				buffer.p.push(position.x, position.y, position.z);
+				buffer.q.push(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+				buffer.s.push(scale.x, scale.y, scale.z);
+			}
 		}
-		return new QuaternionKeyframeTrack(track.name, track.times, out);
-	}
-	if (property === "position") {
-		const out = new Float32Array(values.length);
-		const point = new Vector3();
-		for (let index = 0; index + 2 < values.length; index += 3) {
-			point.set(values[index] - correction.sourcePosition.x, values[index + 1] - correction.sourcePosition.y, values[index + 2] - correction.sourcePosition.z);
-			point.applyQuaternion(correction.rotation);
-			out[index] = correction.targetPosition.x + point.x;
-			out[index + 1] = correction.targetPosition.y + point.y;
-			out[index + 2] = correction.targetPosition.z + point.z;
+		action.stop();
+		const tracks = [];
+		for (const [target, buffer] of buffers) {
+			tracks.push(new VectorKeyframeTrack(`${target.name}.position`, sampleTimes, buffer.p));
+			tracks.push(new QuaternionKeyframeTrack(`${target.name}.quaternion`, sampleTimes, buffer.q));
+			tracks.push(new VectorKeyframeTrack(`${target.name}.scale`, sampleTimes, buffer.s));
+			if (target.isBone) bakedBones += 1;
 		}
-		return new VectorKeyframeTrack(track.name, track.times, out);
+		bakedClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
 	}
-	if (property === "scale") {
-		const out = new Float32Array(values.length);
-		for (let index = 0; index + 2 < values.length; index += 3) {
-			out[index] = correction.targetScale.x * (values[index] / (correction.sourceScale.x || 1));
-			out[index + 1] = correction.targetScale.y * (values[index + 1] / (correction.sourceScale.y || 1));
-			out[index + 2] = correction.targetScale.z * (values[index + 2] / (correction.sourceScale.z || 1));
-		}
-		return new VectorKeyframeTrack(track.name, track.times, out);
-	}
-	return null;
+	return {
+		clips: bakedClips,
+		bones: bakedBones,
+		correctedRoots
+	};
 }
 /** 由报告派生人话 warnings（截图/预览/工具直接透传） */
 function bindingWarnings(report) {
@@ -34420,8 +35653,11 @@ function bindingWarnings(report) {
 		const sample = report.unmatchedNodes.join("、");
 		warnings.push(`动画有 ${report.unmatchedNodeCount} 个节点在 mesh 骨架里没有对应骨骼，已忽略（常见于动作里带的道具/相机/IK 辅助节点）：${sample}${report.unmatchedNodeCount > MAX_UNMATCHED_NODES ? " …" : ""}`);
 	}
-	if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
-	if (report.correctedRoots.length > 0) warnings.push(`动画与 mesh 的根骨骼静止朝向/位置不同（跨导出/坐标系差异，典型是 Z-up 与 Y-up 混用）：已按静止姿态差校正根骨骼 ${report.correctedRoots.join("、")} 的轨道。`);
+	if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 个节点（如 mixamorig: / Armature| 前缀）。`);
+	if (report.retargetedBones > 0) {
+		const roots = report.correctedRoots.length > 0 ? `（根骨骼静止姿态不同：${report.correctedRoots.join("、")}）` : "";
+		warnings.push(`动画与 mesh 的骨骼静止姿态/坐标系不同（bind pose 或 Z-up/Y-up 差异）：已按「世界姿态对齐」烘焙重定向 ${report.retargetedBones} 根骨骼的轨道，预览姿态与动画文件自身一致${roots}。`);
+	}
 	return warnings;
 }
 /** 报告 → 给 AI 读的中文事实句（info/CLI/MCP 共用，数值不重复计算） */
@@ -34429,8 +35665,8 @@ function bindingFacts(report) {
 	const facts = [];
 	facts.push(`动画驱动 mesh 骨架的 ${report.matchedBones}/${report.meshBones} 根骨骼；轨道命中 ${report.matchedTracks}/${report.totalTracks}。`);
 	if (report.unmatchedNodeCount > 0) facts.push(`未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join("、")}${report.unmatchedNodeCount > report.unmatchedNodes.length ? " …" : ""}）——这些节点的动作不会显示。`);
-	if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
-	if (report.correctedRoots.length > 0) facts.push(`根骨骼静止姿态差校正：${report.correctedRoots.join("、")}（两边 up-axis/根朝向不同）。`);
+	if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 个节点经命名空间归一化后命中。`);
+	if (report.retargetedBones > 0) facts.push(`世界姿态对齐烘焙重定向 ${report.retargetedBones} 根骨骼（bind pose / 跨导出差异）` + (report.correctedRoots.length > 0 ? `，根骨骼 rest 不同：${report.correctedRoots.join("、")}` : "") + "。");
 	return facts;
 }
 //#endregion
