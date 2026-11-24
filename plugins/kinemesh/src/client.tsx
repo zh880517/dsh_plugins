@@ -23,24 +23,44 @@ const VIEW_MODES: ViewMode[] = ['default', 'wireframe', 'skeleton', 'bones-overl
 /** 点开入口时记下的会话连接（run/分析要绑到它） */
 let connection: { sessionId: string; draft: string; actions: { setDraft?: (draft: string) => void } | null } | null = null;
 
-const overlayStore = {
-  listeners: new Set<() => void>(),
-  open: false,
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  },
-  getSnapshot(): boolean {
-    return this.open;
-  },
-  set(next: boolean): void {
-    if (this.open === next) return;
-    this.open = next;
-    for (const listener of this.listeners) listener();
-  },
-};
+/**
+ * 浮层开关 store（aiworkflow pickerStore 同款闭包写法）。
+ * **必须由订阅方用 React.useSyncExternalStore 消费**——注册回调是裸函数、内部无 hook 时，
+ * set() 通知不到任何组件，点击按钮会「没有任何反应」（0.5.2 修复的真实缺陷）。
+ * 用闭包变量而非 this：方法可直接作为 subscribe/getSnapshot 传给 useSyncExternalStore。
+ */
+export function createOverlayStore(): {
+  subscribe: (listener: () => void) => () => void;
+  getSnapshot: () => boolean;
+  set: (next: boolean) => void;
+} {
+  let open = false;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot(): boolean {
+      return open;
+    },
+    set(next: boolean): void {
+      if (open === next) return;
+      open = next;
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+const overlayStore = createOverlayStore();
+
+/** 浮层主体：订阅 store 的可见性（裸函数注册不重渲染，必须在此订阅） */
+function PreviewOverlay(): React.ReactElement | null {
+  const visible = React.useSyncExternalStore(overlayStore.subscribe, overlayStore.getSnapshot);
+  return visible ? <PreviewDialog onClose={() => overlayStore.set(false)} /> : null;
+}
 
 // ———————— locale（§6.10.4：页签文案与页面文本走 locale 服务，缺键回退中文） ————————
 
@@ -1002,9 +1022,9 @@ export function apply(ctx: any): void {
   );
   ctx.effect(() =>
     ctx.slots.inject(OVERLAY_SLOT, () =>
-      ctx.slots.register({ name: OVERLAY_SLOT, id: ENTRY_ID, order: 45 }, () =>
-        overlayStore.getSnapshot() ? <PreviewDialog onClose={() => overlayStore.set(false)} /> : null,
-      ),
+      // 渲染 PreviewOverlay（组件内部 useSyncExternalStore 订阅开关），不能直接把
+      // `overlayStore.getSnapshot() ? … : null` 写成裸函数——那样 set(true) 不会触发重渲染
+      ctx.slots.register({ name: OVERLAY_SLOT, id: ENTRY_ID, order: 45 }, () => <PreviewOverlay />),
     ),
   );
 }

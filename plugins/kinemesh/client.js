@@ -47326,24 +47326,37 @@ var VIEW_MODES = [
 ];
 /** 点开入口时记下的会话连接（run/分析要绑到它） */
 var connection = null;
-var overlayStore = {
-	listeners: /* @__PURE__ */ new Set(),
-	open: false,
-	subscribe(listener) {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	},
-	getSnapshot() {
-		return this.open;
-	},
-	set(next) {
-		if (this.open === next) return;
-		this.open = next;
-		for (const listener of this.listeners) listener();
-	}
-};
+/**
+* 浮层开关 store（aiworkflow pickerStore 同款闭包写法）。
+* **必须由订阅方用 React.useSyncExternalStore 消费**——注册回调是裸函数、内部无 hook 时，
+* set() 通知不到任何组件，点击按钮会「没有任何反应」（0.5.2 修复的真实缺陷）。
+* 用闭包变量而非 this：方法可直接作为 subscribe/getSnapshot 传给 useSyncExternalStore。
+*/
+function createOverlayStore() {
+	let open = false;
+	const listeners = /* @__PURE__ */ new Set();
+	return {
+		subscribe(listener) {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+		getSnapshot() {
+			return open;
+		},
+		set(next) {
+			if (open === next) return;
+			open = next;
+			for (const listener of listeners) listener();
+		}
+	};
+}
+var overlayStore = createOverlayStore();
+/** 浮层主体：订阅 store 的可见性（裸函数注册不重渲染，必须在此订阅） */
+function PreviewOverlay() {
+	return react.useSyncExternalStore(overlayStore.subscribe, overlayStore.getSnapshot) ? /* @__PURE__ */ react.createElement(PreviewDialog, { onClose: () => overlayStore.set(false) }) : null;
+}
 var LOCALE_NS = "kinemesh-preview";
 var ZH_TEXTS = {
 	"tab.preview": "模型预览",
@@ -48115,10 +48128,11 @@ function apply(ctx) {
 		name: OVERLAY_SLOT,
 		id: ENTRY_ID,
 		order: 45
-	}, () => overlayStore.getSnapshot() ? /* @__PURE__ */ react.createElement(PreviewDialog, { onClose: () => overlayStore.set(false) }) : null)));
+	}, () => /* @__PURE__ */ react.createElement(PreviewOverlay, null))));
 }
 //#endregion
 exports.apply = apply;
+exports.createOverlayStore = createOverlayStore;
 exports.energyPoints = energyPoints;
 exports.formatDigestHeadline = formatDigestHeadline;
 exports.frameToPercent = frameToPercent;

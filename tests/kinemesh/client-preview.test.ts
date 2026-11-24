@@ -2,6 +2,7 @@
 // 帧号百分比、digest 摘要文案。交互与渲染在 client.tsx，不走 jsdom（与 handoff 同一套策略）。
 import { describe, expect, it } from 'vitest';
 import {
+  createOverlayStore,
   energyPoints,
   formatDigestHeadline,
   frameToPercent,
@@ -10,6 +11,45 @@ import {
   segmentColor,
   shouldShowPreviewTab,
 } from '../../plugins/kinemesh/src/client.js';
+
+describe('浮层开关 store（0.5.2 回归：点击「动析」无反应 = 无订阅方）', () => {
+  it('set 通知已订阅的监听器；getSnapshot 反映当前值', () => {
+    const store = createOverlayStore();
+    const calls: boolean[] = [];
+    const off = store.subscribe(() => calls.push(store.getSnapshot()));
+    expect(store.getSnapshot()).toBe(false);
+    store.set(true);
+    expect(store.getSnapshot()).toBe(true);
+    expect(calls).toEqual([true]);
+    store.set(false);
+    expect(calls).toEqual([true, false]);
+    off();
+  });
+
+  it('同值 set 不重复通知（幂等）；退订后不再通知', () => {
+    const store = createOverlayStore();
+    let count = 0;
+    const off = store.subscribe(() => (count += 1));
+    store.set(false); // 初值即 false：不通知
+    expect(count).toBe(0);
+    store.set(true);
+    store.set(true); // 同值：不重复
+    expect(count).toBe(1);
+    off();
+    store.set(false);
+    expect(count).toBe(1);
+  });
+
+  it('方法可脱离 this 直接传递（useSyncExternalStore 的用法）', () => {
+    const store = createOverlayStore();
+    const { subscribe, getSnapshot } = store;
+    const seen: boolean[] = [];
+    const off = subscribe(() => seen.push(getSnapshot()));
+    store.set(true);
+    expect(seen).toEqual([true]);
+    off();
+  });
+});
 
 describe('页签可见性（§6.9 M6e：未用插件的会话无页签）', () => {
   it('没拿到会话 id 时不出现页签', () => {
