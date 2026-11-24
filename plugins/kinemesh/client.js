@@ -40418,7 +40418,7 @@ function mountViewer(container, options = {}) {
 				if (wireframeFlag.wireframe !== void 0) wireframeFlag.wireframe = mode === "wireframe";
 			}
 		});
-		grid.visible = mode === "default" || mode === "solid";
+		grid.visible = true;
 	}
 	const handle = {
 		loadScene(target) {

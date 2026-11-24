@@ -597,7 +597,9 @@ kinemesh_analyze(path, {
     卸载模型时必须显式摘除 + 释放（`core/viewer/skeleton-helpers.ts`，纯对象操作 + 单测）。
     漏摘会让 `skeleton` / `bones-overlay` 模式「换一个 FBX 后残留旧骨架」——真实资产实测：
     换模型后画面多出 4740 个像素的旧骨架线段，修好后与「全新载入」对照图逐像素一致（diff = 0）。
-  - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）；
+  - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）。**所有渲染模式都显示**
+    （0.6.10：`default / solid / wireframe / skeleton / bones-overlay` 一视同仁——线框与骨架
+    模式下同样需要地面/轴向参照；地面不参与包围盒，显示与否不影响机位适配）；
   - **辅助对象过滤**：Unity/Max 导出的 FBX 常带 Dummy、locator、IK 目标、线框 gizmo、相机/灯光辅助物，
     常规 3D 工具默认不显示；载入时按「对象类型（Line/Points/Sprite/Camera/Light）+ 命名（dummy|helper|
     locator|marker|gizmo|collider|probe|reference|placeholder）」隐藏，**骨骼与网格永不触碰**

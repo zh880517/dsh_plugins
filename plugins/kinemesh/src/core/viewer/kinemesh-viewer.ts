@@ -259,7 +259,9 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         }
       }
     });
-    grid.visible = mode === 'default' || mode === 'solid';
+    // 地面网格在每个渲染模式都显示（0.6.10）：线框/骨架/骨骼叠加模式下同样需要地面与轴向参照。
+    // 注意 grid 不参与模型包围盒计算（见 loadScene 的 Box3 只算 model），所以显示它不会影响机位适配。
+    grid.visible = true;
   }
 
   const handle: ViewerHandle = {
@@ -594,7 +596,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     // 世界尺寸 = 像素基准 × worldPerPx（画布按 2× 超采样画，尺寸按 1× 换算）
     const worldHeight = worldPerPx * (canvas.height / 2);
     sprite.scale.set(worldHeight * (canvas.width / canvas.height), worldHeight, 1);
-    // 标注层永远可读：压过骨骼线与网格（skeleton 模式下本来也无遮挡）
+    // 标注层永远可读：压过骨骼线与地面网格（depthTest:false，任何模式下都不被遮挡）
     sprite.renderOrder = 999;
     return sprite;
   }

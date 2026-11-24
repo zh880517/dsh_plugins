@@ -182,8 +182,8 @@ describe.skipIf(!chromiumReady)('B.4 骨骼名标注截图', () => {
       expect(bytes.length).toBeGreaterThan(200); // 不是空图
       expect(pngSize(bytes)).toEqual({ width: 320, height: 240 });
     }
-    // skeleton 模式下网格/网格地面都隐藏，画面主体就是标签精灵：
-    // 两批标签集不同 → 像素必须不同（标签没画上则两张都是空底、字节相同，测试即失败）
+    // skeleton 模式下网格隐藏（0.6.10 起地面网格仍显示），画面主体是骨骼线 + 标签精灵：
+    // 两批标签集不同 → 像素必须不同（标签没画上则两张都是同样的底图，测试即失败）
     expect(readFileSync(first.images[0]).equals(readFileSync(second.images[0]))).toBe(false);
   }, 120_000);
 
