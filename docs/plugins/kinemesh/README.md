@@ -93,16 +93,23 @@ git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/kinemesh
 
 ## 安装（第三方 Agent 工具：Skill / CLI / MCP）
 
-**给 AI Agent 一条链接就能自己装**——把这条发给对方 Agent 并说「按这个装 kinemesh 技能」：
+**把插件目录链接发给对方的 AI 就能装**——GitHub 会渲染该目录的 README，里面的「安装 A」段就是
+可执行步骤：
+
+```
+https://github.com/zh880517/dsh_plugins/tree/main/plugins/kinemesh
+```
+
+同一内容的独立说明书（更完整：自检清单 / 常见问题 / 链接安装 / 升级卸载）：
 
 ```
 https://github.com/zh880517/dsh_plugins/blob/main/docs/plugins/kinemesh/install-skill.md
 ```
 
-完整说明（Claude Code / Codex 全局技能目录、raw 下载命令、自检清单、升级卸载、常见问题）见
-**[install-skill.md](./install-skill.md)**。要点：装 3 个文件到 `~/.claude/skills/kinemesh`
-或 `~/.codex/skills/kinemesh`，`node cli/kinemesh.cjs --version` 校验，重启客户端生效；
-`info/analyze/skeleton` 零依赖，`render` 需目标工程装 playwright。
+要点：装 3 个文件到 `~/.claude/skills/kinemesh` 或 `~/.codex/skills/kinemesh`（`SKILL.md` /
+`agents/openai.yaml` / `cli/kinemesh.cjs`）→ `node cli/kinemesh.cjs --version` 校验 → 重启客户端；
+`info/analyze/skeleton` 零依赖，`render` 需目标工程装 playwright。详见
+**[install-skill.md](./install-skill.md)**。
 
 ## 边界
 

@@ -5,13 +5,23 @@
 
 ## 可以直接发给 AI Agent 的链接
 
+**最省事（推荐）**：发插件目录链接，GitHub 会把该目录的 README 渲染在页面上，README 的
+「安装 A / 第三方 Agent」段就是可执行步骤：
+
+```
+https://github.com/zh880517/dsh_plugins/tree/main/plugins/kinemesh
+```
+
+本文件（更完整：自检清单、链接安装、升级卸载、常见问题）：
+
 ```
 https://github.com/zh880517/dsh_plugins/blob/main/docs/plugins/kinemesh/install-skill.md
 ```
 
-机器可读原文（部分 Agent 抓不了 HTML 页面时用这个）：
+机器可读原文（部分 Agent 抓不了 HTML 页面时用这两个）：
 
 ```
+https://raw.githubusercontent.com/zh880517/dsh_plugins/main/plugins/kinemesh/README.md
 https://raw.githubusercontent.com/zh880517/dsh_plugins/main/docs/plugins/kinemesh/install-skill.md
 ```
 
