@@ -1,6 +1,6 @@
 {
   "name": "@kinemesh/dsh-plugin",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "private": true,
   "type": "module",
   "description": "面向游戏 3D 模型/动画资源的 AI 预览与分析（动析）：kinemesh_info 提取动画/骨骼/网格信息，kinemesh_render 按视角渲染截图，kinemesh_analyze 动作分析（分段/循环/强度），kinemesh_skeleton 骨架识别与映射",

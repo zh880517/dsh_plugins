@@ -34795,7 +34795,7 @@ async function runSkeleton(data, fileName, params, context = {}) {
 //#region
 /** CLI 版本：`--version` 输出（第三方 Agent 用来确认手上是哪一版） */
 function cliVersion() {
-	return "0.10.2";
+	return "0.10.3";
 }
 var USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 

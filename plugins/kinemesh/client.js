@@ -48816,6 +48816,12 @@ function basenameOf(filePath) {
 	const parts = filePath.split(/[\\/]/);
 	return parts[parts.length - 1] ?? filePath;
 }
+/** 独立预览页自动配对用：读 host 模型字节（不记会话表） */
+async function fetchModelBytesAt(targetPath) {
+	const response = await fetch(resolveEndpoint(`kinemesh/model?path=${encodeURIComponent(targetPath)}`), { cache: "no-store" });
+	if (!response.ok) throw new Error(`HTTP ${response.status}`);
+	return response.arrayBuffer();
+}
 /**
 * 0.10.0：绑定状态 chip 文案（纯函数，测试直测）。
 * 空串 = 没有绑定；有绑定报告时附带「动画命中 mesh 骨骼数/骨架骨骼数」。
@@ -49605,13 +49611,27 @@ function PreviewPane(props) {
 		}
 		return response.arrayBuffer();
 	};
-	/** host 侧候选网格文件（命名/目录启发式，不解析内容） */
+	/**
+	* host 侧候选网格文件：内容扫描（host 新版才有 /kinemesh/companions 路由）。
+	* hostOld = 路由不存在（DSH Host 还是旧版，需重启才会加载新路由）。
+	*/
 	const discoverCompanionCandidates = async (targetPath) => {
 		try {
-			const body = await (await fetch(resolveEndpoint(`kinemesh/companions?path=${encodeURIComponent(targetPath)}`), { cache: "no-store" })).json().catch(() => null);
-			return body?.ok === true && Array.isArray(body.candidates) ? body.candidates : [];
+			const response = await fetch(resolveEndpoint(`kinemesh/companions?path=${encodeURIComponent(targetPath)}`), { cache: "no-store" });
+			if (response.status === 404 || response.status === 405) return {
+				candidates: [],
+				hostOld: true
+			};
+			const body = await response.json().catch(() => null);
+			return {
+				candidates: body?.ok === true && Array.isArray(body.candidates) ? body.candidates : [],
+				hostOld: false
+			};
 		} catch {
-			return [];
+			return {
+				candidates: [],
+				hostOld: false
+			};
 		}
 	};
 	/**
@@ -49643,8 +49663,8 @@ function PreviewPane(props) {
 			primaryHasMesh,
 			warnings: []
 		};
-		const candidates = await discoverCompanionCandidates(target);
-		for (const candidate of candidates.slice(0, 3)) try {
+		const discovered = await discoverCompanionCandidates(target);
+		for (const candidate of discovered.candidates.slice(0, 3)) try {
 			const companionScene = await loadSceneFromData(await fetchModelBytes(candidate.path, false), candidate.path);
 			if (!sceneFacts(companionScene).hasMesh) continue;
 			const bound = bindScenes(primaryScene, companionScene, candidate.path, target);
@@ -49660,13 +49680,31 @@ function PreviewPane(props) {
 		} catch {
 			continue;
 		}
+		const openedMeshes = openedAssetList().filter((asset) => asset.hasMesh && asset.path.toLowerCase() !== target.toLowerCase());
+		for (const asset of openedMeshes.slice(0, 3)) try {
+			const companionScene = await loadSceneFromData(await fetchModelBytes(asset.path, false), asset.path);
+			if (!sceneFacts(companionScene).hasMesh) continue;
+			const bound = bindScenes(primaryScene, companionScene, asset.path, target);
+			if (bound.report === null || !bound.report.ok) continue;
+			return {
+				scene: bound.scene,
+				binding: bound,
+				meshPath: asset.path,
+				animationPath: bound.plan.animation === "primary" ? target : asset.path,
+				primaryHasMesh,
+				warnings: [`该文件没有网格（动画-only）：已与本次进程里打开过的网格「${asset.name}」自动配对并绑定（骨骼命中 ${bound.report.matchedBones}/${bound.report.meshBones}）；可在「mesh 文件」框里换文件。`, ...bound.warnings]
+			};
+		} catch {
+			continue;
+		}
+		const hostHint = discovered.hostOld ? "当前 DSH Host 还是旧版（未加载 /kinemesh/companions 自动扫描路由）：重启 DSH 后拖入动画文件即可按文件内容自动找附近网格；临时可先把网格文件拖进来一次，再载入动画会自动配对。" : "把网格文件拖进来一次后载入动画会自动配对，或先在「mesh 文件」框里指定。";
 		return {
 			scene: primaryScene,
 			binding: null,
 			meshPath: "",
 			animationPath: primaryScene.animations.length > 0 ? target : "",
 			primaryHasMesh,
-			warnings: ["该文件没有网格（动画-only），没有找到可绑定的同资产网格文件：先按骨架预览；要带网格请在「mesh 文件」框填角色网格路径后再加载。"]
+			warnings: ["该文件没有网格（动画-only），没有找到可绑定的网格文件：先按骨架预览；" + hostHint]
 		};
 	};
 	const load = async (rawTarget, rawMesh) => {
@@ -50176,6 +50214,38 @@ function StandalonePreviewPage() {
 			meshPath: ""
 		});
 		setVersion((value) => value + 1);
+		const meshSidePath = meshSide !== "" ? meshSide : info.pathHasMesh ? info.path : "";
+		if (meshSidePath !== "") associateOrphans(meshSidePath, info);
+	};
+	/**
+	* 0.10.3：网格加载后，把本次进程里仍孤立的动画记录尝试自动配对（骨骼覆盖率 > 0 才挂上）。
+	* 纯内容判定；失败保持原样。这样「先拖动画、后拖网格」也能自动形成层级。
+	*/
+	const associateOrphans = async (meshPath, info) => {
+		const meshKey = meshPath.toLowerCase();
+		const orphans = openedAssetList().filter((asset) => asset.kind === "animation" && asset.meshPath === "" && asset.path.toLowerCase() !== meshKey && asset.path.toLowerCase() !== info.animationPath.toLowerCase());
+		if (orphans.length === 0) return;
+		try {
+			const meshScene = await loadSceneFromData(await fetchModelBytesAt(meshPath), meshPath);
+			if (!sceneFacts(meshScene).hasMesh) return;
+			let changed = false;
+			for (const orphan of orphans.slice(0, 3)) try {
+				const animScene = await loadSceneFromData(await fetchModelBytesAt(orphan.path), orphan.path);
+				const bound = bindScenes(animScene, meshScene, meshPath, orphan.path);
+				if (bound.report === null || !bound.report.ok) continue;
+				recordOpenedAsset({
+					path: orphan.path,
+					hasMesh: false,
+					animated: true,
+					clips: animScene.animations.map((clip, index) => clip.name || `clip_${index}`),
+					meshPath
+				});
+				changed = true;
+			} catch {
+				continue;
+			}
+			if (changed) setVersion((value) => value + 1);
+		} catch {}
 	};
 	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalone" }, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-standalonehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, translate("standalone.title")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("standalone.subtitle"))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalonebody" }, /* @__PURE__ */ react.createElement("aside", { className: "kinemesh-side kinemesh-openedside" }, /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sidehead" }, translate("opened.title")), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sideitems" }, nodes.length === 0 ? /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sideempty" }, translate("opened.empty")) : nodes.map((node) => {
 		const childCount = node.children.length;

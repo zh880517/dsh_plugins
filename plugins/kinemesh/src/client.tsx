@@ -238,6 +238,15 @@ export function basenameOf(filePath: string): string {
   return parts[parts.length - 1] ?? filePath;
 }
 
+/** 独立预览页自动配对用：读 host 模型字节（不记会话表） */
+async function fetchModelBytesAt(targetPath: string): Promise<ArrayBuffer> {
+  const response = await fetch(resolveEndpoint(`kinemesh/model?path=${encodeURIComponent(targetPath)}`), {
+    cache: 'no-store',
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.arrayBuffer();
+}
+
 /**
  * 0.10.0：绑定状态 chip 文案（纯函数，测试直测）。
  * 空串 = 没有绑定；有绑定报告时附带「动画命中 mesh 骨骼数/骨架骨骼数」。
@@ -1173,16 +1182,22 @@ function PreviewPane(props: {
     return response.arrayBuffer();
   };
 
-  /** host 侧候选网格文件（命名/目录启发式，不解析内容） */
-  const discoverCompanionCandidates = async (targetPath: string): Promise<CompanionCandidateInfo[]> => {
+  /**
+   * host 侧候选网格文件：内容扫描（host 新版才有 /kinemesh/companions 路由）。
+   * hostOld = 路由不存在（DSH Host 还是旧版，需重启才会加载新路由）。
+   */
+  const discoverCompanionCandidates = async (
+    targetPath: string,
+  ): Promise<{ candidates: CompanionCandidateInfo[]; hostOld: boolean }> => {
     try {
       const response = await fetch(resolveEndpoint(`kinemesh/companions?path=${encodeURIComponent(targetPath)}`), {
         cache: 'no-store',
       });
+      if (response.status === 404 || response.status === 405) return { candidates: [], hostOld: true };
       const body = (await response.json().catch(() => null)) as { ok?: boolean; candidates?: CompanionCandidateInfo[] } | null;
-      return body?.ok === true && Array.isArray(body.candidates) ? body.candidates : [];
+      return { candidates: body?.ok === true && Array.isArray(body.candidates) ? body.candidates : [], hostOld: false };
     } catch {
-      return [];
+      return { candidates: [], hostOld: false };
     }
   };
 
@@ -1223,8 +1238,8 @@ function PreviewPane(props: {
         warnings: [],
       };
     }
-    const candidates = await discoverCompanionCandidates(target);
-    for (const candidate of candidates.slice(0, 3)) {
+    const discovered = await discoverCompanionCandidates(target);
+    for (const candidate of discovered.candidates.slice(0, 3)) {
       try {
         const bytes = await fetchModelBytes(candidate.path, false);
         const companionScene = await loadSceneFromData(bytes, candidate.path);
@@ -1247,6 +1262,37 @@ function PreviewPane(props: {
         continue;
       }
     }
+    // 兜底 1：用「本次进程里打开过的网格」自动配对（Host 旧版没有 companions 路由时也能用；拖入过 mesh 即可）
+    const openedMeshes = openedAssetList().filter(
+      (asset) => asset.hasMesh && asset.path.toLowerCase() !== target.toLowerCase(),
+    );
+    for (const asset of openedMeshes.slice(0, 3)) {
+      try {
+        const bytes = await fetchModelBytes(asset.path, false);
+        const companionScene = await loadSceneFromData(bytes, asset.path);
+        if (!sceneFacts(companionScene).hasMesh) continue;
+        const bound = bindScenes(primaryScene, companionScene, asset.path, target);
+        if (bound.report === null || !bound.report.ok) continue;
+        return {
+          scene: bound.scene,
+          binding: bound,
+          meshPath: asset.path,
+          animationPath: bound.plan.animation === 'primary' ? target : asset.path,
+          primaryHasMesh,
+          warnings: [
+            `该文件没有网格（动画-only）：已与本次进程里打开过的网格「${asset.name}」自动配对并绑定` +
+              `（骨骼命中 ${bound.report.matchedBones}/${bound.report.meshBones}）；可在「mesh 文件」框里换文件。`,
+            ...bound.warnings,
+          ],
+        };
+      } catch {
+        continue;
+      }
+    }
+    // 兜底 2：都没有 → 骨架预览 + 说明（Host 旧版时提示重启）
+    const hostHint = discovered.hostOld
+      ? '当前 DSH Host 还是旧版（未加载 /kinemesh/companions 自动扫描路由）：重启 DSH 后拖入动画文件即可按文件内容自动找附近网格；临时可先把网格文件拖进来一次，再载入动画会自动配对。'
+      : '把网格文件拖进来一次后载入动画会自动配对，或先在「mesh 文件」框里指定。';
     return {
       scene: primaryScene,
       binding: null,
@@ -1254,7 +1300,7 @@ function PreviewPane(props: {
       animationPath: primaryScene.animations.length > 0 ? target : '',
       primaryHasMesh,
       warnings: [
-        '该文件没有网格（动画-only），没有找到可绑定的同资产网格文件：先按骨架预览；要带网格请在「mesh 文件」框填角色网格路径后再加载。',
+        '该文件没有网格（动画-only），没有找到可绑定的网格文件：先按骨架预览；' + hostHint,
       ],
     };
   };
@@ -1828,6 +1874,52 @@ export function StandalonePreviewPage(): React.ReactElement {
       });
     }
     setVersion((value) => value + 1);
+    // 拖入顺序可能是「先动画后网格」：拿到网格后，把列表里还没配对的动画补配一次（都走拖拽，不用填路径）
+    const meshSidePath = meshSide !== '' ? meshSide : info.pathHasMesh ? info.path : '';
+    if (meshSidePath !== '') void associateOrphans(meshSidePath, info);
+  };
+
+  /**
+   * 0.10.3：网格加载后，把本次进程里仍孤立的动画记录尝试自动配对（骨骼覆盖率 > 0 才挂上）。
+   * 纯内容判定；失败保持原样。这样「先拖动画、后拖网格」也能自动形成层级。
+   */
+  const associateOrphans = async (meshPath: string, info: LoadedAssetInfo): Promise<void> => {
+    const meshKey = meshPath.toLowerCase();
+    const orphans = openedAssetList().filter(
+      (asset) =>
+        asset.kind === 'animation' &&
+        asset.meshPath === '' &&
+        asset.path.toLowerCase() !== meshKey &&
+        asset.path.toLowerCase() !== info.animationPath.toLowerCase(),
+    );
+    if (orphans.length === 0) return;
+    try {
+      const meshBytes = await fetchModelBytesAt(meshPath);
+      const meshScene = await loadSceneFromData(meshBytes, meshPath);
+      if (!sceneFacts(meshScene).hasMesh) return;
+      let changed = false;
+      for (const orphan of orphans.slice(0, 3)) {
+        try {
+          const animBytes = await fetchModelBytesAt(orphan.path);
+          const animScene = await loadSceneFromData(animBytes, orphan.path);
+          const bound = bindScenes(animScene, meshScene, meshPath, orphan.path);
+          if (bound.report === null || !bound.report.ok) continue;
+          recordOpenedAsset({
+            path: orphan.path,
+            hasMesh: false,
+            animated: true,
+            clips: animScene.animations.map((clip, index) => clip.name || `clip_${index}`),
+            meshPath,
+          });
+          changed = true;
+        } catch {
+          continue;
+        }
+      }
+      if (changed) setVersion((value) => value + 1);
+    } catch {
+      // 网格读不出（旧 Host 不支持或其他原因）：不打扰用户
+    }
   };
 
   return (
