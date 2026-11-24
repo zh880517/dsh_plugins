@@ -20,6 +20,34 @@ const ENTRY_ID = 'kinemesh-launcher';
 const PREVIEW_TAB_ID = 'kinemesh-preview';
 const VIEW_MODES: ViewMode[] = ['default', 'wireframe', 'skeleton', 'bones-overlay'];
 
+/** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
+export const MODEL_FILE_EXTENSIONS = ['.fbx', '.glb', '.gltf', '.obj'] as const;
+
+/** 拖入文件是否为可预览的模型（纯函数，测试直测）：只看扩展名，实际格式由主进程嗅探 */
+export function isModelFileName(fileName: string): boolean {
+  const lowered = fileName.toLowerCase();
+  return MODEL_FILE_EXTENSIONS.some((ext) => lowered.endsWith(ext));
+}
+
+/**
+ * 取拖入文件的真实绝对路径。
+ * 桌面版由 preload 暴露 `window.__DSH_HOST_PATHS__.pathFor(file)`（Electron webUtils.getPathForFile）；
+ * 纯浏览器环境拿不到路径（安全限制）→ 返回 null，调用方提示改用粘贴路径。
+ */
+export function hostPathOfFile(file: File): string | null {
+  const scope = globalThis as {
+    __DSH_HOST_PATHS__?: { pathFor?: (file: File) => unknown };
+  };
+  const pathFor = scope.__DSH_HOST_PATHS__?.pathFor;
+  if (typeof pathFor !== 'function') return null;
+  try {
+    const resolved = pathFor(file);
+    return typeof resolved === 'string' && resolved.trim() !== '' ? resolved.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 点开入口时记下的会话连接（run/分析要绑到它） */
 let connection: { sessionId: string; draft: string; actions: { setDraft?: (draft: string) => void } | null } | null = null;
 
@@ -85,6 +113,8 @@ const ZH_TEXTS: Record<string, string> = {
   'pane.digestChipTitle': '发送时将附带该动作分析 digest（分段 / loopCheck / 关键帧配方）',
   'pane.sentWithDigest': '已发给 AI：消息已附动作分析 digest（分段/loopCheck/关键帧配方）。',
   'pane.sentNoDigest': '已发给 AI：它会用 kinemesh_render 截这个视角并读图分析。',
+  'pane.dropHint': '也可以把 .fbx / .glb / .gltf / .obj 直接拖到这里',
+  'pane.dropActive': '松开即加载',
   'pane.footHint': '「发送」会把当前路径、片段、帧号、视角与动作分析 digest（如有）一起交给当前会话的 AI。',
   'pane.send': '发送给 AI 分析',
   'pane.sending': '发送中…',
@@ -112,6 +142,8 @@ const EN_TEXTS: Record<string, string> = {
   'pane.digestChipTitle': 'The motion-analysis digest (segments / loopCheck / keyframe recipe) will be attached when sending',
   'pane.sentWithDigest': 'Sent to AI: message includes the motion-analysis digest (segments/loopCheck/keyframe recipe).',
   'pane.sentNoDigest': 'Sent to AI: it will call kinemesh_render to capture this viewpoint and analyze the image.',
+  'pane.dropHint': 'or drag a .fbx / .glb / .gltf / .obj file here',
+  'pane.dropActive': 'Release to load',
   'pane.footHint': 'Send hands the current path, clip, frame, viewpoint and motion digest (if any) to this session\u2019s AI.',
   'pane.send': 'Send to AI',
   'pane.sending': 'Sending…',
@@ -473,6 +505,8 @@ function PreviewPane(props: {
   });
   const [sending, setSending] = React.useState(false);
   const [sent, setSent] = React.useState<string | null>(null);
+  /** 拖入文件高亮（dragenter/dragleave 计数，避免子元素抖动） */
+  const [dragOver, setDragOver] = React.useState(false);
 
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const viewerRef = React.useRef<ViewerHandle | null>(null);
@@ -576,6 +610,52 @@ function PreviewPane(props: {
     setPathInput(request.path);
     void load(request.path);
   }, [props.loadRequest]);
+
+  // ———————— 拖入文件（桌面版经 __DSH_HOST_PATHS__.pathFor 取真实路径） ————————
+  const dragDepth = React.useRef(0);
+  const onDragEnter = (event: React.DragEvent): void => {
+    if (!Array.from(event.dataTransfer?.types ?? []).includes('Files')) return;
+    event.preventDefault();
+    dragDepth.current += 1;
+    setDragOver(true);
+  };
+  const onDragOver = (event: React.DragEvent): void => {
+    if (!Array.from(event.dataTransfer?.types ?? []).includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  };
+  const onDragLeave = (): void => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragOver(false);
+  };
+  const onDrop = (event: React.DragEvent): void => {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragOver(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (file === undefined) return;
+    if (!isModelFileName(file.name)) {
+      setState({
+        phase: 'empty',
+        error: `不支持的文件类型：${file.name}（支持 ${MODEL_FILE_EXTENSIONS.join(' / ')}）`,
+        clips: [],
+        maxFrame: 0,
+      });
+      return;
+    }
+    const resolved = hostPathOfFile(file);
+    if (resolved === null) {
+      setState({
+        phase: 'empty',
+        error: '当前环境拿不到拖入文件的真实路径（浏览器安全限制）：请把模型路径粘贴到输入框再点「加载」。',
+        clips: [],
+        maxFrame: 0,
+      });
+      return;
+    }
+    setPathInput(resolved);
+    void load(resolved);
+  };
 
   const applyClip = (nextClip: string): void => {
     setClip(nextClip);
@@ -711,7 +791,15 @@ function PreviewPane(props: {
           {sent}
         </div>
       )}
-      <div className="kinemesh-stage" ref={hostRef}>
+      <div
+        className="kinemesh-stage"
+        ref={hostRef}
+        data-dragover={dragOver ? 'true' : undefined}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         {state.phase !== 'ready' && (
           <div className="kinemesh-placeholder">
             {state.phase === 'loading'
@@ -719,8 +807,10 @@ function PreviewPane(props: {
               : showPathInput
                 ? translate('pane.placeholderPath')
                 : translate('pane.placeholderPage')}
+            {state.phase === 'empty' && <span className="kinemesh-dropzone-hint">{translate('pane.dropHint')}</span>}
           </div>
         )}
+        {dragOver && <div className="kinemesh-dropmask">{translate('pane.dropActive')}</div>}
       </div>
       {state.phase === 'ready' && clip !== '' && analysis.data !== null && (
         <MotionTimeline

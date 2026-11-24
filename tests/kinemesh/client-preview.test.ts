@@ -6,11 +6,53 @@ import {
   energyPoints,
   formatDigestHeadline,
   frameToPercent,
+  hostPathOfFile,
+  isModelFileName,
   normalizeEnergySeries,
   pickSendDigest,
   segmentColor,
   shouldShowPreviewTab,
 } from '../../plugins/kinemesh/src/client.js';
+
+describe('拖入文件（0.5.3）：扩展名判定 + 桌面版真实路径解析', () => {
+  it('isModelFileName：四个支持扩展名大小写不敏感；其他类型拒绝', () => {
+    for (const name of ['a.fbx', 'B.GLB', 'c.gltf', 'd.Obj', 'path/x.fbx']) {
+      expect(isModelFileName(name)).toBe(true);
+    }
+    for (const name of ['a.max', 'b.blend', 'c.png', 'd', 'e.fbx.bak']) {
+      expect(isModelFileName(name)).toBe(false);
+    }
+  });
+
+  it('hostPathOfFile：有 preload 桥时返回真实路径，无桥/抛错时返回 null', () => {
+    const scope = globalThis as { __DSH_HOST_PATHS__?: { pathFor?: (file: File) => unknown } };
+    const saved = scope.__DSH_HOST_PATHS__;
+    const file = { name: 'hero.fbx' } as File;
+    try {
+      scope.__DSH_HOST_PATHS__ = { pathFor: () => 'E:\\assets\\hero.fbx' };
+      expect(hostPathOfFile(file)).toBe('E:\\assets\\hero.fbx');
+
+      scope.__DSH_HOST_PATHS__ = { pathFor: () => '   ' };
+      expect(hostPathOfFile(file)).toBeNull();
+
+      scope.__DSH_HOST_PATHS__ = { pathFor: () => 42 };
+      expect(hostPathOfFile(file)).toBeNull();
+
+      scope.__DSH_HOST_PATHS__ = {
+        pathFor: () => {
+          throw new Error('boom');
+        },
+      };
+      expect(hostPathOfFile(file)).toBeNull();
+
+      delete scope.__DSH_HOST_PATHS__;
+      expect(hostPathOfFile(file)).toBeNull();
+    } finally {
+      if (saved === undefined) delete scope.__DSH_HOST_PATHS__;
+      else scope.__DSH_HOST_PATHS__ = saved;
+    }
+  });
+});
 
 describe('浮层开关 store（0.5.2 回归：点击「动析」无反应 = 无订阅方）', () => {
   it('set 通知已订阅的监听器；getSnapshot 反映当前值', () => {

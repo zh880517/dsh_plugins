@@ -542,9 +542,17 @@ kinemesh_analyze(path, {
 - **右侧预览工具**：M3 浮层预览的内容重构为共用组件 `PreviewPane`（浮层与页面共用，不新增
   第二套渲染路径）：
   - OrbitControls 全套：按住拖转视角、滚轮缩放、平移（viewer 模块已有）；
+  - **拖入文件（0.5.3）**：把 `.fbx/.glb/.gltf/.obj` 拖到预览区即加载——桌面版经 preload 暴露的
+    `window.__DSH_HOST_PATHS__.pathFor(file)`（Electron `webUtils.getPathForFile`）取真实绝对路径，
+    走同一 `/kinemesh/model` 加载链路；纯浏览器环境拿不到路径（安全限制）→ 三段式提示改用粘贴路径。
+    扩展名不符/多文件只取第一个，均给出中文提示；
   - 渲染模式（default/wireframe/skeleton/bones-overlay）、clip 选择、播放/暂停；
   - 视角实时回读球坐标 ViewState（与 AI 截图同口径）；
   - 「发送给 AI 分析」（原浮层能力迁入页面，浮层保留入口）。
+- **主题适配（0.5.3 修正）**：颜色**只用宿主真实存在的 `--dsw-alias-*` token**（`--dsw-alias-bg-overlay` /
+  `-bg-layer-1..3` / `-label-primary|secondary|tertiary` / `-label-on-color` / `-border-l1` /
+  `-brand-primary` / `-bg-mask-*`）；不使用不存在的 token 名（旧代码 `label-on-brand` 不存在，
+  深色主题下主按钮回退白字叠亮底 → 视觉空白）。3D 舞台背景不再硬编码 `#23262b`。
 
 #### 6.10.3 动画时间轴 + 强度曲线（M6e 核心）
 

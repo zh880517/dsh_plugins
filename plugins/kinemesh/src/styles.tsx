@@ -32,14 +32,20 @@ export const css = `
 .kinemesh-btn:hover{background:var(--dsw-alias-bg-layer-2)}
 .kinemesh-btn[disabled]{opacity:.55;cursor:default}
 .kinemesh-btn[data-primary="true"]{background:var(--dsw-alias-brand-primary);border-color:transparent;
-  color:var(--dsw-alias-label-on-brand,#fff)}
+  color:var(--dsw-alias-label-on-color,#111)}
 .kinemesh-btn[data-primary="true"]:hover{filter:brightness(1.06)}
 
 .kinemesh-stage{position:relative;margin:0 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;
-  overflow:hidden;background:#23262b}
+  overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
 .kinemesh-stage canvas{display:block;width:100%;height:auto}
-.kinemesh-placeholder{height:420px;display:grid;place-items:center;color:var(--dsw-alias-label-secondary);
+.kinemesh-stage[data-dragover="true"]{border-color:var(--dsw-alias-brand-primary);border-style:dashed}
+.kinemesh-placeholder{position:relative;height:420px;display:flex;flex-direction:column;gap:8px;
+  align-items:center;justify-content:center;color:var(--dsw-alias-label-secondary);
   font-size:12.5px;text-align:center;padding:0 24px}
+.kinemesh-dropzone-hint{font-size:11.5px;color:var(--dsw-alias-label-tertiary)}
+.kinemesh-dropmask{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;
+  background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);
+  color:var(--dsw-alias-brand-primary);font-size:13px;font-weight:600}
 
 .kinemesh-controls{display:flex;align-items:center;gap:10px;padding:10px 14px 4px}
 .kinemesh-slider{flex:1;accent-color:var(--dsw-alias-brand-primary)}
