@@ -40382,6 +40382,8 @@ function mountViewer(container, options = {}) {
 			return shown;
 		},
 		resize(nextWidth, nextHeight) {
+			observedWidth = nextWidth;
+			observedHeight = nextHeight;
 			renderer.setSize(nextWidth, nextHeight);
 			camera.aspect = nextWidth / nextHeight;
 			camera.updateProjectionMatrix();
@@ -40390,6 +40392,10 @@ function mountViewer(container, options = {}) {
 			return firstFrame;
 		},
 		dispose() {
+			if (resizeObserver !== null) {
+				resizeObserver.disconnect();
+				resizeObserver = null;
+			}
 			renderer.setAnimationLoop(null);
 			clearModel();
 			controls.dispose();
@@ -40399,6 +40405,21 @@ function mountViewer(container, options = {}) {
 			renderer.domElement.remove();
 		}
 	};
+	let observedWidth = width;
+	let observedHeight = height;
+	let resizeObserver = options.width !== void 0 || options.height !== void 0 || typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+		const nextWidth = container.clientWidth;
+		const nextHeight = container.clientHeight;
+		if (nextWidth <= 0 || nextHeight <= 0) return;
+		if (nextWidth === observedWidth && nextHeight === observedHeight) return;
+		observedWidth = nextWidth;
+		observedHeight = nextHeight;
+		renderer.setSize(nextWidth, nextHeight);
+		camera.aspect = nextWidth / nextHeight;
+		camera.updateProjectionMatrix();
+		renderer.render(scene, camera);
+	});
+	if (resizeObserver !== null) resizeObserver.observe(container);
 	function setModeInternal(next) {
 		mode = next;
 		applyMode();
@@ -47258,12 +47279,12 @@ var css = `
 .kinemesh-btn[data-primary="true"]:hover{filter:brightness(1.06)}
 
 .kinemesh-stage{position:relative;margin:0 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;
-  overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
-.kinemesh-stage canvas{display:block;width:100%;height:auto}
+  overflow:hidden;background:var(--dsw-alias-bg-layer-1);height:min(58vh,540px);min-height:300px}
+.kinemesh-stage canvas{display:block;width:100%;height:100%}
 .kinemesh-stage[data-dragover="true"]{border-color:var(--dsw-alias-brand-primary);border-style:dashed}
-.kinemesh-placeholder{position:relative;height:420px;display:flex;flex-direction:column;gap:8px;
+.kinemesh-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;
   align-items:center;justify-content:center;color:var(--dsw-alias-label-secondary);
-  font-size:12.5px;text-align:center;padding:0 24px}
+  font-size:12.5px;text-align:center;padding:0 24px;pointer-events:none}
 .kinemesh-dropzone-hint{font-size:11.5px;color:var(--dsw-alias-label-tertiary)}
 .kinemesh-dropmask{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);
@@ -47340,6 +47361,20 @@ var VIEW_MODES = [
 	"skeleton",
 	"bones-overlay"
 ];
+var paneMemories = /* @__PURE__ */ new Map();
+/** 读某块预览区的上次状态（无则 null） */
+function readPaneMemory(key) {
+	return paneMemories.get(key) ?? null;
+}
+/** 写某块预览区的状态（只存有模型路径的；无路径不覆盖已有记忆） */
+function writePaneMemory(key, value) {
+	if (value.path.trim() === "") return;
+	paneMemories.set(key, { ...value });
+}
+/** 清空全部记忆（测试用） */
+function clearPaneMemories() {
+	paneMemories.clear();
+}
 /** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
 var MODEL_FILE_EXTENSIONS = [
 	".fbx",
@@ -47672,10 +47707,7 @@ function PreviewPane(props) {
 	const lastRequestRef = react.useRef(null);
 	react.useEffect(() => {
 		if (hostRef.current === null) return void 0;
-		const viewer = mountViewer(hostRef.current, {
-			width: 800,
-			height: 460
-		});
+		const viewer = mountViewer(hostRef.current);
 		viewerRef.current = viewer;
 		return () => {
 			viewer.dispose();
@@ -47759,12 +47791,17 @@ function PreviewPane(props) {
 				maxFrame
 			});
 			setLoadedPath(target);
-			setClip("");
-			setFrame(0);
+			const memory = props.persistKey === void 0 ? null : readPaneMemory(props.persistKey);
+			const rememberedClip = memory !== null && memory.path === target && bounds.clips.includes(memory.clip) ? memory.clip : bounds.clips[0] ?? "";
+			const rememberedFrame = memory !== null && memory.path === target ? memory.frame : 0;
+			const startFrame = Math.max(0, Math.min(rememberedFrame, maxFrame));
+			setClip(rememberedClip);
+			setFrame(startFrame);
 			viewer.applyView(defaultView(bounds.center, bounds.radius));
+			if (rememberedClip !== "" && startFrame > 0) viewer.seekFrame(startFrame);
 			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
 			props.onLoaded?.(target);
-			if (bounds.clips.length > 0) fetchAnalysis(target, "");
+			if (bounds.clips.length > 0) fetchAnalysis(target, rememberedClip);
 			else setAnalysis({
 				loading: false,
 				data: null
@@ -47782,6 +47819,31 @@ function PreviewPane(props) {
 			});
 		}
 	};
+	react.useEffect(() => {
+		if (props.persistKey === void 0 || loadedPath === "") return;
+		writePaneMemory(props.persistKey, {
+			path: loadedPath,
+			clip,
+			frame,
+			mode
+		});
+	}, [
+		props.persistKey,
+		loadedPath,
+		clip,
+		frame,
+		mode
+	]);
+	const restoredRef = react.useRef(false);
+	react.useEffect(() => {
+		if (restoredRef.current) return;
+		restoredRef.current = true;
+		if (props.persistKey === void 0) return;
+		const memory = readPaneMemory(props.persistKey);
+		if (memory === null || memory.path === "") return;
+		setPathInput(memory.path);
+		load(memory.path);
+	}, [props.persistKey]);
 	react.useEffect(() => {
 		const request = props.loadRequest ?? null;
 		if (request === null || request.path === "") return;
@@ -48022,7 +48084,8 @@ function StandalonePreviewPage() {
 	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalone" }, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-standalonehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, translate("standalone.title")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("standalone.subtitle"))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalonemain" }, /* @__PURE__ */ react.createElement(PreviewPane, {
 		sessionId: "",
 		showPathInput: true,
-		allowSend: false
+		allowSend: false,
+		persistKey: "standalone"
 	}))));
 }
 function PreviewPage({ sessionId }) {
@@ -48099,7 +48162,8 @@ function PreviewPage({ sessionId }) {
 		sessionId: sid,
 		showPathInput: false,
 		loadRequest,
-		onLoaded: handleLoaded
+		onLoaded: handleLoaded,
+		persistKey: "tab"
 	}))));
 }
 function defaultView(center, radius) {
@@ -48191,6 +48255,7 @@ function apply(ctx) {
 exports.MODEL_FILE_EXTENSIONS = MODEL_FILE_EXTENSIONS;
 exports.StandalonePreviewPage = StandalonePreviewPage;
 exports.apply = apply;
+exports.clearPaneMemories = clearPaneMemories;
 exports.energyPoints = energyPoints;
 exports.formatDigestHeadline = formatDigestHeadline;
 exports.frameToPercent = frameToPercent;
@@ -48199,8 +48264,10 @@ exports.inject = inject;
 exports.isModelFileName = isModelFileName;
 exports.normalizeEnergySeries = normalizeEnergySeries;
 exports.pickSendDigest = pickSendDigest;
+exports.readPaneMemory = readPaneMemory;
 exports.segmentColor = segmentColor;
 exports.shouldShowPreviewTab = shouldShowPreviewTab;
+exports.writePaneMemory = writePaneMemory;
     })(module, module.exports, require);
     return module.exports;
   },

@@ -21,6 +21,35 @@ const PANEL_ID = 'kinemesh';
 const PREVIEW_TAB_ID = 'kinemesh-preview';
 const VIEW_MODES: ViewMode[] = ['default', 'wireframe', 'skeleton', 'bones-overlay'];
 
+// ———————— 预览状态记忆（0.6.0）———————
+// 切换侧边栏面板/会话页签时组件会卸载，React state 随之丢失；把「已打开模型 + clip + 帧 + 模式」
+// 记在模块级内存里（进程内，DSH 重启清空），重挂载时自动恢复——用户要求「未重启进程时保持」。
+
+export interface PaneMemory {
+  path: string;
+  clip: string;
+  frame: number;
+  mode: ViewMode;
+}
+
+const paneMemories = new Map<string, PaneMemory>();
+
+/** 读某块预览区的上次状态（无则 null） */
+export function readPaneMemory(key: string): PaneMemory | null {
+  return paneMemories.get(key) ?? null;
+}
+
+/** 写某块预览区的状态（只存有模型路径的；无路径不覆盖已有记忆） */
+export function writePaneMemory(key: string, value: PaneMemory): void {
+  if (value.path.trim() === '') return;
+  paneMemories.set(key, { ...value });
+}
+
+/** 清空全部记忆（测试用） */
+export function clearPaneMemories(): void {
+  paneMemories.clear();
+}
+
 /** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
 export const MODEL_FILE_EXTENSIONS = ['.fbx', '.glb', '.gltf', '.obj'] as const;
 
@@ -420,6 +449,8 @@ function PreviewPane(props: {
   showPathInput?: boolean;
   /** 是否显示「发送给 AI 分析」（独立预览页 false——纯工具内置功能，不接 AI） */
   allowSend?: boolean;
+  /** 状态记忆键（'standalone' / 'tab'）：切面板/页签回来时恢复已加载模型与进度；缺省不记忆 */
+  persistKey?: string;
   /** 外部请求加载某路径（页面选中/打开模型时） */
   loadRequest?: { path: string; nonce: number } | null;
   /** 加载成功上报（页面刷新会话列表用） */
@@ -453,7 +484,8 @@ function PreviewPane(props: {
 
   React.useEffect(() => {
     if (hostRef.current === null) return undefined;
-    const viewer = mountViewer(hostRef.current, { width: 800, height: 460 });
+    // 0.6.0：不传固定宽高 → viewer 跟随容器尺寸（独立页全宽/页签/浮层自适应，ResizeObserver 生效）
+    const viewer = mountViewer(hostRef.current);
     viewerRef.current = viewer;
     return () => {
       viewer.dispose();
@@ -526,18 +558,43 @@ function PreviewPane(props: {
       const maxFrame = Math.max(0, Math.floor(bounds.durationSeconds * RENDER_FPS));
       setState({ phase: 'ready', error: null, clips: bounds.clips, maxFrame });
       setLoadedPath(target);
-      setClip('');
-      setFrame(0);
+      // 0.6.0 修复：加载动画资产后自动选第一个 clip——旧实现恒置 ''（静态），播放按钮永远 disabled
+      const memory = props.persistKey === undefined ? null : readPaneMemory(props.persistKey);
+      const rememberedClip =
+        memory !== null && memory.path === target && bounds.clips.includes(memory.clip) ? memory.clip : (bounds.clips[0] ?? '');
+      const rememberedFrame = memory !== null && memory.path === target ? memory.frame : 0;
+      const startFrame = Math.max(0, Math.min(rememberedFrame, maxFrame));
+      setClip(rememberedClip);
+      setFrame(startFrame);
       viewer.applyView(defaultView(bounds.center, bounds.radius));
+      if (rememberedClip !== '' && startFrame > 0) viewer.seekFrame(startFrame);
       if (props.sessionId !== '') previewSession.markUsed(props.sessionId);
       props.onLoaded?.(target);
-      if (bounds.clips.length > 0) void fetchAnalysis(target, '');
+      if (bounds.clips.length > 0) void fetchAnalysis(target, rememberedClip);
       else setAnalysis({ loading: false, data: null });
     } catch (cause) {
       setAnalysis({ loading: false, data: null });
       setState({ phase: 'empty', error: cause instanceof Error ? cause.message : String(cause), clips: [], maxFrame: 0 });
     }
   };
+
+  // 状态记忆（0.6.0：切到别的侧边栏面板/页签再回来，已加载模型与进度不丢；进程内内存，重启清空）
+  React.useEffect(() => {
+    if (props.persistKey === undefined || loadedPath === '') return;
+    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, mode });
+  }, [props.persistKey, loadedPath, clip, frame, mode]);
+
+  // 首次挂载恢复上次的模型（必须在 load 定义之后）
+  const restoredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    if (props.persistKey === undefined) return;
+    const memory = readPaneMemory(props.persistKey);
+    if (memory === null || memory.path === '') return;
+    setPathInput(memory.path);
+    void load(memory.path);
+  }, [props.persistKey]);
 
   // 页面选中/打开模型：nonce 变化才重新加载（避免同一路径的无关重渲染触发重载）
   React.useEffect(() => {
@@ -840,7 +897,7 @@ export function StandalonePreviewPage(): React.ReactElement {
           <span className="kinemesh-sub">{translate('standalone.subtitle')}</span>
         </header>
         <div className="kinemesh-standalonemain">
-          <PreviewPane sessionId="" showPathInput allowSend={false} />
+          <PreviewPane sessionId="" showPathInput allowSend={false} persistKey="standalone" />
         </div>
       </div>
     </React.Fragment>
@@ -963,7 +1020,7 @@ function PreviewPage({ sessionId }: { sessionId?: string }): React.ReactElement 
           </div>
         </aside>
         <section className="kinemesh-main">
-          <PreviewPane sessionId={sid} showPathInput={false} loadRequest={loadRequest} onLoaded={handleLoaded} />
+          <PreviewPane sessionId={sid} showPathInput={false} loadRequest={loadRequest} onLoaded={handleLoaded} persistKey="tab" />
         </section>
       </div>
     </React.Fragment>

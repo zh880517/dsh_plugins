@@ -47158,6 +47158,8 @@ void main() {
 				return shown;
 			},
 			resize(nextWidth, nextHeight) {
+				observedWidth = nextWidth;
+				observedHeight = nextHeight;
 				renderer.setSize(nextWidth, nextHeight);
 				camera.aspect = nextWidth / nextHeight;
 				camera.updateProjectionMatrix();
@@ -47166,6 +47168,10 @@ void main() {
 				return firstFrame;
 			},
 			dispose() {
+				if (resizeObserver !== null) {
+					resizeObserver.disconnect();
+					resizeObserver = null;
+				}
 				renderer.setAnimationLoop(null);
 				clearModel();
 				controls.dispose();
@@ -47175,6 +47181,21 @@ void main() {
 				renderer.domElement.remove();
 			}
 		};
+		let observedWidth = width;
+		let observedHeight = height;
+		let resizeObserver = options.width !== void 0 || options.height !== void 0 || typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+			const nextWidth = container.clientWidth;
+			const nextHeight = container.clientHeight;
+			if (nextWidth <= 0 || nextHeight <= 0) return;
+			if (nextWidth === observedWidth && nextHeight === observedHeight) return;
+			observedWidth = nextWidth;
+			observedHeight = nextHeight;
+			renderer.setSize(nextWidth, nextHeight);
+			camera.aspect = nextWidth / nextHeight;
+			camera.updateProjectionMatrix();
+			renderer.render(scene, camera);
+		});
+		if (resizeObserver !== null) resizeObserver.observe(container);
 		function setModeInternal(next) {
 			mode = next;
 			applyMode();

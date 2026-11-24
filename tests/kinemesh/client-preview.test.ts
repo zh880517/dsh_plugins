@@ -2,6 +2,7 @@
 // 帧号百分比、digest 摘要文案。交互与渲染在 client.tsx，不走 jsdom（与 handoff 同一套策略）。
 import { describe, expect, it } from 'vitest';
 import {
+  clearPaneMemories,
   energyPoints,
   formatDigestHeadline,
   frameToPercent,
@@ -9,9 +10,37 @@ import {
   isModelFileName,
   normalizeEnergySeries,
   pickSendDigest,
+  readPaneMemory,
   segmentColor,
   shouldShowPreviewTab,
+  writePaneMemory,
 } from '../../plugins/kinemesh/src/client.js';
+
+describe('预览状态记忆（0.6.0：切面板/页签回来数据不丢）', () => {
+  it('写入后可读回同样内容；不同 persistKey 互不影响', () => {
+    clearPaneMemories();
+    writePaneMemory('standalone', { path: 'E:\\a.fbx', clip: 'Take 001', frame: 42, mode: 'skeleton' });
+    writePaneMemory('tab', { path: 'E:\\b.glb', clip: '', frame: 0, mode: 'default' });
+    expect(readPaneMemory('standalone')).toEqual({ path: 'E:\\a.fbx', clip: 'Take 001', frame: 42, mode: 'skeleton' });
+    expect(readPaneMemory('tab')).toEqual({ path: 'E:\\b.glb', clip: '', frame: 0, mode: 'default' });
+    expect(readPaneMemory('missing')).toBeNull();
+  });
+
+  it('空路径不覆盖已有记忆（避免误清）', () => {
+    clearPaneMemories();
+    writePaneMemory('standalone', { path: 'E:\\a.fbx', clip: 'x', frame: 1, mode: 'default' });
+    writePaneMemory('standalone', { path: '   ', clip: '', frame: 0, mode: 'default' });
+    expect(readPaneMemory('standalone')?.path).toBe('E:\\a.fbx');
+  });
+
+  it('写入是快照拷贝：外部对象后续修改不影响记忆', () => {
+    clearPaneMemories();
+    const memory = { path: 'E:\\a.fbx', clip: 'c', frame: 3, mode: 'default' as const };
+    writePaneMemory('k', memory);
+    memory.frame = 99;
+    expect(readPaneMemory('k')?.frame).toBe(3);
+  });
+});
 
 describe('拖入文件（0.5.3）：扩展名判定 + 桌面版真实路径解析', () => {
   it('isModelFileName：四个支持扩展名大小写不敏感；其他类型拒绝', () => {

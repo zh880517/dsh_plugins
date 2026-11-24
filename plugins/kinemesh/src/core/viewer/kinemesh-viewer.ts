@@ -65,7 +65,6 @@ export interface MountOptions {
 export function mountViewer(container: HTMLElement, options: MountOptions = {}): ViewerHandle {
   const width = options.width ?? (container.clientWidth || 1280);
   const height = options.height ?? (container.clientHeight || 720);
-
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(width, height);
   renderer.setPixelRatio(1);
@@ -337,6 +336,8 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     },
 
     resize(nextWidth, nextHeight) {
+      observedWidth = nextWidth;
+      observedHeight = nextHeight;
       renderer.setSize(nextWidth, nextHeight);
       camera.aspect = nextWidth / nextHeight;
       camera.updateProjectionMatrix();
@@ -347,6 +348,10 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     },
 
     dispose() {
+      if (resizeObserver !== null) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
       renderer.setAnimationLoop(null);
       clearModel();
       controls.dispose();
@@ -356,6 +361,27 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       renderer.domElement.remove();
     },
   };
+
+  // ———————— 容器自适应（0.6.0：独立预览页全宽/页签/浮层共用同一卡片） ————————
+  // 显式给了 width/height 就固定（截图管线用固定画幅）；否则跟随容器尺寸变化。
+  let observedWidth = width;
+  let observedHeight = height;
+  let resizeObserver: ResizeObserver | null =
+    options.width !== undefined || options.height !== undefined || typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(() => {
+          const nextWidth = container.clientWidth;
+          const nextHeight = container.clientHeight;
+          if (nextWidth <= 0 || nextHeight <= 0) return;
+          if (nextWidth === observedWidth && nextHeight === observedHeight) return;
+          observedWidth = nextWidth;
+          observedHeight = nextHeight;
+          renderer.setSize(nextWidth, nextHeight);
+          camera.aspect = nextWidth / nextHeight;
+          camera.updateProjectionMatrix();
+          renderer.render(scene, camera);
+        });
+  if (resizeObserver !== null) resizeObserver.observe(container);
 
   function setModeInternal(next: ViewMode): void {
     mode = next;
