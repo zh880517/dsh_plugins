@@ -47675,9 +47675,13 @@ var css = `
   background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer}
 .kinemesh-btn:hover{background:var(--dsw-alias-bg-layer-2)}
 .kinemesh-btn[disabled]{opacity:.55;cursor:default}
-.kinemesh-btn[data-primary="true"]{background:var(--dsw-alias-brand-primary);border-color:transparent;
-  color:var(--dsw-alias-label-on-color,#111)}
-.kinemesh-btn[data-primary="true"]:hover{filter:brightness(1.06)}
+/* 主按钮（0.7.6 修正）：**不要**用「brand-primary 填充 + label-on-color 文字」——
+   当前 DSH 深色主题里 --dsw-alias-brand-primary 是近白色，而 --dsw-alias-label-on-color
+   也是白色，两者叠起来就是「白底白字」的空白按钮（用户截图里「发送给 AI 分析」整个按钮看不见文字）。
+   改用 aiworkflow 已验证的配色套路：淡底（bg-layer-2）+ 品牌色描边 + 主前景色文字，任何主题都可读。 */
+.kinemesh-btn[data-primary="true"]{background:var(--dsw-alias-bg-layer-2);
+  border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary);font-weight:600}
+.kinemesh-btn[data-primary="true"]:hover{background:var(--dsw-alias-bg-layer-3)}
 
 /* 3D 舞台：0.7.0 起撑满剩余高度（原先写死 min(58vh,540px) 只占半屏）。
    flex-basis 给一个视口兜底值，flex-grow 再吃掉剩余空间：

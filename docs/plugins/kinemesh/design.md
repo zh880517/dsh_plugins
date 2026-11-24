@@ -584,6 +584,12 @@ kinemesh_analyze(path, {
   `-bg-layer-1..3` / `-label-primary|secondary|tertiary` / `-label-on-color` / `-border-l1` /
   `-brand-primary` / `-bg-mask-*`）；不使用不存在的 token 名（旧代码 `label-on-brand` 不存在，
   深色主题下主按钮回退白字叠亮底 → 视觉空白）。3D 舞台背景不再硬编码 `#23262b`。
+  - **主按钮不要用「brand 填充 + on-color 文字」（0.7.6 再修）**：当前 DSH 深色主题里
+    `--dsw-alias-brand-primary` 与 `--dsw-alias-label-on-color` **都是近白色**，两者叠加 = 白底白字，
+    「发送给 AI 分析」按钮整个变成一块空白（用户截图复现）。改用 aiworkflow 已验证的配色套路：
+    淡底 `bg-layer-2` + `brand-primary` 描边 + `label-primary` 文字（hover 换 `bg-layer-3`），
+    任何主题都可读；回归对照见 `tmp` 下的 button-check 渲染（旧配方 = 白块，新配方文字清晰）。
+    教训：brand-primary 在深色主题里是**浅色**（适合描边/文字/指示点），不适合当大面积填充色。
 - **默认素模显示（0.6.6，用户拍板）**：预览默认走 `solid` 素模——常规 3D 工具（Maya/Blender/Unity）
   的标准显示方式，本项目的游戏资产普遍没有可用贴图，素模最利于看清姿态与动作。配套：
   - 素模材质：中性灰 `#d2d6db` Lambert + `DoubleSide`（游戏资产多为单面，头发/裙摆背面会破洞）；
