@@ -45803,60 +45803,97 @@ void main() {
 	var MAX_UNMATCHED_NODES = 12;
 	/**
 	* 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
-	* 命中则把轨道名前缀换成 mesh 节点名，未命中则丢弃。
-	* 不修改入参 clips / mesh 对象（轨道是 clone 的），可以安全地在只读分析里调用。
+	* 命中则换轨道名前缀，未命中则丢弃；给了 sourceRoot（动画文件自己的场景根）时，
+	* 对映射链的根骨骼按两边静止姿态差做校正（修跨导出 up-axis / 根朝向差异导致的「躺倒」）。
+	* 不修改入参 clips / mesh / sourceRoot（轨道都是 clone 的），可以安全地在只读分析里调用。
 	*/
-	function bindClipsToModel(mesh, clips) {
+	function bindClipsToModel(mesh, clips, sourceRoot) {
 		const index = buildNodeIndex(mesh);
-		const matched = /* @__PURE__ */ new Set();
-		const matchedBones = /* @__PURE__ */ new Set();
+		const resolved = /* @__PURE__ */ new Map();
 		const unseen = /* @__PURE__ */ new Set();
-		const boundClips = [];
 		let totalTracks = 0;
 		let matchedTracks = 0;
+		const parsedNames = /* @__PURE__ */ new Map();
+		for (const clip of clips) for (const track of clip.tracks) {
+			totalTracks += 1;
+			const parsed = PropertyBinding.parseTrackName(track.name);
+			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			parsedNames.set(track, {
+				nodeName,
+				property: typeof parsed.propertyName === "string" ? parsed.propertyName : ""
+			});
+			if (nodeName === "") continue;
+			if (resolved.has(nodeName)) {
+				matchedTracks += 1;
+				continue;
+			}
+			const hit = matchNode(index, nodeName);
+			if (hit === null) {
+				unseen.add(nodeName);
+				continue;
+			}
+			resolved.set(nodeName, {
+				target: hit.node,
+				via: hit.via
+			});
+			matchedTracks += 1;
+		}
+		const corrections = buildRootCorrections(new Set([...resolved.values()].map((entry) => entry.target)), sourceRoot);
+		const matchedBones = /* @__PURE__ */ new Set();
+		const matchedNodes = /* @__PURE__ */ new Set();
 		let renamedTracks = 0;
+		const boundClips = [];
 		for (const clip of clips) {
 			const tracks = [];
 			for (const track of clip.tracks) {
-				totalTracks += 1;
-				const parsed = PropertyBinding.parseTrackName(track.name);
-				const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+				const info = parsedNames.get(track);
+				const nodeName = info?.nodeName ?? "";
 				if (nodeName === "") {
 					tracks.push(track);
 					continue;
 				}
-				const hit = matchNode(index, nodeName);
-				if (hit === null) {
-					unseen.add(nodeName);
-					continue;
+				const entry = resolved.get(nodeName);
+				if (entry === void 0) continue;
+				if (!matchedNodes.has(nodeName)) {
+					matchedNodes.add(nodeName);
+					if (entry.target.isBone) matchedBones.add(entry.target);
 				}
-				matched.add(nodeName);
-				if (hit.node.isBone) matchedBones.add(hit.node);
-				matchedTracks += 1;
-				if (hit.node.name === nodeName) {
+				const nameMatches = entry.target.name === nodeName;
+				const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${info?.property ?? ""}`;
+				const targetName = nameMatches ? track.name : `${entry.target.name}${suffix}`;
+				const correction = corrections.get(entry.target);
+				if (correction !== void 0) {
+					const corrected = correctTrack(track, info?.property ?? "", correction);
+					if (corrected !== null) {
+						corrected.name = targetName;
+						tracks.push(corrected);
+						if (!nameMatches) renamedTracks += 1;
+						continue;
+					}
+				}
+				if (nameMatches) {
 					tracks.push(track);
 					continue;
 				}
-				const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : "";
 				const renamed = track.clone();
-				renamed.name = suffix === "" ? `${hit.node.name}.${parsed.propertyName}` : `${hit.node.name}${suffix}`;
+				renamed.name = targetName;
 				renamedTracks += 1;
 				tracks.push(renamed);
 			}
 			boundClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
 		}
-		const animNodes = matched.size + unseen.size;
 		const report = {
 			meshNodes: index.count,
 			meshBones: index.bones,
-			animNodes,
-			matchedNodes: matched.size,
+			animNodes: matchedNodes.size + unseen.size,
+			matchedNodes: matchedNodes.size,
 			matchedBones: matchedBones.size,
 			totalTracks,
 			matchedTracks,
 			unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
 			unmatchedNodeCount: unseen.size,
 			renamedTracks,
+			correctedRoots: [...corrections.keys()].map((target) => target.name),
 			ok: matchedTracks > 0,
 			warnings: []
 		};
@@ -45865,6 +45902,93 @@ void main() {
 			clips: boundClips,
 			report
 		};
+	}
+	/** 找出映射链根骨骼并计算校正量（只对「两边都有、且静止朝向/位置不同」的根骨骼） */
+	function buildRootCorrections(matchedTargets, sourceRoot) {
+		const corrections = /* @__PURE__ */ new Map();
+		if (sourceRoot === void 0) return corrections;
+		const sourceBones = /* @__PURE__ */ new Map();
+		sourceRoot.traverse((child) => {
+			if (child.isBone) sourceBones.set(child.name, child);
+		});
+		if (sourceBones.size === 0) return corrections;
+		for (const target of matchedTargets) {
+			if (target.isBone !== true) continue;
+			if (hasMatchedAncestor(target, matchedTargets)) continue;
+			const source = sourceBones.get(target.name);
+			if (source === void 0) continue;
+			const targetRest = {
+				p: target.position,
+				q: target.quaternion,
+				s: target.scale
+			};
+			const sourceRest = {
+				p: source.position,
+				q: source.quaternion,
+				s: source.scale
+			};
+			const rotation = targetRest.q.clone().multiply(sourceRest.q.clone().invert());
+			const positionDelta = targetRest.p.distanceTo(sourceRest.p);
+			const rotationDelta = rotation.angleTo(new Quaternion());
+			const scaleDelta = targetRest.s.distanceTo(sourceRest.s);
+			if (positionDelta < 1e-4 && rotationDelta < .001 && scaleDelta < 1e-4) continue;
+			corrections.set(target, {
+				rotation,
+				targetPosition: targetRest.p.clone(),
+				targetScale: targetRest.s.clone(),
+				sourcePosition: sourceRest.p.clone(),
+				sourceScale: sourceRest.s.clone(),
+				targetName: target.name
+			});
+		}
+		return corrections;
+	}
+	function hasMatchedAncestor(target, matchedTargets) {
+		let parent = target.parent;
+		while (parent !== null && parent !== void 0) {
+			if (matchedTargets.has(parent)) return true;
+			parent = parent.parent;
+		}
+		return false;
+	}
+	/** 单条轨道按根校正量做静止姿态差变换（position/quaternion/scale；其它属性原样返回 null） */
+	function correctTrack(track, property, correction) {
+		const values = track.values;
+		if (property === "quaternion") {
+			const out = new Float32Array(values.length);
+			const q = new Quaternion();
+			for (let index = 0; index + 3 < values.length; index += 4) {
+				q.set(values[index], values[index + 1], values[index + 2], values[index + 3]);
+				q.premultiply(correction.rotation);
+				out[index] = q.x;
+				out[index + 1] = q.y;
+				out[index + 2] = q.z;
+				out[index + 3] = q.w;
+			}
+			return new QuaternionKeyframeTrack(track.name, track.times, out);
+		}
+		if (property === "position") {
+			const out = new Float32Array(values.length);
+			const point = new Vector3();
+			for (let index = 0; index + 2 < values.length; index += 3) {
+				point.set(values[index] - correction.sourcePosition.x, values[index + 1] - correction.sourcePosition.y, values[index + 2] - correction.sourcePosition.z);
+				point.applyQuaternion(correction.rotation);
+				out[index] = correction.targetPosition.x + point.x;
+				out[index + 1] = correction.targetPosition.y + point.y;
+				out[index + 2] = correction.targetPosition.z + point.z;
+			}
+			return new VectorKeyframeTrack(track.name, track.times, out);
+		}
+		if (property === "scale") {
+			const out = new Float32Array(values.length);
+			for (let index = 0; index + 2 < values.length; index += 3) {
+				out[index] = correction.targetScale.x * (values[index] / (correction.sourceScale.x || 1));
+				out[index + 1] = correction.targetScale.y * (values[index + 1] / (correction.sourceScale.y || 1));
+				out[index + 2] = correction.targetScale.z * (values[index + 2] / (correction.sourceScale.z || 1));
+			}
+			return new VectorKeyframeTrack(track.name, track.times, out);
+		}
+		return null;
 	}
 	/** 由报告派生人话 warnings（截图/预览/工具直接透传） */
 	function bindingWarnings(report) {
@@ -45878,6 +46002,7 @@ void main() {
 			warnings.push(`动画有 ${report.unmatchedNodeCount} 个节点在 mesh 骨架里没有对应骨骼，已忽略（常见于动作里带的道具/相机/IK 辅助节点）：${sample}${report.unmatchedNodeCount > MAX_UNMATCHED_NODES ? " …" : ""}`);
 		}
 		if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
+		if (report.correctedRoots.length > 0) warnings.push(`动画与 mesh 的根骨骼静止朝向/位置不同（跨导出/坐标系差异，典型是 Z-up 与 Y-up 混用）：已按静止姿态差校正根骨骼 ${report.correctedRoots.join("、")} 的轨道。`);
 		return warnings;
 	}
 	/** 报告 → 给 AI 读的中文事实句（info/CLI/MCP 共用，数值不重复计算） */
@@ -45886,6 +46011,7 @@ void main() {
 		facts.push(`动画驱动 mesh 骨架的 ${report.matchedBones}/${report.meshBones} 根骨骼；轨道命中 ${report.matchedTracks}/${report.totalTracks}。`);
 		if (report.unmatchedNodeCount > 0) facts.push(`未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join("、")}${report.unmatchedNodeCount > report.unmatchedNodes.length ? " …" : ""}）——这些节点的动作不会显示。`);
 		if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
+		if (report.correctedRoots.length > 0) facts.push(`根骨骼静止姿态差校正：${report.correctedRoots.join("、")}（两边 up-axis/根朝向不同）。`);
 		return facts;
 	}
 	//#endregion
@@ -45973,7 +46099,7 @@ void main() {
 		};
 		const animScene = plan.animation === "primary" ? primary : companion;
 		if (animScene.animations.length === 0) throw new KinemeshError(`动画侧没有可用片段：${plan.animation === "primary" ? names.primary : names.companion} 没有解析到 AnimationClip。`, "先 kinemesh_info 确认哪个文件的 clips 非空，再把动画文件作为 path、网格文件作为 mesh 参数。");
-		const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations);
+		const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations, animScene.object);
 		if (!report.ok) throw new KinemeshError(`动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼，示例节点：${report.unmatchedNodes.join("、")}）。`, "确认两个文件来自同一套 rig（骨骼名要能对上，如 Bip001_Spine / mixamorig:Hips 这类）；动画只导出部分骨骼也能绑定（例如 5 根脊柱的受击附加动画），但至少要命中一根；分别对两个文件跑 kinemesh_info 对比 bones/convention，或先用 kinemesh_skeleton 看骨骼清单。");
 		warnings.push(...report.warnings);
 		facts.push(...bindingFacts(report));

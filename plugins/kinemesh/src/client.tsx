@@ -42,11 +42,16 @@ export interface PaneMemory {
   mesh?: string;
 }
 
-/** 独立 mesh 候选（host /kinemesh/companions 返回；类型与 core/bind/discover 对齐，避免 client 打包 node:fs） */
+/** 独立 mesh 候选（host /kinemesh/companions 内容扫描返回；类型与 core/bind/scan 对齐，避免 client 打包 node:fs） */
 export interface CompanionCandidateInfo {
   path: string;
   name: string;
-  score: number;
+  /** 命中的动画骨骼数 / 网格骨骼数（覆盖率 = matchedBones / meshBones） */
+  matchedBones?: number;
+  meshBones?: number;
+  coverage?: number;
+  bytes?: number;
+  /** 命中理由（骨骼覆盖率等，面板提示直接用） */
   reason: string;
 }
 
@@ -83,6 +88,132 @@ export function writePaneMemory(key: string, value: PaneMemory): void {
 /** 清空全部记忆（测试用） */
 export function clearPaneMemories(): void {
   paneMemories.clear();
+}
+
+// ———————— 打开过的模型记录（0.10.1：独立预览页左侧层级列表；进程内内存、可删除） ————————
+// 「带 mesh + 动画」= 独立条目；「只有动画」= 挂在它绑定的 mesh 记录下当子节点（mesh 为根、动作为子）。
+// 只存在当前进程内存里（重启/刷新清空），打开一次记一条，用户可删。
+
+export type OpenedAssetKind = 'independent' | 'mesh' | 'animation';
+
+export interface OpenedAsset {
+  path: string;
+  name: string;
+  /** independent = 自带网格（可带动画）；mesh = 被动画关联的网格根；animation = 动作文件 */
+  kind: OpenedAssetKind;
+  hasMesh: boolean;
+  animated: boolean;
+  clips: string[];
+  /** 动作记录的父网格路径（网格根记录为 ''） */
+  meshPath: string;
+  /** 打开顺序（稳定排序用） */
+  order: number;
+}
+
+export interface OpenedAssetNode {
+  asset: OpenedAsset;
+  children: OpenedAsset[];
+}
+
+const openedAssets = new Map<string, OpenedAsset>();
+let openedAssetOrder = 0;
+
+function openedAssetKey(assetPath: string): string {
+  return assetPath.trim().toLowerCase();
+}
+
+/** 打开顺序（列表展示/测试用） */
+export function openedAssetList(): OpenedAsset[] {
+  return [...openedAssets.values()].sort((left, right) => left.order - right.order);
+}
+
+/** 层级树：网格根/独立条目为根，关联动作作为子节点（孤儿子动画仍按根展示） */
+export function openedAssetNodes(): OpenedAssetNode[] {
+  const all = openedAssetList();
+  const byKey = new Map(all.map((asset) => [openedAssetKey(asset.path), asset]));
+  const nodesByKey = new Map<string, OpenedAssetNode>();
+  for (const asset of all) nodesByKey.set(openedAssetKey(asset.path), { asset, children: [] });
+  const roots: OpenedAssetNode[] = [];
+  for (const asset of all) {
+    const node = nodesByKey.get(openedAssetKey(asset.path))!;
+    const parent = asset.meshPath === '' ? undefined : byKey.get(openedAssetKey(asset.meshPath));
+    if (parent === undefined || openedAssetKey(parent.path) === openedAssetKey(asset.path)) {
+      roots.push(node);
+      continue;
+    }
+    nodesByKey.get(openedAssetKey(parent.path))!.children.push(asset);
+  }
+  return roots;
+}
+
+/**
+ * 记录一次成功打开（upsert）：网格文件记成根、动作文件记成该网格的子节点；
+ * 同一个文件重复打开只更新信息/顺序不变。
+ */
+export function recordOpenedAsset(entry: {
+  path: string;
+  hasMesh: boolean;
+  animated: boolean;
+  clips?: string[];
+  /** 关联网格（动作记录用；'' = 没有/独立） */
+  meshPath?: string;
+}): void {
+  const rawPath = entry.path.trim();
+  if (rawPath === '') return;
+  const key = openedAssetKey(rawPath);
+  const existing = openedAssets.get(key);
+  const meshPath = (entry.meshPath ?? '').trim();
+  const clips = entry.clips ?? existing?.clips ?? [];
+  const hasMesh = entry.hasMesh || (existing?.hasMesh ?? false);
+  const animated = entry.animated || (existing?.animated ?? false);
+  const hasChildren = openedAssetList().some((asset) => openedAssetKey(asset.meshPath) === key);
+  const kind: OpenedAssetKind = meshPath !== '' && !hasMesh ? 'animation' : hasMesh ? (animated && !hasChildren ? 'independent' : 'mesh') : 'animation';
+  const order = existing?.order ?? openedAssetOrder++;
+  const merged: OpenedAsset = {
+    path: existing?.path ?? rawPath,
+    name: existing?.name ?? basenameOf(rawPath),
+    kind,
+    hasMesh,
+    animated,
+    clips: [...new Set([...clips, ...(existing?.clips ?? [])])],
+    meshPath: meshPath !== '' ? meshPath : (existing?.meshPath ?? ''),
+    order,
+  };
+  openedAssets.set(key, merged);
+  // 根记录补一条（动作文件先打开时也保证父节点在列表里）
+  if (merged.meshPath !== '' && openedAssetKey(merged.meshPath) !== key && !openedAssets.has(openedAssetKey(merged.meshPath))) {
+    openedAssets.set(openedAssetKey(merged.meshPath), {
+      path: merged.meshPath,
+      name: basenameOf(merged.meshPath),
+      kind: 'mesh',
+      hasMesh: true,
+      animated: false,
+      clips: [],
+      meshPath: '',
+      order: openedAssetOrder++,
+    });
+  }
+}
+
+/** 删除一条记录；删的是网格根时连同它下面关联的动作一起删（返回实际删除条数） */
+export function removeOpenedAsset(assetPath: string): number {
+  const key = openedAssetKey(assetPath);
+  const target = openedAssets.get(key);
+  if (target === undefined) return 0;
+  let removed = 0;
+  for (const [otherKey, asset] of [...openedAssets.entries()]) {
+    if (otherKey === key || openedAssetKey(asset.meshPath) === key) {
+      openedAssets.delete(otherKey);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/** 清空记录（测试 / 进程内存复位用） */
+export function clearOpenedAssets(): void {
+  openedAssets.clear();
+  openedAssetOrder = 0;
 }
 
 /**
@@ -160,6 +291,13 @@ const ZH_TEXTS: Record<string, string> = {
   'page.emptyModels': '本会话还没有用过的模型：用「动析」浮层加载，或在下方输入路径打开。',
   'page.openPath': '模型文件路径（.fbx / .glb / .gltf / .obj）',
   'page.open': '打开',
+  'opened.title': '打开过的模型（本进程）',
+  'opened.empty': '还没有打开过模型：用右侧路径或拖入文件加载，记录只保留到本进程结束',
+  'opened.delete': '删除这条记录（网格条目会连同关联动作一起删）',
+  'opened.badge.mesh': '网格',
+  'opened.badge.independent': '独立',
+  'opened.badge.animation': '动画',
+  'opened.footHint': '层级：带网格的条目是根，动作文件挂在它绑定的网格下；× 删除记录',
   'page.meshPath': 'mesh 文件（可选：动作没网格时绑网格）',
   'page.meshTitle': '独立 mesh 文件（动作-only 资产）：例如 basic/xxx_skin.fbx；留空时自动识别同资产网格文件',
   'binding.chip': 'mesh',
@@ -223,6 +361,13 @@ const EN_TEXTS: Record<string, string> = {
   'page.emptyModels': 'No models used in this session yet: load one in the preview overlay, or type a path below.',
   'page.openPath': 'Model file path (.fbx / .glb / .gltf / .obj)',
   'page.open': 'Open',
+  'opened.title': 'Opened models (this process)',
+  'opened.empty': 'No models opened yet: load one on the right or drag a file here; records live only for this process',
+  'opened.delete': 'Delete this record (deleting a mesh also removes its associated motions)',
+  'opened.badge.mesh': 'mesh',
+  'opened.badge.independent': 'standalone',
+  'opened.badge.animation': 'motion',
+  'opened.footHint': 'Hierarchy: mesh entries are roots, motion files hang under their bound mesh; × deletes a record',
   'page.meshPath': 'mesh file (optional: bind a mesh to a mesh-less motion)',
   'page.meshTitle': 'Standalone mesh file (motion-only assets), e.g. basic/xxx_skin.fbx; leave empty to auto-detect a mesh in the same asset',
   'binding.chip': 'mesh',
@@ -832,7 +977,25 @@ interface BoundPreviewScene {
   binding: CompanionBinding | null;
   /** 实际绑定的 mesh 文件路径（'' = 未绑定） */
   meshPath: string;
+  /** 动画片段来源文件路径（通常是 path 文件；传反时是 mesh 参数文件） */
+  animationPath: string;
+  /** path 文件自身是否有网格（列表记录用） */
+  primaryHasMesh: boolean;
   warnings: string[];
+}
+
+/** 一次成功加载上报的信息（独立预览页据此维护左侧「打开过的模型」层级列表） */
+export interface LoadedAssetInfo {
+  /** path 文件 */
+  path: string;
+  /** 网格文件（'' = 没有网格/未绑定） */
+  meshPath: string;
+  /** 动画来源文件（'' = 没有动画） */
+  animationPath: string;
+  /** path 文件自身是否有网格 */
+  pathHasMesh: boolean;
+  /** 可播放的片段名 */
+  clips: string[];
 }
 
 function PreviewPane(props: {
@@ -845,10 +1008,12 @@ function PreviewPane(props: {
   allowSend?: boolean;
   /** 状态记忆键（'standalone' / 'tab'）：切面板/页签回来时恢复已加载模型与进度；缺省不记忆 */
   persistKey?: string;
-  /** 外部请求加载某路径（页面选中/打开模型时） */
-  loadRequest?: { path: string; nonce: number } | null;
+  /** 外部请求加载某路径（页面选中/打开模型时；mesh 可指定关联网格） */
+  loadRequest?: { path: string; mesh?: string; nonce: number } | null;
   /** 加载成功上报（页面刷新会话列表用） */
   onLoaded?: (path: string) => void;
+  /** 加载成功上报完整信息（独立预览页记录层级列表用） */
+  onAssetLoaded?: (info: LoadedAssetInfo) => void;
   /** 发送成功上报 */
   onSendSuccess?: () => void;
 }): React.ReactElement {
@@ -895,7 +1060,7 @@ function PreviewPane(props: {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const viewerRef = React.useRef<ViewerHandle | null>(null);
   const analysisSeq = React.useRef(0);
-  const lastRequestRef = React.useRef<{ path: string; nonce: number } | null>(null);
+  const lastRequestRef = React.useRef<{ path: string; mesh?: string; nonce: number } | null>(null);
   /** 当前显示状态（自动选模式的延迟复审要用最新值，state 闭包会过期） */
   const displayRef = React.useRef<DisplayState>({ surface: 'solid', bones: false });
   /** 用户手动改过显示状态 → 本次载入不再自动纠正 */
@@ -1042,14 +1207,30 @@ function PreviewPane(props: {
     target: string,
     explicitMesh: string,
   ): Promise<BoundPreviewScene> => {
+    const primaryHasMesh = sceneFacts(primaryScene).hasMesh;
     if (explicitMesh !== '') {
       const bytes = await fetchModelBytes(explicitMesh, false);
       const companionScene = await loadSceneFromData(bytes, explicitMesh);
       const bound = bindScenes(primaryScene, companionScene, explicitMesh, target);
-      return { scene: bound.scene, binding: bound, meshPath: explicitMesh, warnings: bound.warnings };
+      const meshSidePath = bound.plan.mesh === 'companion' ? explicitMesh : target;
+      return {
+        scene: bound.scene,
+        binding: bound,
+        meshPath: meshSidePath,
+        animationPath: bound.plan.animation === 'primary' ? target : explicitMesh,
+        primaryHasMesh,
+        warnings: bound.warnings,
+      };
     }
-    if (sceneFacts(primaryScene).hasMesh) {
-      return { scene: primaryScene, binding: null, meshPath: '', warnings: [] };
+    if (primaryHasMesh) {
+      return {
+        scene: primaryScene,
+        binding: null,
+        meshPath: '',
+        animationPath: primaryScene.animations.length > 0 ? target : '',
+        primaryHasMesh,
+        warnings: [],
+      };
     }
     const candidates = await discoverCompanionCandidates(target);
     for (const candidate of candidates.slice(0, 3)) {
@@ -1058,12 +1239,15 @@ function PreviewPane(props: {
         const companionScene = await loadSceneFromData(bytes, candidate.path);
         if (!sceneFacts(companionScene).hasMesh) continue;
         const bound = bindScenes(primaryScene, companionScene, candidate.path, target);
+        const reason = candidate.reason === '' ? '' : `（${candidate.reason}）`;
         return {
           scene: bound.scene,
           binding: bound,
           meshPath: candidate.path,
+          animationPath: bound.plan.animation === 'primary' ? target : candidate.path,
+          primaryHasMesh,
           warnings: [
-            `该文件没有网格（动画-only）：已自动识别同资产的网格文件「${candidate.name}」（${candidate.reason}）并绑定；可在「mesh 文件」框里换文件。`,
+            `该文件没有网格（动画-only）：已按文件内容自动识别同资产的网格文件「${candidate.name}」${reason}并绑定；可在「mesh 文件」框里换文件。`,
             ...bound.warnings,
           ],
         };
@@ -1076,6 +1260,8 @@ function PreviewPane(props: {
       scene: primaryScene,
       binding: null,
       meshPath: '',
+      animationPath: primaryScene.animations.length > 0 ? target : '',
+      primaryHasMesh,
       warnings: [
         '该文件没有网格（动画-only），没有找到可绑定的同资产网格文件：先按骨架预览；要带网格请在「mesh 文件」框填角色网格路径后再加载。',
       ],
@@ -1103,6 +1289,13 @@ function PreviewPane(props: {
       setBinding(resolved.binding);
       setBindingWarnings(resolved.warnings);
       setMeshPath(resolved.meshPath);
+      props.onAssetLoaded?.({
+        path: target,
+        meshPath: resolved.meshPath,
+        animationPath: resolved.animationPath,
+        pathHasMesh: resolved.primaryHasMesh,
+        clips: resolved.scene.animations.map((clip, index) => clip.name || `clip_${index}`),
+      });
       const bounds = viewer.sceneBounds();
       const maxFrame = Math.max(0, Math.floor(bounds.durationSeconds * RENDER_FPS));
       setState({ phase: 'ready', error: null, clips: bounds.clips, maxFrame });
@@ -1186,7 +1379,8 @@ function PreviewPane(props: {
     if (lastRequestRef.current !== null && lastRequestRef.current.nonce === request.nonce) return;
     lastRequestRef.current = request;
     setPathInput(request.path);
-    void load(request.path);
+    setMeshInput(request.mesh ?? '');
+    void load(request.path, request.mesh ?? '');
   }, [props.loadRequest]);
 
   // ———————— 拖入文件（桌面版经 __DSH_HOST_PATHS__.pathFor 取真实路径） ————————
@@ -1568,11 +1762,91 @@ function KinemeshIcon({ size = 18, active = false }: { size?: number; active?: b
   );
 }
 
+/** 打开过模型列表的一行（网格根 / 独立条目） */
+function OpenedAssetRow(props: {
+  asset: OpenedAsset;
+  badge: string;
+  label: string;
+  active: boolean;
+  child?: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+}): React.ReactElement {
+  return (
+    <div className="kinemesh-openrow">
+      <button
+        type="button"
+        className="kinemesh-sideitem"
+        data-active={props.active ? 'true' : 'false'}
+        data-child={props.child === true ? 'true' : undefined}
+        title={props.asset.path}
+        onClick={props.onOpen}
+      >
+        <span className="kinemesh-sidename">{props.label}</span>
+        <span className="kinemesh-badge">{props.badge}</span>
+      </button>
+      <button
+        type="button"
+        className="kinemesh-openrowdel"
+        title={translate('opened.delete')}
+        aria-label={translate('opened.delete')}
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onDelete();
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 /**
  * 独立预览页：DSH 左侧侧边栏入口打开的纯预览（拖转 / 播放 / 强度曲线 / 拖入文件），
  * **不显示「发送给 AI 分析」**（那是会话页签的功能）。不依赖会话，无 sessionId 也可用。
+ * 0.10.1：左侧加「打开过的模型」层级列表（进程内内存）：带网格的条目为根，动作-only 文件挂在
+ * 它绑定的网格下当子节点；记录可逐条删除。
  */
 export function StandalonePreviewPage(): React.ReactElement {
+  const [version, setVersion] = React.useState(0);
+  const [activePath, setActivePath] = React.useState('');
+  const [loadRequest, setLoadRequest] = React.useState<{ path: string; mesh?: string; nonce: number } | null>(null);
+  const nonceRef = React.useRef(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- version 仅作「记录变更」的刷新信号
+  const nodes = React.useMemo(() => openedAssetNodes(), [version]);
+
+  const open = (assetPath: string, mesh?: string): void => {
+    setActivePath(assetPath);
+    setLoadRequest({ path: assetPath, mesh, nonce: ++nonceRef.current });
+  };
+
+  /** 一次成功加载 → 记录/更新层级列表 */
+  const remember = (info: LoadedAssetInfo): void => {
+    const meshSide = info.meshPath;
+    const animationSide = info.animationPath;
+    const differentSides =
+      meshSide !== '' && animationSide !== '' && meshSide.toLowerCase() !== animationSide.toLowerCase();
+    if (differentSides) {
+      recordOpenedAsset({ path: meshSide, hasMesh: true, animated: false });
+      recordOpenedAsset({
+        path: animationSide,
+        hasMesh: false,
+        animated: info.clips.length > 0,
+        clips: info.clips,
+        meshPath: meshSide,
+      });
+    } else {
+      recordOpenedAsset({
+        path: info.path,
+        hasMesh: info.pathHasMesh,
+        animated: info.clips.length > 0,
+        clips: info.clips,
+        meshPath: '',
+      });
+    }
+    setVersion((value) => value + 1);
+  };
+
   return (
     <React.Fragment>
       <Styles />
@@ -1581,8 +1855,70 @@ export function StandalonePreviewPage(): React.ReactElement {
           <span className="kinemesh-title">{translate('standalone.title')}</span>
           <span className="kinemesh-sub">{translate('standalone.subtitle')}</span>
         </header>
-        <div className="kinemesh-standalonemain">
-          <PreviewPane sessionId="" showPathInput allowSend={false} persistKey="standalone" />
+        <div className="kinemesh-standalonebody">
+          <aside className="kinemesh-side kinemesh-openedside">
+            <div className="kinemesh-sidehead">{translate('opened.title')}</div>
+            <div className="kinemesh-sideitems">
+              {nodes.length === 0 ? (
+                <div className="kinemesh-sideempty">{translate('opened.empty')}</div>
+              ) : (
+                nodes.map((node) => {
+                  const childCount = node.children.length;
+                  const badge =
+                    node.asset.kind === 'animation'
+                      ? translate('opened.badge.animation')
+                      : node.asset.hasMesh && node.asset.animated
+                        ? translate('opened.badge.independent')
+                        : node.asset.hasMesh
+                          ? translate('opened.badge.mesh')
+                          : translate('opened.badge.animation');
+                  return (
+                    <React.Fragment key={node.asset.path}>
+                      <OpenedAssetRow
+                        asset={node.asset}
+                        badge={childCount > 0 ? `${badge} · ${childCount}` : badge}
+                        label={node.asset.name}
+                        active={activePath.toLowerCase() === node.asset.path.toLowerCase()}
+                        onOpen={() => open(node.asset.path)}
+                        onDelete={() => {
+                          removeOpenedAsset(node.asset.path);
+                          setVersion((value) => value + 1);
+                        }}
+                      />
+                      {node.children.map((child) => (
+                        <OpenedAssetRow
+                          key={child.path}
+                          asset={child}
+                          badge={translate('opened.badge.animation')}
+                          label={`└ ${child.name}`}
+                          active={activePath.toLowerCase() === child.path.toLowerCase()}
+                          child
+                          onOpen={() => open(child.path, node.asset.path)}
+                          onDelete={() => {
+                            removeOpenedAsset(child.path);
+                            setVersion((value) => value + 1);
+                          }}
+                        />
+                      ))}
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </div>
+            <div className="kinemesh-sidefoot">
+              <span className="kinemesh-sub">{translate('opened.footHint')}</span>
+            </div>
+          </aside>
+          <section className="kinemesh-standalonepreview">
+            <PreviewPane
+              sessionId=""
+              showPathInput
+              allowSend={false}
+              persistKey="standalone"
+              loadRequest={loadRequest}
+              onAssetLoaded={remember}
+            />
+          </section>
         </div>
       </div>
     </React.Fragment>

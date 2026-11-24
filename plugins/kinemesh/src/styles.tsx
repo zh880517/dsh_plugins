@@ -91,12 +91,26 @@ export const css = `
 .kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:360px;overflow:hidden;
   color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
 .kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px;flex:none}
-.kinemesh-standalonemain{flex:1;min-height:0;display:flex;flex-direction:column;padding-bottom:12px}
-.kinemesh-standalonemain .kinemesh-stage{margin:0 18px}
-.kinemesh-standalonemain .kinemesh-toolbar,
-.kinemesh-standalonemain .kinemesh-transport,
-.kinemesh-standalonemain .kinemesh-readout{padding-left:18px;padding-right:18px}
-.kinemesh-standalonemain .kinemesh-timeline{margin-left:18px;margin-right:18px}
+/* 0.10.1：独立预览页左侧「打开过的模型」层级列表 + 右侧预览 */
+.kinemesh-standalonebody{flex:1;min-height:0;display:flex;gap:12px;padding:0 18px 12px}
+.kinemesh-openedside{width:230px;min-width:190px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
+  overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
+.kinemesh-standalonepreview{flex:1;min-width:0;display:flex;flex-direction:column}
+.kinemesh-standalonepreview .kinemesh-stage{margin:0}
+.kinemesh-standalonepreview .kinemesh-toolbar,
+.kinemesh-standalonepreview .kinemesh-transport,
+.kinemesh-standalonepreview .kinemesh-readout{padding-left:0;padding-right:0}
+.kinemesh-standalonepreview .kinemesh-timeline{margin-left:0;margin-right:0}
+.kinemesh-standalonepreview .kinemesh-banner{margin-left:0;margin-right:0}
+/* 列表行：主按钮 + 删除按钮并排；子节点缩进 */
+.kinemesh-openrow{display:flex;align-items:center;gap:2px}
+.kinemesh-openrow .kinemesh-sideitem{flex:1;min-width:0}
+.kinemesh-sideitem[data-child="true"]{padding-left:16px;font-size:11.5px}
+.kinemesh-openrowdel{flex:none;width:22px;height:22px;display:grid;place-items:center;border-radius:6px;
+  border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);
+  font:inherit;font-size:14px;line-height:1;cursor:pointer;opacity:0}
+.kinemesh-openrow:hover .kinemesh-openrowdel{opacity:.85}
+.kinemesh-openrowdel:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-error-primary)}
 
 /* ———— 模型预览页（conversation.view 页签，M6e） ———— */
 .kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;

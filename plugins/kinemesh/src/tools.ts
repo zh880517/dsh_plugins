@@ -14,7 +14,7 @@ import { createRunDir } from './core/temp-dir.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots, renderLabelScreenshots } from './core/render/screenshot.js';
 import { autoResolveCompanion } from './core/bind/auto.js';
-import { discoverCompanionMeshes } from './core/bind/discover.js';
+import { collectSkeletonNames, findCompanionMeshes } from './core/bind/scan.js';
 import { companionBindingJson, inspectCompanion } from './core/bind/inspect.js';
 import {
   checkBonesAgainstSkeleton,
@@ -122,8 +122,9 @@ export interface ModelFileRef {
 }
 
 /**
- * 渲染前的 mesh 伙伴解析（三出口共用）：显式 mesh 参数优先；没给时自动识别同资产网格文件
- * （动作-only 资产的需求：「让工具自动识别然后绑定」）。返回的 companion 直接喂 renderScreenshots。
+ * 渲染前的 mesh 伙伴解析（三出口共用）：显式 mesh 参数优先；没给时按文件内容（骨骼覆盖率）
+ * 自动识别同资产网格文件（动作-only 资产的需求：「让工具自动识别然后绑定」，不依赖文件名）。
+ * 返回的 companion 直接喂 renderScreenshots。
  */
 export async function resolveCompanionForRender(
   primary: ModelFileRef,
@@ -161,16 +162,37 @@ export async function runInfo(primary: ModelFileRef, mesh?: ModelFileRef): Promi
   }
   const warnings = [...report.warnings];
   if (report.meshes.length === 0) {
-    const candidates = await discoverCompanionMeshes(primary.abs);
+    const candidates = await listCompanionCandidates(primary);
     warnings.push(
       '该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件' +
         (candidates.length > 0
-          ? `；同资产发现候选：${candidates.map((candidate) => candidate.name).join('、')}（可直接作为 mesh 参数）`
+          ? `；同资产内容扫描候选（按骨骼覆盖率）：${candidates
+              .slice(0, 3)
+              .map((candidate) => `「${candidate.name}」${candidate.reason}`)
+              .join('、')}（可直接作为 mesh 参数）`
           : '') +
         '。',
     );
   }
   return { ok: true, ...report, warnings };
+}
+
+/** 内容扫描找同资产候选网格（不依赖文件名）：给 info 的「没有网格」提示用 */
+async function listCompanionCandidates(primary: ModelFileRef): Promise<Awaited<ReturnType<typeof findCompanionMeshes>>> {
+  try {
+    const scene = await getCachedScene(
+      primary.abs,
+      async () => (await loadModelScene(primary.data, primary.fileName)).scene,
+    );
+    let hasMesh = false;
+    scene.object.traverse((child) => {
+      if ((child as { isMesh?: boolean }).isMesh === true) hasMesh = true;
+    });
+    if (hasMesh) return [];
+    return await findCompanionMeshes(primary.abs, collectSkeletonNames(scene));
+  } catch {
+    return [];
+  }
 }
 
 // ———————— kinemesh_analyze（M6d，设计文档 §6.7 / §6.6.3 / §6.4） ————————
@@ -653,7 +675,7 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
           type: 'string',
           description:
             '独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；' +
-            '不传时自动识别同资产网格文件（结果看 warnings）',
+            '不传时按文件内容（骨骼覆盖率）自动识别同资产网格文件（结果看 warnings）',
         },
         clip: { type: 'string', description: '动画片段名（先 kinemesh_info 查）；静态模型省略' },
         frames: {
@@ -707,7 +729,7 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
             ? boneLabelsRaw
             : undefined;
       try {
-        // 0.10.0：独立 mesh 文件（显式 mesh 参数优先；否则自动识别同资产网格文件）
+        // 0.10.0/0.10.1：独立 mesh 文件（显式 mesh 参数优先；否则按文件内容/骨骼覆盖率自动识别同资产网格文件）
         const primaryRef: ModelFileRef = { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs };
         const meshArg = typeof args?.mesh === 'string' ? args.mesh.trim() : '';
         let meshRef: ModelFileRef | undefined;

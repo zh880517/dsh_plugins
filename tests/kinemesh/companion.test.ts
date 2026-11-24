@@ -7,7 +7,7 @@ import path from 'node:path';
 import * as THREE from 'three';
 import { afterAll, describe, expect, it } from 'vitest';
 import { bindScenes, loadSceneFromData, sceneFacts } from '../../plugins/kinemesh/src/core/bind/bundle.js';
-import { discoverCompanionMeshes } from '../../plugins/kinemesh/src/core/bind/discover.js';
+import { findCompanionMeshes } from '../../plugins/kinemesh/src/core/bind/scan.js';
 import { bindClipsToModel } from '../../plugins/kinemesh/src/core/bind/remap.js';
 import { planCompanion, type SceneFacts } from '../../plugins/kinemesh/src/core/bind/roles.js';
 import { KinemeshError } from '../../plugins/kinemesh/src/core/errors.js';
@@ -122,6 +122,68 @@ describe('bindClipsToModel：动画轨道按骨骼名绑定到 mesh 骨架', () 
     expect(report.warnings.join('\n')).toContain('完全不匹配');
     expect(clips[0]!.tracks).toHaveLength(0);
   });
+
+  // ———————— 0.10.1：根骨骼静止姿态差校正（真实资产 Haylee：mesh 导 Z-up、动作导 Y-up） ————————
+
+  /** 造一对根骨骼 rest 朝向不同的场景：mesh 根 = Rx(-90°)，动作根 = identity；子骨骼同名 */
+  function rotatedRig(meshRootQuaternion: THREE.Quaternion, rootPosition: [number, number, number], childPosition: [number, number, number]) {
+    const root = new THREE.Group();
+    const top = new THREE.Bone();
+    top.name = 'Bip001';
+    top.quaternion.copy(meshRootQuaternion);
+    top.position.set(...rootPosition);
+    const child = new THREE.Bone();
+    child.name = 'Bip001_Spine';
+    child.position.set(...childPosition);
+    top.add(child);
+    root.add(top);
+    return { root, top, child };
+  }
+
+  it('根骨骼 rest 朝向不同：按静止姿态差校正根轨道，子骨骼轨道保持原样', () => {
+    const mesh = rotatedRig(
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2),
+      [0, 0, 0],
+      [0, 0, 1],
+    );
+    const anim = rotatedRig(new THREE.Quaternion(), [0, 0, 0], [0, 1, 0]);
+    const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.5);
+    const clip = new THREE.AnimationClip('Attack', 1, [
+      new THREE.QuaternionKeyframeTrack('Bip001.quaternion', [0, 1], [0, 0, 0, 1, turn.x, turn.y, turn.z, turn.w]),
+      new THREE.VectorKeyframeTrack('Bip001.position', [0, 1], [0, 0, 0, 0, 0.2, 0]),
+      new THREE.QuaternionKeyframeTrack('Bip001_Spine.quaternion', [0, 1], [0, 0, 0, 1, 0, 0.1, 0, 0.995]),
+    ]);
+
+    const { clips, report } = bindClipsToModel(mesh.root, [clip], anim.root);
+    expect(report.correctedRoots).toEqual(['Bip001']);
+    expect(report.warnings.join('\n')).toContain('根骨骼静止朝向');
+    const rootTrack = clips[0]!.tracks.find((track) => track.name === 'Bip001.quaternion') as THREE.QuaternionKeyframeTrack;
+    // 校正后：q_t = q_meshRest · q_animRest⁻¹ · q_anim(t) = Rx(-90°) · turn
+    const expected = new THREE.Quaternion()
+      .setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2)
+      .multiply(turn);
+    const actual = new THREE.Quaternion(
+      rootTrack.values[4]!,
+      rootTrack.values[5]!,
+      rootTrack.values[6]!,
+      rootTrack.values[7]!,
+    );
+    expect(actual.angleTo(expected)).toBeLessThan(5e-3);
+    // 子骨骼不是映射链根：局部轨道原样保留
+    const childTrack = clips[0]!.tracks.find((track) => track.name === 'Bip001_Spine.quaternion') as THREE.QuaternionKeyframeTrack;
+    const childValues = Array.from(childTrack.values.slice(4));
+    expect(childValues[1]).toBeCloseTo(0.1, 5);
+    expect(childValues[3]).toBeCloseTo(0.995, 5);
+  });
+
+  it('根骨骼静止姿态一致（跨导出但同 up-axis）：不做校正', () => {
+    const mesh = rotatedRig(new THREE.Quaternion(), [0, 0, 0], [0, 0, 1]);
+    const anim = rotatedRig(new THREE.Quaternion(), [0, 0, 0], [0, 0, 1]);
+    const clip = quaternionClip('Attack', ['Bip001']);
+    const { report } = bindClipsToModel(mesh.root, [clip], anim.root);
+    expect(report.correctedRoots).toEqual([]);
+    expect(report.warnings.join('\n')).not.toContain('根骨骼静止朝向');
+  });
 });
 
 // ———————— 角色自动识别（core/bind/roles） ————————
@@ -174,39 +236,63 @@ describe('planCompanion：谁提供网格 / 谁提供动画（自动识别）', 
   });
 });
 
-// ———————— 同资产候选网格文件发现（core/bind/discover） ————————
+// ———————— 同资产候选网格文件发现（core/bind/scan：内容扫描，不依赖文件名） ————————
 
-describe('discoverCompanionMeshes：同资产网格文件自动识别', () => {
+/** 造一个「便宜探测」能识别的 ASCII FBX 文本桩：Geometry 段落 = 有网格，Model 行 = 骨骼名 */
+function asciiFbxStub(bones: string[], withMesh: boolean): string {
+  const geometry = withMesh ? ['\tGeometry: 100, "Geometry::", "Mesh" {', '\t}'] : [];
+  const models = bones.map((name, index) => `\tModel: ${1000 + index}, "Model::${name}", "LimbNode" {`);
+  return [
+    '; FBX 7.4.0 project file ---- (probe stub)',
+    'FBXHeaderExtension: 1003 {',
+    '\tFBXVersion: 7400',
+    '}',
+    'Objects:  {',
+    ...geometry,
+    ...models,
+    '}',
+    'Connections:  {',
+    '}',
+  ].join('\n');
+}
+
+describe('findCompanionMeshes：内容扫描（不依赖文件名/目录名）', () => {
   const assetRoot = path.join(workDir, 'asset400');
   const characterDir = path.join(assetRoot, '4001_bigclaw');
 
-  it('命中 basic/xxx_skin.fbx（实测布局），排除动作文件与自身，按分数降序', async () => {
+  it('按骨骼覆盖率选网格：名字随便起，覆盖率高的胜出；动作文件/无网格文件被排除', async () => {
     await mkdir(path.join(characterDir, 'hit'), { recursive: true });
-    await mkdir(path.join(characterDir, 'basic'), { recursive: true });
-    await mkdir(path.join(characterDir, 'fbx'), { recursive: true });
+    await mkdir(path.join(characterDir, 'weird-dir'), { recursive: true });
     const anim = path.join(characterDir, 'hit', 'decide_spine_shake.fbx');
-    await writeFile(anim, '');
-    await writeFile(path.join(characterDir, 'basic', '4001_bigclaw_skin.fbx'), '');
-    await writeFile(path.join(characterDir, 'basic', '4001_bigclaw_weapon.fbx'), '');
-    await writeFile(path.join(characterDir, 'fbx', 'idle.fbx'), '');
+    await writeFile(anim, asciiFbxStub(['Hips', 'Spine'], false), 'utf8');
+    // 覆盖率 100%：骨骼名完全对上（文件名与目录名都故意没有 skin/mesh 之类关键词）
+    await writeFile(path.join(characterDir, 'weird-dir', 'aaaa.fbx'), asciiFbxStub(['Hips', 'Spine'], true), 'utf8');
+    // 覆盖率 50%：多出两根不相关骨骼
+    await writeFile(path.join(characterDir, 'weird-dir', 'zzzz.fbx'), asciiFbxStub(['Hips', 'Spine', 'Tail', 'Wing'], false), 'utf8');
+    await writeFile(path.join(characterDir, 'weird-dir', 'bbbb.fbx'), asciiFbxStub(['Hips', 'Spine', 'Tail', 'Wing'], true), 'utf8');
+    // 骨骼完全对不上：排除
+    await writeFile(path.join(characterDir, 'weird-dir', 'cccc.fbx'), asciiFbxStub(['Foo', 'Bar'], true), 'utf8');
 
-    const candidates = await discoverCompanionMeshes(anim);
+    const candidates = await findCompanionMeshes(anim, ['Hips', 'Spine']);
     expect(candidates.length).toBeGreaterThan(0);
-    expect(candidates[0]!.name).toBe('4001_bigclaw_skin.fbx');
-    expect(candidates[0]!.reason).toContain('_skin');
-    expect(candidates.map((candidate) => candidate.name)).not.toContain('decide_spine_shake.fbx');
-    expect(candidates.map((candidate) => candidate.name)).not.toContain('idle.fbx');
-    for (let index = 1; index < candidates.length; index += 1) {
-      expect(candidates[index - 1]!.score).toBeGreaterThanOrEqual(candidates[index]!.score);
-    }
+    expect(candidates[0]!.name).toBe('aaaa.fbx');
+    expect(candidates[0]!.coverage).toBe(1);
+    const names = candidates.map((candidate) => candidate.name);
+    expect(names).not.toContain('decide_spine_shake.fbx'); // 动作文件自身
+    expect(names).not.toContain('zzzz.fbx'); // 没有网格
+    expect(names).not.toContain('cccc.fbx'); // 骨骼对不上
+    expect(candidates.map((candidate) => candidate.coverage)).toEqual(
+      [...candidates.map((candidate) => candidate.coverage)].sort((left, right) => right - left),
+    );
   });
 
-  it('资产目录下没有候选时返回空数组（不抛错）', async () => {
+  it('附近没有可用网格时返回空数组（不抛错）', async () => {
     const emptyDir = path.join(workDir, 'empty-asset', 'anim');
     await mkdir(emptyDir, { recursive: true });
     const file = path.join(emptyDir, 'only.fbx');
-    await writeFile(file, '');
-    expect(await discoverCompanionMeshes(file)).toEqual([]);
+    await writeFile(file, asciiFbxStub(['Hips'], false), 'utf8');
+    // 附近的其它夹具里有网格，但没有一个骨骼叫 NoSuchBone_XYZ → 全部被覆盖率过滤
+    expect(await findCompanionMeshes(file, ['NoSuchBone_XYZ'])).toEqual([]);
   });
 });
 

@@ -48184,60 +48184,97 @@ function matchNode(index, nodeName) {
 var MAX_UNMATCHED_NODES = 12;
 /**
 * 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
-* 命中则把轨道名前缀换成 mesh 节点名，未命中则丢弃。
-* 不修改入参 clips / mesh 对象（轨道是 clone 的），可以安全地在只读分析里调用。
+* 命中则换轨道名前缀，未命中则丢弃；给了 sourceRoot（动画文件自己的场景根）时，
+* 对映射链的根骨骼按两边静止姿态差做校正（修跨导出 up-axis / 根朝向差异导致的「躺倒」）。
+* 不修改入参 clips / mesh / sourceRoot（轨道都是 clone 的），可以安全地在只读分析里调用。
 */
-function bindClipsToModel(mesh, clips) {
+function bindClipsToModel(mesh, clips, sourceRoot) {
 	const index = buildNodeIndex(mesh);
-	const matched = /* @__PURE__ */ new Set();
-	const matchedBones = /* @__PURE__ */ new Set();
+	const resolved = /* @__PURE__ */ new Map();
 	const unseen = /* @__PURE__ */ new Set();
-	const boundClips = [];
 	let totalTracks = 0;
 	let matchedTracks = 0;
+	const parsedNames = /* @__PURE__ */ new Map();
+	for (const clip of clips) for (const track of clip.tracks) {
+		totalTracks += 1;
+		const parsed = PropertyBinding.parseTrackName(track.name);
+		const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+		parsedNames.set(track, {
+			nodeName,
+			property: typeof parsed.propertyName === "string" ? parsed.propertyName : ""
+		});
+		if (nodeName === "") continue;
+		if (resolved.has(nodeName)) {
+			matchedTracks += 1;
+			continue;
+		}
+		const hit = matchNode(index, nodeName);
+		if (hit === null) {
+			unseen.add(nodeName);
+			continue;
+		}
+		resolved.set(nodeName, {
+			target: hit.node,
+			via: hit.via
+		});
+		matchedTracks += 1;
+	}
+	const corrections = buildRootCorrections(new Set([...resolved.values()].map((entry) => entry.target)), sourceRoot);
+	const matchedBones = /* @__PURE__ */ new Set();
+	const matchedNodes = /* @__PURE__ */ new Set();
 	let renamedTracks = 0;
+	const boundClips = [];
 	for (const clip of clips) {
 		const tracks = [];
 		for (const track of clip.tracks) {
-			totalTracks += 1;
-			const parsed = PropertyBinding.parseTrackName(track.name);
-			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			const info = parsedNames.get(track);
+			const nodeName = info?.nodeName ?? "";
 			if (nodeName === "") {
 				tracks.push(track);
 				continue;
 			}
-			const hit = matchNode(index, nodeName);
-			if (hit === null) {
-				unseen.add(nodeName);
-				continue;
+			const entry = resolved.get(nodeName);
+			if (entry === void 0) continue;
+			if (!matchedNodes.has(nodeName)) {
+				matchedNodes.add(nodeName);
+				if (entry.target.isBone) matchedBones.add(entry.target);
 			}
-			matched.add(nodeName);
-			if (hit.node.isBone) matchedBones.add(hit.node);
-			matchedTracks += 1;
-			if (hit.node.name === nodeName) {
+			const nameMatches = entry.target.name === nodeName;
+			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${info?.property ?? ""}`;
+			const targetName = nameMatches ? track.name : `${entry.target.name}${suffix}`;
+			const correction = corrections.get(entry.target);
+			if (correction !== void 0) {
+				const corrected = correctTrack(track, info?.property ?? "", correction);
+				if (corrected !== null) {
+					corrected.name = targetName;
+					tracks.push(corrected);
+					if (!nameMatches) renamedTracks += 1;
+					continue;
+				}
+			}
+			if (nameMatches) {
 				tracks.push(track);
 				continue;
 			}
-			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : "";
 			const renamed = track.clone();
-			renamed.name = suffix === "" ? `${hit.node.name}.${parsed.propertyName}` : `${hit.node.name}${suffix}`;
+			renamed.name = targetName;
 			renamedTracks += 1;
 			tracks.push(renamed);
 		}
 		boundClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
 	}
-	const animNodes = matched.size + unseen.size;
 	const report = {
 		meshNodes: index.count,
 		meshBones: index.bones,
-		animNodes,
-		matchedNodes: matched.size,
+		animNodes: matchedNodes.size + unseen.size,
+		matchedNodes: matchedNodes.size,
 		matchedBones: matchedBones.size,
 		totalTracks,
 		matchedTracks,
 		unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
 		unmatchedNodeCount: unseen.size,
 		renamedTracks,
+		correctedRoots: [...corrections.keys()].map((target) => target.name),
 		ok: matchedTracks > 0,
 		warnings: []
 	};
@@ -48246,6 +48283,93 @@ function bindClipsToModel(mesh, clips) {
 		clips: boundClips,
 		report
 	};
+}
+/** 找出映射链根骨骼并计算校正量（只对「两边都有、且静止朝向/位置不同」的根骨骼） */
+function buildRootCorrections(matchedTargets, sourceRoot) {
+	const corrections = /* @__PURE__ */ new Map();
+	if (sourceRoot === void 0) return corrections;
+	const sourceBones = /* @__PURE__ */ new Map();
+	sourceRoot.traverse((child) => {
+		if (child.isBone) sourceBones.set(child.name, child);
+	});
+	if (sourceBones.size === 0) return corrections;
+	for (const target of matchedTargets) {
+		if (target.isBone !== true) continue;
+		if (hasMatchedAncestor(target, matchedTargets)) continue;
+		const source = sourceBones.get(target.name);
+		if (source === void 0) continue;
+		const targetRest = {
+			p: target.position,
+			q: target.quaternion,
+			s: target.scale
+		};
+		const sourceRest = {
+			p: source.position,
+			q: source.quaternion,
+			s: source.scale
+		};
+		const rotation = targetRest.q.clone().multiply(sourceRest.q.clone().invert());
+		const positionDelta = targetRest.p.distanceTo(sourceRest.p);
+		const rotationDelta = rotation.angleTo(new Quaternion());
+		const scaleDelta = targetRest.s.distanceTo(sourceRest.s);
+		if (positionDelta < 1e-4 && rotationDelta < .001 && scaleDelta < 1e-4) continue;
+		corrections.set(target, {
+			rotation,
+			targetPosition: targetRest.p.clone(),
+			targetScale: targetRest.s.clone(),
+			sourcePosition: sourceRest.p.clone(),
+			sourceScale: sourceRest.s.clone(),
+			targetName: target.name
+		});
+	}
+	return corrections;
+}
+function hasMatchedAncestor(target, matchedTargets) {
+	let parent = target.parent;
+	while (parent !== null && parent !== void 0) {
+		if (matchedTargets.has(parent)) return true;
+		parent = parent.parent;
+	}
+	return false;
+}
+/** 单条轨道按根校正量做静止姿态差变换（position/quaternion/scale；其它属性原样返回 null） */
+function correctTrack(track, property, correction) {
+	const values = track.values;
+	if (property === "quaternion") {
+		const out = new Float32Array(values.length);
+		const q = new Quaternion();
+		for (let index = 0; index + 3 < values.length; index += 4) {
+			q.set(values[index], values[index + 1], values[index + 2], values[index + 3]);
+			q.premultiply(correction.rotation);
+			out[index] = q.x;
+			out[index + 1] = q.y;
+			out[index + 2] = q.z;
+			out[index + 3] = q.w;
+		}
+		return new QuaternionKeyframeTrack(track.name, track.times, out);
+	}
+	if (property === "position") {
+		const out = new Float32Array(values.length);
+		const point = new Vector3();
+		for (let index = 0; index + 2 < values.length; index += 3) {
+			point.set(values[index] - correction.sourcePosition.x, values[index + 1] - correction.sourcePosition.y, values[index + 2] - correction.sourcePosition.z);
+			point.applyQuaternion(correction.rotation);
+			out[index] = correction.targetPosition.x + point.x;
+			out[index + 1] = correction.targetPosition.y + point.y;
+			out[index + 2] = correction.targetPosition.z + point.z;
+		}
+		return new VectorKeyframeTrack(track.name, track.times, out);
+	}
+	if (property === "scale") {
+		const out = new Float32Array(values.length);
+		for (let index = 0; index + 2 < values.length; index += 3) {
+			out[index] = correction.targetScale.x * (values[index] / (correction.sourceScale.x || 1));
+			out[index + 1] = correction.targetScale.y * (values[index + 1] / (correction.sourceScale.y || 1));
+			out[index + 2] = correction.targetScale.z * (values[index + 2] / (correction.sourceScale.z || 1));
+		}
+		return new VectorKeyframeTrack(track.name, track.times, out);
+	}
+	return null;
 }
 /** 由报告派生人话 warnings（截图/预览/工具直接透传） */
 function bindingWarnings(report) {
@@ -48259,6 +48383,7 @@ function bindingWarnings(report) {
 		warnings.push(`动画有 ${report.unmatchedNodeCount} 个节点在 mesh 骨架里没有对应骨骼，已忽略（常见于动作里带的道具/相机/IK 辅助节点）：${sample}${report.unmatchedNodeCount > MAX_UNMATCHED_NODES ? " …" : ""}`);
 	}
 	if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
+	if (report.correctedRoots.length > 0) warnings.push(`动画与 mesh 的根骨骼静止朝向/位置不同（跨导出/坐标系差异，典型是 Z-up 与 Y-up 混用）：已按静止姿态差校正根骨骼 ${report.correctedRoots.join("、")} 的轨道。`);
 	return warnings;
 }
 /** 报告 → 给 AI 读的中文事实句（info/CLI/MCP 共用，数值不重复计算） */
@@ -48267,6 +48392,7 @@ function bindingFacts(report) {
 	facts.push(`动画驱动 mesh 骨架的 ${report.matchedBones}/${report.meshBones} 根骨骼；轨道命中 ${report.matchedTracks}/${report.totalTracks}。`);
 	if (report.unmatchedNodeCount > 0) facts.push(`未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join("、")}${report.unmatchedNodeCount > report.unmatchedNodes.length ? " …" : ""}）——这些节点的动作不会显示。`);
 	if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
+	if (report.correctedRoots.length > 0) facts.push(`根骨骼静止姿态差校正：${report.correctedRoots.join("、")}（两边 up-axis/根朝向不同）。`);
 	return facts;
 }
 //#endregion
@@ -48354,7 +48480,7 @@ function applyPlan(primary, companion, plan, names = {
 	};
 	const animScene = plan.animation === "primary" ? primary : companion;
 	if (animScene.animations.length === 0) throw new KinemeshError(`动画侧没有可用片段：${plan.animation === "primary" ? names.primary : names.companion} 没有解析到 AnimationClip。`, "先 kinemesh_info 确认哪个文件的 clips 非空，再把动画文件作为 path、网格文件作为 mesh 参数。");
-	const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations);
+	const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations, animScene.object);
 	if (!report.ok) throw new KinemeshError(`动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼，示例节点：${report.unmatchedNodes.join("、")}）。`, "确认两个文件来自同一套 rig（骨骼名要能对上，如 Bip001_Spine / mixamorig:Hips 这类）；动画只导出部分骨骼也能绑定（例如 5 根脊柱的受击附加动画），但至少要命中一根；分别对两个文件跑 kinemesh_info 对比 bones/convention，或先用 kinemesh_skeleton 看骨骼清单。");
 	warnings.push(...report.warnings);
 	facts.push(...bindingFacts(report));
@@ -48486,12 +48612,26 @@ var css = `
 .kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:360px;overflow:hidden;
   color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
 .kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px;flex:none}
-.kinemesh-standalonemain{flex:1;min-height:0;display:flex;flex-direction:column;padding-bottom:12px}
-.kinemesh-standalonemain .kinemesh-stage{margin:0 18px}
-.kinemesh-standalonemain .kinemesh-toolbar,
-.kinemesh-standalonemain .kinemesh-transport,
-.kinemesh-standalonemain .kinemesh-readout{padding-left:18px;padding-right:18px}
-.kinemesh-standalonemain .kinemesh-timeline{margin-left:18px;margin-right:18px}
+/* 0.10.1：独立预览页左侧「打开过的模型」层级列表 + 右侧预览 */
+.kinemesh-standalonebody{flex:1;min-height:0;display:flex;gap:12px;padding:0 18px 12px}
+.kinemesh-openedside{width:230px;min-width:190px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
+  overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
+.kinemesh-standalonepreview{flex:1;min-width:0;display:flex;flex-direction:column}
+.kinemesh-standalonepreview .kinemesh-stage{margin:0}
+.kinemesh-standalonepreview .kinemesh-toolbar,
+.kinemesh-standalonepreview .kinemesh-transport,
+.kinemesh-standalonepreview .kinemesh-readout{padding-left:0;padding-right:0}
+.kinemesh-standalonepreview .kinemesh-timeline{margin-left:0;margin-right:0}
+.kinemesh-standalonepreview .kinemesh-banner{margin-left:0;margin-right:0}
+/* 列表行：主按钮 + 删除按钮并排；子节点缩进 */
+.kinemesh-openrow{display:flex;align-items:center;gap:2px}
+.kinemesh-openrow .kinemesh-sideitem{flex:1;min-width:0}
+.kinemesh-sideitem[data-child="true"]{padding-left:16px;font-size:11.5px}
+.kinemesh-openrowdel{flex:none;width:22px;height:22px;display:grid;place-items:center;border-radius:6px;
+  border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);
+  font:inherit;font-size:14px;line-height:1;cursor:pointer;opacity:0}
+.kinemesh-openrow:hover .kinemesh-openrowdel{opacity:.85}
+.kinemesh-openrowdel:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-error-primary)}
 
 /* ———— 模型预览页（conversation.view 页签，M6e） ———— */
 .kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;
@@ -48573,6 +48713,90 @@ function writePaneMemory(key, value) {
 function clearPaneMemories() {
 	paneMemories.clear();
 }
+var openedAssets = /* @__PURE__ */ new Map();
+var openedAssetOrder = 0;
+function openedAssetKey(assetPath) {
+	return assetPath.trim().toLowerCase();
+}
+/** 打开顺序（列表展示/测试用） */
+function openedAssetList() {
+	return [...openedAssets.values()].sort((left, right) => left.order - right.order);
+}
+/** 层级树：网格根/独立条目为根，关联动作作为子节点（孤儿子动画仍按根展示） */
+function openedAssetNodes() {
+	const all = openedAssetList();
+	const byKey = new Map(all.map((asset) => [openedAssetKey(asset.path), asset]));
+	const nodesByKey = /* @__PURE__ */ new Map();
+	for (const asset of all) nodesByKey.set(openedAssetKey(asset.path), {
+		asset,
+		children: []
+	});
+	const roots = [];
+	for (const asset of all) {
+		const node = nodesByKey.get(openedAssetKey(asset.path));
+		const parent = asset.meshPath === "" ? void 0 : byKey.get(openedAssetKey(asset.meshPath));
+		if (parent === void 0 || openedAssetKey(parent.path) === openedAssetKey(asset.path)) {
+			roots.push(node);
+			continue;
+		}
+		nodesByKey.get(openedAssetKey(parent.path)).children.push(asset);
+	}
+	return roots;
+}
+/**
+* 记录一次成功打开（upsert）：网格文件记成根、动作文件记成该网格的子节点；
+* 同一个文件重复打开只更新信息/顺序不变。
+*/
+function recordOpenedAsset(entry) {
+	const rawPath = entry.path.trim();
+	if (rawPath === "") return;
+	const key = openedAssetKey(rawPath);
+	const existing = openedAssets.get(key);
+	const meshPath = (entry.meshPath ?? "").trim();
+	const clips = entry.clips ?? existing?.clips ?? [];
+	const hasMesh = entry.hasMesh || (existing?.hasMesh ?? false);
+	const animated = entry.animated || (existing?.animated ?? false);
+	const hasChildren = openedAssetList().some((asset) => openedAssetKey(asset.meshPath) === key);
+	const kind = meshPath !== "" && !hasMesh ? "animation" : hasMesh ? animated && !hasChildren ? "independent" : "mesh" : "animation";
+	const order = existing?.order ?? openedAssetOrder++;
+	const merged = {
+		path: existing?.path ?? rawPath,
+		name: existing?.name ?? basenameOf(rawPath),
+		kind,
+		hasMesh,
+		animated,
+		clips: [.../* @__PURE__ */ new Set([...clips, ...existing?.clips ?? []])],
+		meshPath: meshPath !== "" ? meshPath : existing?.meshPath ?? "",
+		order
+	};
+	openedAssets.set(key, merged);
+	if (merged.meshPath !== "" && openedAssetKey(merged.meshPath) !== key && !openedAssets.has(openedAssetKey(merged.meshPath))) openedAssets.set(openedAssetKey(merged.meshPath), {
+		path: merged.meshPath,
+		name: basenameOf(merged.meshPath),
+		kind: "mesh",
+		hasMesh: true,
+		animated: false,
+		clips: [],
+		meshPath: "",
+		order: openedAssetOrder++
+	});
+}
+/** 删除一条记录；删的是网格根时连同它下面关联的动作一起删（返回实际删除条数） */
+function removeOpenedAsset(assetPath) {
+	const key = openedAssetKey(assetPath);
+	if (openedAssets.get(key) === void 0) return 0;
+	let removed = 0;
+	for (const [otherKey, asset] of [...openedAssets.entries()]) if (otherKey === key || openedAssetKey(asset.meshPath) === key) {
+		openedAssets.delete(otherKey);
+		removed += 1;
+	}
+	return removed;
+}
+/** 清空记录（测试 / 进程内存复位用） */
+function clearOpenedAssets() {
+	openedAssets.clear();
+	openedAssetOrder = 0;
+}
 /**
 * 加载完成后该恢复成哪个 clip / 帧（0.6.2 抽出为纯函数，便于回归测试）：
 * 记忆命中同一路径且 clip 仍存在 → 恢复；否则取第一个 clip + 第 0 帧；帧号夹到 [0, maxFrame]。
@@ -48640,6 +48864,13 @@ var ZH_TEXTS = {
 	"page.emptyModels": "本会话还没有用过的模型：用「动析」浮层加载，或在下方输入路径打开。",
 	"page.openPath": "模型文件路径（.fbx / .glb / .gltf / .obj）",
 	"page.open": "打开",
+	"opened.title": "打开过的模型（本进程）",
+	"opened.empty": "还没有打开过模型：用右侧路径或拖入文件加载，记录只保留到本进程结束",
+	"opened.delete": "删除这条记录（网格条目会连同关联动作一起删）",
+	"opened.badge.mesh": "网格",
+	"opened.badge.independent": "独立",
+	"opened.badge.animation": "动画",
+	"opened.footHint": "层级：带网格的条目是根，动作文件挂在它绑定的网格下；× 删除记录",
 	"page.meshPath": "mesh 文件（可选：动作没网格时绑网格）",
 	"page.meshTitle": "独立 mesh 文件（动作-only 资产）：例如 basic/xxx_skin.fbx；留空时自动识别同资产网格文件",
 	"binding.chip": "mesh",
@@ -48703,6 +48934,13 @@ var EN_TEXTS = {
 	"page.emptyModels": "No models used in this session yet: load one in the preview overlay, or type a path below.",
 	"page.openPath": "Model file path (.fbx / .glb / .gltf / .obj)",
 	"page.open": "Open",
+	"opened.title": "Opened models (this process)",
+	"opened.empty": "No models opened yet: load one on the right or drag a file here; records live only for this process",
+	"opened.delete": "Delete this record (deleting a mesh also removes its associated motions)",
+	"opened.badge.mesh": "mesh",
+	"opened.badge.independent": "standalone",
+	"opened.badge.animation": "motion",
+	"opened.footHint": "Hierarchy: mesh entries are roots, motion files hang under their bound mesh; × deletes a record",
 	"page.meshPath": "mesh file (optional: bind a mesh to a mesh-less motion)",
 	"page.meshTitle": "Standalone mesh file (motion-only assets), e.g. basic/xxx_skin.fbx; leave empty to auto-detect a mesh in the same asset",
 	"binding.chip": "mesh",
@@ -49395,19 +49633,25 @@ function PreviewPane(props) {
 	* · 主文件自带网格 → 不触发。
 	*/
 	const resolveBoundScene = async (primaryScene, target, explicitMesh) => {
+		const primaryHasMesh = sceneFacts(primaryScene).hasMesh;
 		if (explicitMesh !== "") {
 			const bound = bindScenes(primaryScene, await loadSceneFromData(await fetchModelBytes(explicitMesh, false), explicitMesh), explicitMesh, target);
+			const meshSidePath = bound.plan.mesh === "companion" ? explicitMesh : target;
 			return {
 				scene: bound.scene,
 				binding: bound,
-				meshPath: explicitMesh,
+				meshPath: meshSidePath,
+				animationPath: bound.plan.animation === "primary" ? target : explicitMesh,
+				primaryHasMesh,
 				warnings: bound.warnings
 			};
 		}
-		if (sceneFacts(primaryScene).hasMesh) return {
+		if (primaryHasMesh) return {
 			scene: primaryScene,
 			binding: null,
 			meshPath: "",
+			animationPath: primaryScene.animations.length > 0 ? target : "",
+			primaryHasMesh,
 			warnings: []
 		};
 		const candidates = await discoverCompanionCandidates(target);
@@ -49415,11 +49659,14 @@ function PreviewPane(props) {
 			const companionScene = await loadSceneFromData(await fetchModelBytes(candidate.path, false), candidate.path);
 			if (!sceneFacts(companionScene).hasMesh) continue;
 			const bound = bindScenes(primaryScene, companionScene, candidate.path, target);
+			const reason = candidate.reason === "" ? "" : `（${candidate.reason}）`;
 			return {
 				scene: bound.scene,
 				binding: bound,
 				meshPath: candidate.path,
-				warnings: [`该文件没有网格（动画-only）：已自动识别同资产的网格文件「${candidate.name}」（${candidate.reason}）并绑定；可在「mesh 文件」框里换文件。`, ...bound.warnings]
+				animationPath: bound.plan.animation === "primary" ? target : candidate.path,
+				primaryHasMesh,
+				warnings: [`该文件没有网格（动画-only）：已按文件内容自动识别同资产的网格文件「${candidate.name}」${reason}并绑定；可在「mesh 文件」框里换文件。`, ...bound.warnings]
 			};
 		} catch {
 			continue;
@@ -49428,6 +49675,8 @@ function PreviewPane(props) {
 			scene: primaryScene,
 			binding: null,
 			meshPath: "",
+			animationPath: primaryScene.animations.length > 0 ? target : "",
+			primaryHasMesh,
 			warnings: ["该文件没有网格（动画-only），没有找到可绑定的同资产网格文件：先按骨架预览；要带网格请在「mesh 文件」框填角色网格路径后再加载。"]
 		};
 	};
@@ -49456,6 +49705,13 @@ function PreviewPane(props) {
 			setBinding(resolved.binding);
 			setBindingWarnings(resolved.warnings);
 			setMeshPath(resolved.meshPath);
+			props.onAssetLoaded?.({
+				path: target,
+				meshPath: resolved.meshPath,
+				animationPath: resolved.animationPath,
+				pathHasMesh: resolved.primaryHasMesh,
+				clips: resolved.scene.animations.map((clip, index) => clip.name || `clip_${index}`)
+			});
 			const bounds = viewer.sceneBounds();
 			const maxFrame = Math.max(0, Math.floor(bounds.durationSeconds * 30));
 			setState({
@@ -49550,7 +49806,8 @@ function PreviewPane(props) {
 		if (lastRequestRef.current !== null && lastRequestRef.current.nonce === request.nonce) return;
 		lastRequestRef.current = request;
 		setPathInput(request.path);
-		load(request.path);
+		setMeshInput(request.mesh ?? "");
+		load(request.path, request.mesh ?? "");
 	}, [props.loadRequest]);
 	const dragDepth = react.useRef(0);
 	const onDragEnter = (event) => {
@@ -49874,17 +50131,106 @@ function KinemeshIcon({ size = 18, active = false }) {
 		opacity: active ? 1 : .6
 	}));
 }
+/** 打开过模型列表的一行（网格根 / 独立条目） */
+function OpenedAssetRow(props) {
+	return /* @__PURE__ */ react.createElement("div", { className: "kinemesh-openrow" }, /* @__PURE__ */ react.createElement("button", {
+		type: "button",
+		className: "kinemesh-sideitem",
+		"data-active": props.active ? "true" : "false",
+		"data-child": props.child === true ? "true" : void 0,
+		title: props.asset.path,
+		onClick: props.onOpen
+	}, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sidename" }, props.label), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-badge" }, props.badge)), /* @__PURE__ */ react.createElement("button", {
+		type: "button",
+		className: "kinemesh-openrowdel",
+		title: translate("opened.delete"),
+		"aria-label": translate("opened.delete"),
+		onClick: (event) => {
+			event.stopPropagation();
+			props.onDelete();
+		}
+	}, "×"));
+}
 /**
 * 独立预览页：DSH 左侧侧边栏入口打开的纯预览（拖转 / 播放 / 强度曲线 / 拖入文件），
 * **不显示「发送给 AI 分析」**（那是会话页签的功能）。不依赖会话，无 sessionId 也可用。
+* 0.10.1：左侧加「打开过的模型」层级列表（进程内内存）：带网格的条目为根，动作-only 文件挂在
+* 它绑定的网格下当子节点；记录可逐条删除。
 */
 function StandalonePreviewPage() {
-	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalone" }, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-standalonehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, translate("standalone.title")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("standalone.subtitle"))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalonemain" }, /* @__PURE__ */ react.createElement(PreviewPane, {
+	const [version, setVersion] = react.useState(0);
+	const [activePath, setActivePath] = react.useState("");
+	const [loadRequest, setLoadRequest] = react.useState(null);
+	const nonceRef = react.useRef(0);
+	const nodes = react.useMemo(() => openedAssetNodes(), [version]);
+	const open = (assetPath, mesh) => {
+		setActivePath(assetPath);
+		setLoadRequest({
+			path: assetPath,
+			mesh,
+			nonce: ++nonceRef.current
+		});
+	};
+	/** 一次成功加载 → 记录/更新层级列表 */
+	const remember = (info) => {
+		const meshSide = info.meshPath;
+		const animationSide = info.animationPath;
+		if (meshSide !== "" && animationSide !== "" && meshSide.toLowerCase() !== animationSide.toLowerCase()) {
+			recordOpenedAsset({
+				path: meshSide,
+				hasMesh: true,
+				animated: false
+			});
+			recordOpenedAsset({
+				path: animationSide,
+				hasMesh: false,
+				animated: info.clips.length > 0,
+				clips: info.clips,
+				meshPath: meshSide
+			});
+		} else recordOpenedAsset({
+			path: info.path,
+			hasMesh: info.pathHasMesh,
+			animated: info.clips.length > 0,
+			clips: info.clips,
+			meshPath: ""
+		});
+		setVersion((value) => value + 1);
+	};
+	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalone" }, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-standalonehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, translate("standalone.title")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("standalone.subtitle"))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalonebody" }, /* @__PURE__ */ react.createElement("aside", { className: "kinemesh-side kinemesh-openedside" }, /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sidehead" }, translate("opened.title")), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sideitems" }, nodes.length === 0 ? /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sideempty" }, translate("opened.empty")) : nodes.map((node) => {
+		const childCount = node.children.length;
+		const badge = node.asset.kind === "animation" ? translate("opened.badge.animation") : node.asset.hasMesh && node.asset.animated ? translate("opened.badge.independent") : node.asset.hasMesh ? translate("opened.badge.mesh") : translate("opened.badge.animation");
+		return /* @__PURE__ */ react.createElement(react.Fragment, { key: node.asset.path }, /* @__PURE__ */ react.createElement(OpenedAssetRow, {
+			asset: node.asset,
+			badge: childCount > 0 ? `${badge} · ${childCount}` : badge,
+			label: node.asset.name,
+			active: activePath.toLowerCase() === node.asset.path.toLowerCase(),
+			onOpen: () => open(node.asset.path),
+			onDelete: () => {
+				removeOpenedAsset(node.asset.path);
+				setVersion((value) => value + 1);
+			}
+		}), node.children.map((child) => /* @__PURE__ */ react.createElement(OpenedAssetRow, {
+			key: child.path,
+			asset: child,
+			badge: translate("opened.badge.animation"),
+			label: `└ ${child.name}`,
+			active: activePath.toLowerCase() === child.path.toLowerCase(),
+			child: true,
+			onOpen: () => open(child.path, node.asset.path),
+			onDelete: () => {
+				removeOpenedAsset(child.path);
+				setVersion((value) => value + 1);
+			}
+		})));
+	})), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-sidefoot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("opened.footHint")))), /* @__PURE__ */ react.createElement("section", { className: "kinemesh-standalonepreview" }, /* @__PURE__ */ react.createElement(PreviewPane, {
 		sessionId: "",
 		showPathInput: true,
 		allowSend: false,
-		persistKey: "standalone"
-	}))));
+		persistKey: "standalone",
+		loadRequest,
+		onAssetLoaded: remember
+	})))));
 }
 function PreviewPage({ sessionId }) {
 	const sid = typeof sessionId === "string" ? sessionId.trim() : "";
@@ -50051,6 +50397,7 @@ exports.StandalonePreviewPage = StandalonePreviewPage;
 exports.apply = apply;
 exports.basenameOf = basenameOf;
 exports.clampFrame = clampFrame;
+exports.clearOpenedAssets = clearOpenedAssets;
 exports.clearPaneMemories = clearPaneMemories;
 exports.computeTickStep = computeTickStep;
 exports.displayFromSuggestion = displayFromSuggestion;
@@ -50063,8 +50410,12 @@ exports.inject = inject;
 exports.isModelFileName = isModelFileName;
 exports.meshBindingChip = meshBindingChip;
 exports.normalizeEnergySeries = normalizeEnergySeries;
+exports.openedAssetList = openedAssetList;
+exports.openedAssetNodes = openedAssetNodes;
 exports.pickSendDigest = pickSendDigest;
 exports.readPaneMemory = readPaneMemory;
+exports.recordOpenedAsset = recordOpenedAsset;
+exports.removeOpenedAsset = removeOpenedAsset;
 exports.resolveRestoreTarget = resolveRestoreTarget;
 exports.segmentColor = segmentColor;
 exports.shouldShowPreviewTab = shouldShowPreviewTab;

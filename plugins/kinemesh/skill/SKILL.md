@@ -89,30 +89,35 @@ node <本目录>/cli/kinemesh.cjs --version     # 手上是哪一版
 带 root motion 的动作（冲刺/突进/跳跃位移）不会跑出画面，身体漂移超过自身半径 15% 时 warnings 会提示；
 显式给 `--azimuth/--elevation/--distance/--target/--fov` 则按你指定的**固定构图**渲染，不做逐帧跟拍。
 
-### 动作文件不带 mesh：独立 mesh 文件（0.10.0）
+### 动作文件不带 mesh：独立 mesh 文件（0.10.0；0.10.1 改为内容匹配）
 
-游戏资产常把**动作单独导出**（例如 `<角色>/hit/decide_spine_shake.fbx` 只有骨架+动画、`meshes: []`），
-角色网格在另一个文件（例如 `<角色>/basic/<角色>_skin.fbx`）。这类文件直接 `render` 只能出骨架图；
+游戏资产常把**动作单独导出**（例如 `<角色>/Animation/.../Attack.fbx` 只有骨架+动画、`meshes: []`），
+角色网格在另一个文件（例如 `<角色>/Basics/<角色>_lod_Skin.fbx`）。这类文件直接 `render` 只能出骨架图；
 加 `--mesh <网格文件>` 就会用它做网格主体、把动画按骨骼名绑定过去：
 
 ```bash
-node cli/kinemesh.cjs render <角色>/hit/hit.fbx --mesh <角色>/basic/<角色>_skin.fbx --clip "Take 001" --frames 0,2 --view-preset front
-node cli/kinemesh.cjs info   <角色>/hit/hit.fbx --mesh <角色>/basic/<角色>_skin.fbx
+node cli/kinemesh.cjs render <动作.fbx> --mesh <网格.fbx> --clip "Take 001" --frames 0,2 --view-preset front
+node cli/kinemesh.cjs info   <动作.fbx> --mesh <网格.fbx>
 ```
 
 自动识别与绑定口径（都是工具确定性产出，直接引用即可）：
 
-- **不传 `--mesh` 时自动识别**：工具在动作文件附近（本目录 / 上级角色目录 / 上级资产目录及其 `basic|mesh|model|body|skin` 子目录）
-  按命名/目录启发式找候选网格文件，解析确认有网格后自动绑定，`warnings` 里写明「已自动识别同资产的网格文件「…」并绑定」；
-  找不到则退回骨架并提示用 `--mesh` 显式指定。`info` 不带 `--mesh` 时也会列出同资产候选网格文件名。
+- **不传 `--mesh` 时自动识别（0.10.1：只看文件内容，不依赖文件名/目录名）**：在动作文件附近（本目录 /
+  上一级 / 上两级，各向下 3 层、最多 400 个模型文件）先做便宜的内容探测——FBX 有 `Geometry` 节点、glTF 有
+  `meshes`/`skins` 才算网格候选；再按**骨骼名覆盖率**（命中动作骨骼数 / 网格骨骼数）排序，取最高者绑定。
+  `warnings` 里写明「已按文件内容自动识别同资产的网格文件「…」（骨骼命中 71/80（89%））」与其它候选；
+  找不到则退回骨架并提示用 `--mesh` 显式指定。`info` 不带 `--mesh` 时也会列出同资产内容扫描候选。
 - **角色自动识别**：`path` 提供动画、`--mesh` 提供网格；两个参数传反（path 有网格、mesh 文件有动画）也能自动纠正，
   `warnings` 会说明实际分配。两个文件都有网格时按 `--mesh` 的网格渲染并提示。
 - **骨骼名绑定**：精确名优先，其次按命名空间归一化（`mixamorig:`、`Armature|` 等）匹配；**只导出部分骨骼的动作
   （例如 5 根脊柱的受击附加动画）也能绑定**——命中的骨骼被驱动，未命中的保持 rest 姿态；完全不匹配会三段式报错
   （提示两边来自同一套 rig、可分别 `info`/`skeleton` 对比骨骼名）。
-- **输出**：`render` 返回 `binding.plan`（`{mesh, animation}`）与 `binding.facts`（如「动画驱动 mesh 骨架的 5/88 根骨骼；轨道命中 18/18」）；
+- **根骨骼静止姿态差校正（0.10.1）**：同一套 rig 分两次导出时顶层被动画骨骼的静止朝向可能不同（典型：mesh 导
+  Z-up、动作导 Y-up，FBXLoader 只给 mesh 根节点加 −90°X）。工具会把两边根骨骼的静止姿态差算进去（
+  `binding.facts` 会写明「根骨骼静止姿态差校正：Bip001」），避免直接搬局部值导致角色「躺倒」；子骨骼局部值不动。
+- **输出**：`render` 返回 `binding.plan`（`{mesh, animation}`）与 `binding.facts`（如「动画驱动 mesh 骨架的 71/83 根骨骼；轨道命中 213/213」）；
   `info --mesh` 返回 `companion`（网格文件的结构信息）+ `binding`（plan / report 命中统计 / facts / warnings / error）。
-- 前提：两边来自**同一套 rig**（骨骼名能对上）。单位/初始朝向差异不做自动修正——那是重定向（retarget）的范畴，本工具只做同名绑定。
+- 前提：两边来自**同一套 rig**（骨骼名能对上）。单位/比例差异不做自动换算——那属于重定向（retarget）范畴。
 
 `skeleton` 选项（DSH 工具 `kinemesh_skeleton` / MCP 同名同参）：
 

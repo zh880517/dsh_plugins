@@ -180,10 +180,10 @@ server.tool(
     '自动取景**（带 root motion 的动作不会跑出画面；显式给 view 则按指定构图）。boneLabels 在 skeleton / bones-overlay 模式下' +
     '给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。' +
     '**动作文件不带 mesh 时**：mesh 参数给独立网格文件（自动识别角色、按骨骼名绑定，部分骨骼动作也可）；' +
-    '不传时自动识别同资产网格文件。截屏构图与 DSH「动析」预览面板一致。',
+    '不传时按文件内容（骨骼覆盖率）自动识别同资产网格文件。截屏构图与 DSH「动析」预览面板一致。',
   {
     path: z.string().describe('模型文件路径'),
-    mesh: z.string().optional().describe('独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；不传时自动识别同资产网格文件'),
+    mesh: z.string().optional().describe('独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；不传时按文件内容（骨骼覆盖率）自动识别同资产网格文件'),
     clip: z.string().optional().describe('动画片段名（先 kinemesh_info 查）；静态模型省略'),
     frames: z.array(z.number().int().nonnegative()).optional().describe('帧号列表（≤64 个，按 30fps 换算 time=frame/30；必填语义在 handler 校验，缺了给三段式指引）'),
     view: z.record(z.string(), z.unknown()).optional().describe('完整视角对象 {"camera":{"azimuth":45,"elevation":15,"distance":3.2,"target":[0,1,0],"fov":40}}'),

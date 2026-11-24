@@ -26782,12 +26782,12 @@ function basename$1(url) {
 //#region
 /** FBX 二进制头：'Kaydara FBX Binary  ' + 0x00 0x1A 0x00 */
 var BINARY_MAGIC = "Kaydara FBX Binary  \0\0";
-function isFbxBinary(data) {
+function isFbxBinary$1(data) {
 	if (data.byteLength < 23) return false;
 	return new TextDecoder("latin1").decode(new Uint8Array(data, 0, 23)) === BINARY_MAGIC;
 }
 function parseFbx(data, ctx) {
-	const binary = isFbxBinary(data);
+	const binary = isFbxBinary$1(data);
 	const manager = new LoadingManager();
 	stubNodeTextures(manager);
 	const loader = new FBXLoader(manager);
@@ -30356,125 +30356,364 @@ function headBytes(data) {
 }
 //#endregion
 //#region
+/** 常见的导出器命名空间前缀（可叠加，如 `Armature|mixamorig:Hips`） */
+var NAMESPACE_PREFIXES = [
+	/^mixamorig\d*:/i,
+	/^armature\s*[|:]\s*/i,
+	/^root\s*[|:]\s*/i,
+	/^biped\s*[|:]\s*/i,
+	/^bip\d*\s*[|:]\s*/i
+];
+/** 去掉命名空间前缀（最多剥 4 层，防止异常名字死循环） */
+function stripNodeNamespaces(name) {
+	let current = name.trim();
+	for (let depth = 0; depth < 4; depth += 1) {
+		let next = current;
+		for (const pattern of NAMESPACE_PREFIXES) next = next.replace(pattern, "");
+		if (next === current) break;
+		current = next;
+	}
+	return current;
+}
+/** 归一化比较键：去命名空间 → 空格转下划线 → 小写 */
+function nodeNameKey(name) {
+	return stripNodeNamespaces(name).replace(/\s+/g, "_").toLowerCase();
+}
+/** 给 mesh 场景建节点索引（一次遍历，后续按名字查） */
+function buildNodeIndex(root) {
+	const exact = /* @__PURE__ */ new Map();
+	const normalized = /* @__PURE__ */ new Map();
+	let count = 0;
+	let bones = 0;
+	root.traverse((child) => {
+		if (child.isBone) bones += 1;
+		const name = child.name;
+		if (name === "") return;
+		count += 1;
+		if (!exact.has(name)) exact.set(name, child);
+		const key = nodeNameKey(name);
+		if (!normalized.has(key)) normalized.set(key, child);
+		const sanitized = key.replace(/[.[\]:/]/g, "");
+		if (!normalized.has(sanitized)) normalized.set(sanitized, child);
+	});
+	return {
+		exact,
+		normalized,
+		count,
+		bones
+	};
+}
+/** 查节点：精确名 > 归一化名；找不到返回 null */
+function matchNode(index, nodeName) {
+	const exact = index.exact.get(nodeName);
+	if (exact !== void 0) return {
+		node: exact,
+		via: "exact"
+	};
+	const key = nodeNameKey(nodeName);
+	const normalized = index.normalized.get(key);
+	if (normalized !== void 0) return {
+		node: normalized,
+		via: "normalized"
+	};
+	const sanitized = key.replace(/[.[\]:/]/g, "");
+	const fallback = index.normalized.get(sanitized);
+	if (fallback !== void 0) return {
+		node: fallback,
+		via: "normalized"
+	};
+	return null;
+}
+//#endregion
+//#region
+/** 一次内容扫描的预算（长尾资产不扫全盘） */
+var MAX_DEPTH = 3;
+var MAX_FILES = 400;
+var MAX_RESULTS = 6;
+/** 无法便宜抽骨骼名的格式（二进制 FBX），最多解析几个候选来评分 */
+var MAX_PARSE_CANDIDATES = 4;
+/** 模型扩展名（registry 支持的全部格式） */
 var MODEL_EXTENSIONS$1 = /* @__PURE__ */ new Set([
 	".fbx",
 	".glb",
 	".gltf",
 	".obj"
 ]);
-/** 常见 mesh 目录名（资产里角色网格通常放这些目录） */
-var MESH_DIR_NAMES = /^(basic|mesh|meshes|model|models|body|skin|char|character)$/i;
-/** 文件名里像动画的词——命中则降权（避免把另一段动作当成网格文件） */
-var ANIM_NAME_HINTS = /(attack|idle|run|walk|hit|behit|dead|dodge|skill|jump|stand|stun|turn|charge|cast|born|start|end|loop|pose|anim)/i;
-/** 文件名里像网格的词（分数从高到低，取第一个命中的） */
-var MESH_NAME_HINTS = [
-	{
-		pattern: /_skin\b/i,
-		score: 140,
-		reason: "文件名含 _skin"
-	},
-	{
-		pattern: /skin/i,
-		score: 120,
-		reason: "文件名含 skin"
-	},
-	{
-		pattern: /mesh/i,
-		score: 100,
-		reason: "文件名含 mesh"
-	},
-	{
-		pattern: /body/i,
-		score: 80,
-		reason: "文件名含 body"
-	},
-	{
-		pattern: /model/i,
-		score: 70,
-		reason: "文件名含 model"
-	},
-	{
-		pattern: /char(acter)?/i,
-		score: 60,
-		reason: "文件名含 character"
-	}
-];
+var probeCache = /* @__PURE__ */ new Map();
+/** 从场景对象收集骨骼名（给自动扫描/候选报告用） */
+function collectBoneNames(root) {
+	const names = [];
+	root.traverse((child) => {
+		const bone = child;
+		if (bone.isBone === true && typeof bone.name === "string" && bone.name !== "") names.push(bone.name);
+	});
+	return names;
+}
 /**
-* 发现同资产的候选 mesh 文件（按分数降序）。
-* 只看动作文件附近的目录（含 basic/ 之类约定子目录），不递归全盘；排除动作文件本身。
+* 动作侧的「骨架节点名」：骨骼名 + 动画轨道驱动的节点名。
+* 动作-only 的 glTF 没有 skin，节点会是一般 Object3D（不是 Bone）——只收骨骼会漏掉，
+* 所以运动轨道里的节点名也一并算作骨架节点（用于跟网格侧骨骼名做覆盖率匹配）。
 */
-async function discoverCompanionMeshes(absPath) {
-	const self = path.resolve(absPath);
-	const ownDir = path.dirname(self);
-	const characterDir = path.dirname(ownDir);
-	const dirs = await collectCandidateDirs([
+function collectSkeletonNames(scene) {
+	const names = new Set(collectBoneNames(scene.object));
+	for (const clip of scene.animations) for (const track of clip.tracks) {
+		const parsed = parseTrackNodeName(track.name);
+		if (parsed !== "") names.add(parsed);
+	}
+	return [...names];
+}
+/** 轨道名取节点名（与 three 的 PropertyBinding 解析口径一致，避免手写正则偏差） */
+function parseTrackNodeName(trackName) {
+	const lastDot = trackName.lastIndexOf(".");
+	return lastDot > 0 ? trackName.slice(0, lastDot) : trackName;
+}
+/**
+* 内容扫描：找「有网格 + 骨骼能对上」的候选模型文件（按骨骼覆盖率排序）。
+* @param absPath 动作文件绝对路径
+* @param animationBoneNames 动作文件的骨骼名（用于覆盖率评分；空数组时只按文件内容筛网格）
+*/
+async function findCompanionMeshes(absPath, animationBoneNames, options = {}) {
+	const files = await collectNearbyModelFiles(path.resolve(absPath), options.maxFiles ?? MAX_FILES, options.maxDepth ?? MAX_DEPTH);
+	if (files.length === 0) return [];
+	const probes = [];
+	const batch = 16;
+	for (let offset = 0; offset < files.length; offset += batch) {
+		const chunk = files.slice(offset, offset + batch);
+		const results = await Promise.all(chunk.map((entry) => probeModelFile(entry.abs, entry.depth)));
+		for (const probe of results) if (probe !== null) probes.push(probe);
+	}
+	const animationKeys = new Set(animationBoneNames.map((name) => nodeNameKey(name)));
+	const meshProbes = probes.filter((probe) => probe.hasMesh);
+	if (meshProbes.length === 0) return [];
+	const unknown = meshProbes.filter((probe) => probe.boneNames === null).sort((left, right) => left.bytes - right.bytes);
+	const parseBudget = Math.min(MAX_PARSE_CANDIDATES, unknown.length);
+	const resolved = /* @__PURE__ */ new Map();
+	await Promise.all(unknown.slice(0, parseBudget).map(async (probe) => {
+		const parsed = await parseBonesOf(probe.path);
+		if (parsed !== null) resolved.set(probe.path, parsed);
+	}));
+	const matches = [];
+	for (const probe of meshProbes) {
+		const boneNames = probe.boneNames ?? resolved.get(probe.path)?.boneNames ?? null;
+		if ((probe.boneNames === null ? resolved.get(probe.path)?.hasMesh ?? probe.hasMesh : probe.hasMesh) !== true) continue;
+		const stats = scoreBones(boneNames, animationKeys);
+		if (animationKeys.size > 0 && stats.matchedBones === 0) continue;
+		const coverage = stats.meshBones > 0 ? stats.matchedBones / stats.meshBones : 0;
+		matches.push({
+			path: probe.path,
+			name: probe.name,
+			bytes: probe.bytes,
+			matchedBones: stats.matchedBones,
+			meshBones: stats.meshBones,
+			coverage,
+			depth: probe.depth,
+			reason: stats.meshBones > 0 ? `骨骼命中 ${stats.matchedBones}/${stats.meshBones}（${Math.round(coverage * 100)}%）` : "文件里有网格（骨骼名需解析确认）"
+		});
+	}
+	matches.sort((left, right) => {
+		if (right.coverage !== left.coverage) return right.coverage - left.coverage;
+		if (right.matchedBones !== left.matchedBones) return right.matchedBones - left.matchedBones;
+		if (left.bytes !== right.bytes) return left.bytes - right.bytes;
+		if (left.depth !== right.depth) return left.depth - right.depth;
+		return left.path.localeCompare(right.path);
+	});
+	return matches.slice(0, options.maxResults ?? MAX_RESULTS);
+}
+/** 动作文件附近收集模型文件：所在目录 / 上一级 / 上两级，各向下 maxDepth 层 */
+async function collectNearbyModelFiles(absPath, maxFiles, maxDepth) {
+	const ownDir = path.dirname(absPath);
+	const roots = [
 		ownDir,
-		characterDir,
-		path.dirname(characterDir)
-	]);
-	const candidates = [];
+		path.dirname(ownDir),
+		path.dirname(path.dirname(ownDir))
+	];
+	const files = [];
 	const seen = /* @__PURE__ */ new Set();
-	for (const dir of dirs) {
-		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-		for (const entry of entries) {
-			if (!entry.isFile()) continue;
-			const ext = path.extname(entry.name).toLowerCase();
-			if (!MODEL_EXTENSIONS$1.has(ext)) continue;
-			const filePath = path.join(dir, entry.name);
-			if (path.resolve(filePath) === self) continue;
-			const key = path.resolve(filePath).toLowerCase();
-			if (seen.has(key)) continue;
-			seen.add(key);
-			candidates.push(scoreCandidate(filePath, entry.name, dir, ownDir, characterDir));
+	const seenDirs = /* @__PURE__ */ new Set();
+	for (const root of roots) {
+		if (seenDirs.has(root)) continue;
+		seenDirs.add(root);
+		const queue = [{
+			dir: root,
+			depth: 0
+		}];
+		while (queue.length > 0 && files.length < maxFiles) {
+			const current = queue.shift();
+			if (current.depth > maxDepth) continue;
+			const entries = await readdir(current.dir, { withFileTypes: true }).catch(() => []);
+			for (const entry of entries) {
+				if (entry.isDirectory()) {
+					if (entry.name.startsWith(".")) continue;
+					queue.push({
+						dir: path.join(current.dir, entry.name),
+						depth: current.depth + 1
+					});
+					continue;
+				}
+				if (!entry.isFile()) continue;
+				const ext = path.extname(entry.name).toLowerCase();
+				if (!MODEL_EXTENSIONS$1.has(ext)) continue;
+				const abs = path.join(current.dir, entry.name);
+				if (path.resolve(abs) === absPath) continue;
+				const key = path.resolve(abs).toLowerCase();
+				if (seen.has(key)) continue;
+				seen.add(key);
+				files.push({
+					abs,
+					depth: current.depth
+				});
+				if (files.length >= maxFiles) break;
+			}
+		}
+		if (files.length >= maxFiles) break;
+	}
+	return files;
+}
+async function probeModelFile(abs, depth) {
+	const info = await stat(abs).catch(() => void 0);
+	if (info === void 0 || !info.isFile()) return null;
+	const cached = probeCache.get(abs);
+	if (cached !== void 0 && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.probe === null ? null : {
+		...cached.probe,
+		depth
+	};
+	let probe = null;
+	try {
+		probe = probeBuffer(abs, await readFile(abs));
+	} catch {
+		probe = null;
+	}
+	probeCache.set(abs, {
+		mtimeMs: info.mtimeMs,
+		size: info.size,
+		probe
+	});
+	return probe === null ? null : {
+		...probe,
+		depth
+	};
+}
+/** 按扩展名/内容做便宜探测：是否有网格 + 能便宜拿到的骨骼名 */
+function probeBuffer(abs, data) {
+	const name = path.basename(abs);
+	const ext = path.extname(name).toLowerCase();
+	const base = {
+		path: abs,
+		name,
+		bytes: data.byteLength
+	};
+	if (ext === ".fbx") {
+		if (isFbxBinary(data)) {
+			const text = data.toString("latin1");
+			return {
+				...base,
+				hasMesh: text.includes("Geometry"),
+				boneNames: null
+			};
+		}
+		const text = data.toString("utf8");
+		return {
+			...base,
+			hasMesh: /(^|\n)\s*Geometry:/.test(text),
+			boneNames: extractAsciiFbxBones(text)
+		};
+	}
+	if (ext === ".glb") {
+		const json = readGlbJson(data);
+		if (json === null) return null;
+		return {
+			...base,
+			hasMesh: gltfHasMesh(json),
+			boneNames: gltfBoneNames(json)
+		};
+	}
+	if (ext === ".gltf") try {
+		const json = JSON.parse(data.toString("utf8"));
+		return {
+			...base,
+			hasMesh: gltfHasMesh(json),
+			boneNames: gltfBoneNames(json)
+		};
+	} catch {
+		return null;
+	}
+	if (ext === ".obj") return {
+		...base,
+		hasMesh: true,
+		boneNames: []
+	};
+	return null;
+}
+function isFbxBinary(data) {
+	return data.length >= 23 && data.toString("latin1", 0, 23) === "Kaydara FBX Binary  \0\0";
+}
+/** ASCII FBX 直接抽骨骼名（Model: id, "Model::Name", "LimbNode"|"Bone"|"Root"） */
+function extractAsciiFbxBones(text) {
+	const names = [];
+	const pattern = /(?:^|\n)\s*Model:\s*\d+\s*,\s*"([^"]*)"\s*,\s*"(LimbNode|Bone|Root)"\s*\{/g;
+	let match;
+	while ((match = pattern.exec(text)) !== null) {
+		const raw = (match[1] ?? "").replace(/^Model::/, "").replace(/^Model\|/, "");
+		if (raw !== "") names.push(raw);
+	}
+	return names;
+}
+function readGlbJson(data) {
+	if (data.length < 20) return null;
+	if (data.readUInt32LE(0) !== 1179937895) return null;
+	const chunkLength = data.readUInt32LE(12);
+	if (data.readUInt32LE(16) !== 1313821514) return null;
+	try {
+		return JSON.parse(data.toString("utf8", 20, Math.min(20 + chunkLength, data.length)));
+	} catch {
+		return null;
+	}
+}
+function gltfHasMesh(json) {
+	return Array.isArray(json.meshes) && json.meshes.length > 0;
+}
+/** glTF 骨骼名：skins[].joints 指向的节点名（没有 skin 时为空 = 不能当绑定位） */
+function gltfBoneNames(json) {
+	const nodes = Array.isArray(json.nodes) ? json.nodes : [];
+	const skins = Array.isArray(json.skins) ? json.skins : [];
+	const names = [];
+	for (const skin of skins) {
+		const joints = Array.isArray(skin.joints) ? skin.joints : [];
+		for (const index of joints) {
+			const node = nodes[index];
+			const name = node !== void 0 && typeof node.name === "string" ? node.name : "";
+			if (name !== "") names.push(name);
 		}
 	}
-	return candidates.filter((candidate) => candidate.score > 0).sort((left, right) => right.score - left.score || left.name.localeCompare(right.name)).slice(0, 5);
+	return [...new Set(names)];
 }
-/** 目录清单：本目录 / 角色目录 / 资产目录 + 各自下的 mesh 约定子目录（dedupe） */
-async function collectCandidateDirs(seeds) {
-	const dirs = [];
-	const seen = /* @__PURE__ */ new Set();
-	const push = (dir) => {
-		const key = path.resolve(dir).toLowerCase();
-		if (seen.has(key)) return;
-		seen.add(key);
-		dirs.push(dir);
-	};
-	/** 只展开一层「mesh 约定」子目录（basic/、mesh/ 等），不做全递归 */
-	const expand = async (dir) => {
-		push(dir);
-		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-		for (const entry of entries) if (entry.isDirectory() && MESH_DIR_NAMES.test(entry.name)) push(path.join(dir, entry.name));
-	};
-	for (const seed of seeds) await expand(seed);
-	return dirs;
+async function parseBonesOf(abs) {
+	try {
+		const data = await readFile(abs);
+		const { scene } = await loadModelScene(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), path.basename(abs));
+		let hasMesh = false;
+		scene.object.traverse((child) => {
+			if (child.isMesh === true) hasMesh = true;
+		});
+		return {
+			boneNames: collectBoneNames(scene.object),
+			hasMesh
+		};
+	} catch {
+		return null;
+	}
 }
-/** 打分：目录约定 + 文件名关键词 − 动画词降权 + 与角色目录名的词干重合 */
-function scoreCandidate(filePath, fileName, dir, ownDir, characterDir) {
-	const stem = fileName.replace(/\.[^.]+$/, "");
-	const reasons = [];
-	let score = 0;
-	const dirBase = path.basename(dir);
-	if (MESH_DIR_NAMES.test(dirBase)) {
-		score += 40;
-		reasons.push(`${dirBase}/ 目录`);
-	} else if (path.resolve(dir) === path.resolve(ownDir)) score += 10;
-	for (const hint of MESH_NAME_HINTS) if (hint.pattern.test(stem)) {
-		score += hint.score;
-		reasons.push(hint.reason);
-		break;
-	}
-	if (ANIM_NAME_HINTS.test(stem) && !/skin|mesh|body|model/i.test(stem)) score -= 90;
-	const characterStem = path.basename(characterDir).toLowerCase();
-	if (characterStem !== "" && stem.toLowerCase().startsWith(characterStem)) {
-		score += 30;
-		reasons.push("文件名以角色目录名开头");
-	}
+function scoreBones(boneNames, animationKeys) {
+	if (boneNames === null) return {
+		matchedBones: 0,
+		meshBones: 0
+	};
+	const unique = new Set(boneNames.map((name) => nodeNameKey(name)));
+	let matched = 0;
+	for (const key of unique) if (animationKeys.has(key)) matched += 1;
 	return {
-		path: filePath,
-		name: fileName,
-		score,
-		reason: reasons.length === 0 ? "同目录附近的模型文件" : reasons.join(" + ")
+		matchedBones: matched,
+		meshBones: unique.size
 	};
 }
 //#endregion
@@ -33900,18 +34139,22 @@ function sanitizeBaseName(fileName) {
 }
 //#endregion
 //#region
-/** 最多解析多少个候选（每个都是一次完整场景加载） */
-var MAX_CANDIDATE_PARSES = 3;
 /**
-* 给一个「可能没有网格」的模型文件自动找同资产网格文件。
+* 给一个「可能没有网格」的模型文件自动找同资产网格文件（内容扫描 + 骨骼覆盖率评分）。
 * - path 文件有网格 → 不触发（companion=null、无警告）；
 * - path 文件解析失败 → 不触发（错误交给后续渲染/分析链路报）；
-* - 找到 → companion + 一条「已自动识别」警告；找不到 → 一条「如何显式指定」警告。
+* - 找到 → companion + 一条「已自动识别」警告（含覆盖率与其它候选）；找不到 → 「如何显式指定」警告。
 */
 async function autoResolveCompanion(primaryAbs, primaryData, primaryFileName = path.basename(primaryAbs)) {
 	let hasMesh;
+	let skeletonNames;
 	try {
-		hasMesh = (await analyzeModelCached(primaryAbs, primaryData, primaryFileName)).meshes.length > 0;
+		const scene = await getCachedScene(primaryAbs, async () => (await loadModelScene(primaryData, primaryFileName)).scene);
+		hasMesh = false;
+		scene.object.traverse((child) => {
+			if (child.isMesh === true) hasMesh = true;
+		});
+		skeletonNames = collectSkeletonNames(scene);
 	} catch {
 		return {
 			companion: null,
@@ -33922,112 +34165,34 @@ async function autoResolveCompanion(primaryAbs, primaryData, primaryFileName = p
 		companion: null,
 		warnings: []
 	};
-	const candidates = await discoverCompanionMeshes(primaryAbs);
-	if (candidates.length === 0) return {
+	const matches = await findCompanionMeshes(primaryAbs, skeletonNames);
+	if (matches.length === 0) return {
 		companion: null,
 		warnings: [missingMeshWarning()]
 	};
-	const tried = [];
-	for (const candidate of candidates.slice(0, MAX_CANDIDATE_PARSES)) {
-		let companion = null;
-		try {
-			const buffer = await readFile(candidate.path);
-			const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-			if ((await analyzeModelCached(candidate.path, data, candidate.name)).meshes.length > 0) companion = {
+	const top = matches[0];
+	try {
+		const buffer = await readFile(top.path);
+		const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+		const alternatives = matches.slice(1, 4).map((match) => match.name);
+		return {
+			companion: {
 				data,
-				fileName: candidate.name,
-				abs: candidate.path,
-				reason: candidate.reason
-			};
-			else tried.push(candidate.name);
-		} catch {
-			tried.push(candidate.name);
-		}
-		if (companion !== null) {
-			const alternatives = candidates.filter((entry) => entry.path !== candidate.path).map((entry) => entry.name).slice(0, 3);
-			return {
-				companion,
-				warnings: [`path 文件没有网格（动画-only）：已自动识别同资产的网格文件「${candidate.name}」（${candidate.reason}）并交给绑定；绑定按骨骼名自动匹配（未命中骨骼保持 rest 姿态）。替换网格用 mesh 参数显式指定。` + (alternatives.length > 0 ? `其它候选：${alternatives.join("、")}。` : "")]
-			};
-		}
+				fileName: top.name,
+				abs: top.path,
+				reason: top.reason
+			},
+			warnings: [`path 文件没有网格（动画-only）：已按文件内容自动识别同资产的网格文件「${top.name}」并交给绑定（${top.reason}）；绑定按骨骼名自动匹配（未命中骨骼保持 rest 姿态）。替换网格用 mesh 参数显式指定。` + (alternatives.length > 0 ? `其它候选：${alternatives.join("、")}。` : "")]
+		};
+	} catch {
+		return {
+			companion: null,
+			warnings: [missingMeshWarning()]
+		};
 	}
-	return {
-		companion: null,
-		warnings: [`path 文件没有网格（动画-only），同资产没有找到可用的网格文件` + (tried.length > 0 ? `（已尝试：${tried.join("、")}）` : "") + `：按骨架预览/截图；要带网格请用 mesh 参数指定网格文件。`]
-	};
 }
 function missingMeshWarning() {
-	return "path 文件没有网格（动画-only），同资产目录里也没有发现候选网格文件：按骨架预览/截图；要带网格请用 mesh 参数指定网格文件（先 kinemesh_info 确认该文件 meshes 非空）。";
-}
-//#endregion
-//#region
-/** 常见的导出器命名空间前缀（可叠加，如 `Armature|mixamorig:Hips`） */
-var NAMESPACE_PREFIXES = [
-	/^mixamorig\d*:/i,
-	/^armature\s*[|:]\s*/i,
-	/^root\s*[|:]\s*/i,
-	/^biped\s*[|:]\s*/i,
-	/^bip\d*\s*[|:]\s*/i
-];
-/** 去掉命名空间前缀（最多剥 4 层，防止异常名字死循环） */
-function stripNodeNamespaces(name) {
-	let current = name.trim();
-	for (let depth = 0; depth < 4; depth += 1) {
-		let next = current;
-		for (const pattern of NAMESPACE_PREFIXES) next = next.replace(pattern, "");
-		if (next === current) break;
-		current = next;
-	}
-	return current;
-}
-/** 归一化比较键：去命名空间 → 空格转下划线 → 小写 */
-function nodeNameKey(name) {
-	return stripNodeNamespaces(name).replace(/\s+/g, "_").toLowerCase();
-}
-/** 给 mesh 场景建节点索引（一次遍历，后续按名字查） */
-function buildNodeIndex(root) {
-	const exact = /* @__PURE__ */ new Map();
-	const normalized = /* @__PURE__ */ new Map();
-	let count = 0;
-	let bones = 0;
-	root.traverse((child) => {
-		if (child.isBone) bones += 1;
-		const name = child.name;
-		if (name === "") return;
-		count += 1;
-		if (!exact.has(name)) exact.set(name, child);
-		const key = nodeNameKey(name);
-		if (!normalized.has(key)) normalized.set(key, child);
-		const sanitized = key.replace(/[.[\]:/]/g, "");
-		if (!normalized.has(sanitized)) normalized.set(sanitized, child);
-	});
-	return {
-		exact,
-		normalized,
-		count,
-		bones
-	};
-}
-/** 查节点：精确名 > 归一化名；找不到返回 null */
-function matchNode(index, nodeName) {
-	const exact = index.exact.get(nodeName);
-	if (exact !== void 0) return {
-		node: exact,
-		via: "exact"
-	};
-	const key = nodeNameKey(nodeName);
-	const normalized = index.normalized.get(key);
-	if (normalized !== void 0) return {
-		node: normalized,
-		via: "normalized"
-	};
-	const sanitized = key.replace(/[.[\]:/]/g, "");
-	const fallback = index.normalized.get(sanitized);
-	if (fallback !== void 0) return {
-		node: fallback,
-		via: "normalized"
-	};
-	return null;
+	return "path 文件没有网格（动画-only），附近也没有找到「有网格且骨骼能对上」的模型文件：按骨架预览/截图；要带网格请用 mesh 参数指定网格文件（先 kinemesh_info 确认该文件 meshes 非空）。";
 }
 //#endregion
 //#region
@@ -34035,60 +34200,97 @@ function matchNode(index, nodeName) {
 var MAX_UNMATCHED_NODES = 12;
 /**
 * 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
-* 命中则把轨道名前缀换成 mesh 节点名，未命中则丢弃。
-* 不修改入参 clips / mesh 对象（轨道是 clone 的），可以安全地在只读分析里调用。
+* 命中则换轨道名前缀，未命中则丢弃；给了 sourceRoot（动画文件自己的场景根）时，
+* 对映射链的根骨骼按两边静止姿态差做校正（修跨导出 up-axis / 根朝向差异导致的「躺倒」）。
+* 不修改入参 clips / mesh / sourceRoot（轨道都是 clone 的），可以安全地在只读分析里调用。
 */
-function bindClipsToModel(mesh, clips) {
+function bindClipsToModel(mesh, clips, sourceRoot) {
 	const index = buildNodeIndex(mesh);
-	const matched = /* @__PURE__ */ new Set();
-	const matchedBones = /* @__PURE__ */ new Set();
+	const resolved = /* @__PURE__ */ new Map();
 	const unseen = /* @__PURE__ */ new Set();
-	const boundClips = [];
 	let totalTracks = 0;
 	let matchedTracks = 0;
+	const parsedNames = /* @__PURE__ */ new Map();
+	for (const clip of clips) for (const track of clip.tracks) {
+		totalTracks += 1;
+		const parsed = PropertyBinding.parseTrackName(track.name);
+		const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+		parsedNames.set(track, {
+			nodeName,
+			property: typeof parsed.propertyName === "string" ? parsed.propertyName : ""
+		});
+		if (nodeName === "") continue;
+		if (resolved.has(nodeName)) {
+			matchedTracks += 1;
+			continue;
+		}
+		const hit = matchNode(index, nodeName);
+		if (hit === null) {
+			unseen.add(nodeName);
+			continue;
+		}
+		resolved.set(nodeName, {
+			target: hit.node,
+			via: hit.via
+		});
+		matchedTracks += 1;
+	}
+	const corrections = buildRootCorrections(new Set([...resolved.values()].map((entry) => entry.target)), sourceRoot);
+	const matchedBones = /* @__PURE__ */ new Set();
+	const matchedNodes = /* @__PURE__ */ new Set();
 	let renamedTracks = 0;
+	const boundClips = [];
 	for (const clip of clips) {
 		const tracks = [];
 		for (const track of clip.tracks) {
-			totalTracks += 1;
-			const parsed = PropertyBinding.parseTrackName(track.name);
-			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			const info = parsedNames.get(track);
+			const nodeName = info?.nodeName ?? "";
 			if (nodeName === "") {
 				tracks.push(track);
 				continue;
 			}
-			const hit = matchNode(index, nodeName);
-			if (hit === null) {
-				unseen.add(nodeName);
-				continue;
+			const entry = resolved.get(nodeName);
+			if (entry === void 0) continue;
+			if (!matchedNodes.has(nodeName)) {
+				matchedNodes.add(nodeName);
+				if (entry.target.isBone) matchedBones.add(entry.target);
 			}
-			matched.add(nodeName);
-			if (hit.node.isBone) matchedBones.add(hit.node);
-			matchedTracks += 1;
-			if (hit.node.name === nodeName) {
+			const nameMatches = entry.target.name === nodeName;
+			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : `.${info?.property ?? ""}`;
+			const targetName = nameMatches ? track.name : `${entry.target.name}${suffix}`;
+			const correction = corrections.get(entry.target);
+			if (correction !== void 0) {
+				const corrected = correctTrack(track, info?.property ?? "", correction);
+				if (corrected !== null) {
+					corrected.name = targetName;
+					tracks.push(corrected);
+					if (!nameMatches) renamedTracks += 1;
+					continue;
+				}
+			}
+			if (nameMatches) {
 				tracks.push(track);
 				continue;
 			}
-			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : "";
 			const renamed = track.clone();
-			renamed.name = suffix === "" ? `${hit.node.name}.${parsed.propertyName}` : `${hit.node.name}${suffix}`;
+			renamed.name = targetName;
 			renamedTracks += 1;
 			tracks.push(renamed);
 		}
 		boundClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
 	}
-	const animNodes = matched.size + unseen.size;
 	const report = {
 		meshNodes: index.count,
 		meshBones: index.bones,
-		animNodes,
-		matchedNodes: matched.size,
+		animNodes: matchedNodes.size + unseen.size,
+		matchedNodes: matchedNodes.size,
 		matchedBones: matchedBones.size,
 		totalTracks,
 		matchedTracks,
 		unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
 		unmatchedNodeCount: unseen.size,
 		renamedTracks,
+		correctedRoots: [...corrections.keys()].map((target) => target.name),
 		ok: matchedTracks > 0,
 		warnings: []
 	};
@@ -34097,6 +34299,93 @@ function bindClipsToModel(mesh, clips) {
 		clips: boundClips,
 		report
 	};
+}
+/** 找出映射链根骨骼并计算校正量（只对「两边都有、且静止朝向/位置不同」的根骨骼） */
+function buildRootCorrections(matchedTargets, sourceRoot) {
+	const corrections = /* @__PURE__ */ new Map();
+	if (sourceRoot === void 0) return corrections;
+	const sourceBones = /* @__PURE__ */ new Map();
+	sourceRoot.traverse((child) => {
+		if (child.isBone) sourceBones.set(child.name, child);
+	});
+	if (sourceBones.size === 0) return corrections;
+	for (const target of matchedTargets) {
+		if (target.isBone !== true) continue;
+		if (hasMatchedAncestor(target, matchedTargets)) continue;
+		const source = sourceBones.get(target.name);
+		if (source === void 0) continue;
+		const targetRest = {
+			p: target.position,
+			q: target.quaternion,
+			s: target.scale
+		};
+		const sourceRest = {
+			p: source.position,
+			q: source.quaternion,
+			s: source.scale
+		};
+		const rotation = targetRest.q.clone().multiply(sourceRest.q.clone().invert());
+		const positionDelta = targetRest.p.distanceTo(sourceRest.p);
+		const rotationDelta = rotation.angleTo(new Quaternion());
+		const scaleDelta = targetRest.s.distanceTo(sourceRest.s);
+		if (positionDelta < 1e-4 && rotationDelta < .001 && scaleDelta < 1e-4) continue;
+		corrections.set(target, {
+			rotation,
+			targetPosition: targetRest.p.clone(),
+			targetScale: targetRest.s.clone(),
+			sourcePosition: sourceRest.p.clone(),
+			sourceScale: sourceRest.s.clone(),
+			targetName: target.name
+		});
+	}
+	return corrections;
+}
+function hasMatchedAncestor(target, matchedTargets) {
+	let parent = target.parent;
+	while (parent !== null && parent !== void 0) {
+		if (matchedTargets.has(parent)) return true;
+		parent = parent.parent;
+	}
+	return false;
+}
+/** 单条轨道按根校正量做静止姿态差变换（position/quaternion/scale；其它属性原样返回 null） */
+function correctTrack(track, property, correction) {
+	const values = track.values;
+	if (property === "quaternion") {
+		const out = new Float32Array(values.length);
+		const q = new Quaternion();
+		for (let index = 0; index + 3 < values.length; index += 4) {
+			q.set(values[index], values[index + 1], values[index + 2], values[index + 3]);
+			q.premultiply(correction.rotation);
+			out[index] = q.x;
+			out[index + 1] = q.y;
+			out[index + 2] = q.z;
+			out[index + 3] = q.w;
+		}
+		return new QuaternionKeyframeTrack(track.name, track.times, out);
+	}
+	if (property === "position") {
+		const out = new Float32Array(values.length);
+		const point = new Vector3();
+		for (let index = 0; index + 2 < values.length; index += 3) {
+			point.set(values[index] - correction.sourcePosition.x, values[index + 1] - correction.sourcePosition.y, values[index + 2] - correction.sourcePosition.z);
+			point.applyQuaternion(correction.rotation);
+			out[index] = correction.targetPosition.x + point.x;
+			out[index + 1] = correction.targetPosition.y + point.y;
+			out[index + 2] = correction.targetPosition.z + point.z;
+		}
+		return new VectorKeyframeTrack(track.name, track.times, out);
+	}
+	if (property === "scale") {
+		const out = new Float32Array(values.length);
+		for (let index = 0; index + 2 < values.length; index += 3) {
+			out[index] = correction.targetScale.x * (values[index] / (correction.sourceScale.x || 1));
+			out[index + 1] = correction.targetScale.y * (values[index + 1] / (correction.sourceScale.y || 1));
+			out[index + 2] = correction.targetScale.z * (values[index + 2] / (correction.sourceScale.z || 1));
+		}
+		return new VectorKeyframeTrack(track.name, track.times, out);
+	}
+	return null;
 }
 /** 由报告派生人话 warnings（截图/预览/工具直接透传） */
 function bindingWarnings(report) {
@@ -34110,6 +34399,7 @@ function bindingWarnings(report) {
 		warnings.push(`动画有 ${report.unmatchedNodeCount} 个节点在 mesh 骨架里没有对应骨骼，已忽略（常见于动作里带的道具/相机/IK 辅助节点）：${sample}${report.unmatchedNodeCount > MAX_UNMATCHED_NODES ? " …" : ""}`);
 	}
 	if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
+	if (report.correctedRoots.length > 0) warnings.push(`动画与 mesh 的根骨骼静止朝向/位置不同（跨导出/坐标系差异，典型是 Z-up 与 Y-up 混用）：已按静止姿态差校正根骨骼 ${report.correctedRoots.join("、")} 的轨道。`);
 	return warnings;
 }
 /** 报告 → 给 AI 读的中文事实句（info/CLI/MCP 共用，数值不重复计算） */
@@ -34118,6 +34408,7 @@ function bindingFacts(report) {
 	facts.push(`动画驱动 mesh 骨架的 ${report.matchedBones}/${report.meshBones} 根骨骼；轨道命中 ${report.matchedTracks}/${report.totalTracks}。`);
 	if (report.unmatchedNodeCount > 0) facts.push(`未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join("、")}${report.unmatchedNodeCount > report.unmatchedNodes.length ? " …" : ""}）——这些节点的动作不会显示。`);
 	if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
+	if (report.correctedRoots.length > 0) facts.push(`根骨骼静止姿态差校正：${report.correctedRoots.join("、")}（两边 up-axis/根朝向不同）。`);
 	return facts;
 }
 //#endregion
@@ -34198,7 +34489,7 @@ function applyPlan(primary, companion, plan, names = {
 	};
 	const animScene = plan.animation === "primary" ? primary : companion;
 	if (animScene.animations.length === 0) throw new KinemeshError(`动画侧没有可用片段：${plan.animation === "primary" ? names.primary : names.companion} 没有解析到 AnimationClip。`, "先 kinemesh_info 确认哪个文件的 clips 非空，再把动画文件作为 path、网格文件作为 mesh 参数。");
-	const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations);
+	const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations, animScene.object);
 	if (!report.ok) throw new KinemeshError(`动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼，示例节点：${report.unmatchedNodes.join("、")}）。`, "确认两个文件来自同一套 rig（骨骼名要能对上，如 Bip001_Spine / mixamorig:Hips 这类）；动画只导出部分骨骼也能绑定（例如 5 根脊柱的受击附加动画），但至少要命中一根；分别对两个文件跑 kinemesh_info 对比 bones/convention，或先用 kinemesh_skeleton 看骨骼清单。");
 	warnings.push(...report.warnings);
 	facts.push(...bindingFacts(report));
@@ -34650,8 +34941,9 @@ async function readModelFile(rawPath) {
 	}
 }
 /**
-* 渲染前的 mesh 伙伴解析（三出口共用）：显式 mesh 参数优先；没给时自动识别同资产网格文件
-* （动作-only 资产的需求：「让工具自动识别然后绑定」）。返回的 companion 直接喂 renderScreenshots。
+* 渲染前的 mesh 伙伴解析（三出口共用）：显式 mesh 参数优先；没给时按文件内容（骨骼覆盖率）
+* 自动识别同资产网格文件（动作-only 资产的需求：「让工具自动识别然后绑定」，不依赖文件名）。
+* 返回的 companion 直接喂 renderScreenshots。
 */
 async function resolveCompanionForRender(primary, explicitMesh) {
 	if (explicitMesh !== void 0) return {
@@ -34700,14 +34992,28 @@ async function runInfo(primary, mesh) {
 	}
 	const warnings = [...report.warnings];
 	if (report.meshes.length === 0) {
-		const candidates = await discoverCompanionMeshes(primary.abs);
-		warnings.push("该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件" + (candidates.length > 0 ? `；同资产发现候选：${candidates.map((candidate) => candidate.name).join("、")}（可直接作为 mesh 参数）` : "") + "。");
+		const candidates = await listCompanionCandidates(primary);
+		warnings.push("该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件" + (candidates.length > 0 ? `；同资产内容扫描候选（按骨骼覆盖率）：${candidates.slice(0, 3).map((candidate) => `「${candidate.name}」${candidate.reason}`).join("、")}（可直接作为 mesh 参数）` : "") + "。");
 	}
 	return {
 		ok: true,
 		...report,
 		warnings
 	};
+}
+/** 内容扫描找同资产候选网格（不依赖文件名）：给 info 的「没有网格」提示用 */
+async function listCompanionCandidates(primary) {
+	try {
+		const scene = await getCachedScene(primary.abs, async () => (await loadModelScene(primary.data, primary.fileName)).scene);
+		let hasMesh = false;
+		scene.object.traverse((child) => {
+			if (child.isMesh === true) hasMesh = true;
+		});
+		if (hasMesh) return [];
+		return await findCompanionMeshes(primary.abs, collectSkeletonNames(scene));
+	} catch {
+		return [];
+	}
 }
 /**
 * 映射文件发现 + 对骨架校验（M7 B.5，analyze 与 skeleton 共用）：
@@ -35108,7 +35414,7 @@ function renderTool(record) {
 				},
 				mesh: {
 					type: "string",
-					description: "独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；不传时自动识别同资产网格文件（结果看 warnings）"
+					description: "独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；不传时按文件内容（骨骼覆盖率）自动识别同资产网格文件（结果看 warnings）"
 				},
 				clip: {
 					type: "string",
@@ -35480,9 +35786,17 @@ async function serveCompanionCandidates(res, rawPath) {
 		});
 		return;
 	}
+	let candidates = [];
+	try {
+		const data = await readFile(abs);
+		const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+		candidates = await findCompanionMeshes(abs, collectSkeletonNames(await getCachedScene(abs, async () => (await loadModelScene(buffer, path.basename(abs))).scene)));
+	} catch {
+		candidates = [];
+	}
 	send(res, 200, {
 		ok: true,
-		candidates: await discoverCompanionMeshes(abs).catch(() => [])
+		candidates
 	});
 }
 /**

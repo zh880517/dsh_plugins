@@ -11,8 +11,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { analyzeModel, loadModelScene } from './core/analyze-file.js';
+import { getCachedScene } from './core/scene-cache.js';
 import { sceneBoundsHeight } from './core/analyze/scene-info.js';
-import { discoverCompanionMeshes } from './core/bind/discover.js';
+import { collectSkeletonNames, findCompanionMeshes } from './core/bind/scan.js';
 import { analyzeClip, type KeyframeEntry, type MotionDigest, type MotionSummary } from './core/motion/analyze.js';
 import { computeChannels } from './core/motion/channels.js';
 import { sampleClip } from './core/motion/sample.js';
@@ -210,7 +211,16 @@ async function serveCompanionCandidates(res: ServerResponse, rawPath: string): P
     send(res, 404, { ok: false, error: { code: 'not-found', message: `文件不存在：${abs}` } });
     return;
   }
-  const candidates = await discoverCompanionMeshes(abs).catch(() => []);
+  // 0.10.1：内容扫描（不依赖文件名）——先加载动作文件拿骨架节点名，再按骨骼覆盖率找候选网格
+  let candidates: Awaited<ReturnType<typeof findCompanionMeshes>> = [];
+  try {
+    const data = await readFile(abs);
+    const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+    const scene = await getCachedScene(abs, async () => (await loadModelScene(buffer, path.basename(abs))).scene);
+    candidates = await findCompanionMeshes(abs, collectSkeletonNames(scene));
+  } catch {
+    candidates = [];
+  }
   send(res, 200, { ok: true, candidates });
 }
 

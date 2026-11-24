@@ -33,7 +33,7 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       输出模型结构信息 JSON（动画片段/骨骼/网格/贴图/包围盒/单位体检）。
       --mesh <file>            独立 mesh 文件（动作-only 资产用）：附带该网格文件的结构信息 + 绑定体检
                                （自动识别谁提供网格/动画、试算骨骼名命中数）；不带时若文件没有网格，
-                               会给同资产候选网格文件提示。
+                               会给同资产候选网格文件提示（按文件内容/骨骼覆盖率扫描，不依赖文件名）。
 
   kinemesh analyze <file> [选项]
       对动画片段做动作分析，产出中间文件目录；stdout 返回 {ok,dir,files,summaryDigest}。
@@ -62,7 +62,7 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
   kinemesh render <file> [选项]
       按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
       --mesh <mesh-file>       独立 mesh 文件（动作-only 资产用）：用它的网格做渲染主体，动画按骨骼名
-                               自动绑定（只覆盖部分骨骼也可以）；不带时自动识别同资产网格文件。
+                               自动绑定（只覆盖部分骨骼也可以）；不带时按文件内容（骨骼覆盖率）自动识别同资产网格文件。
       --clip <name>            动画片段名（先 info 查）；静态模型省略
       --frames 0,15,30         帧号列表（逗号分隔，≤64 个）；或 --frame 30 单帧
       --view-preset <name>     front / side / back / three-quarter / orbit8（八方位连拍）

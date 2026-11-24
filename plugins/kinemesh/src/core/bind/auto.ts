@@ -1,13 +1,14 @@
-// 自动识别同资产 mesh 文件（0.10.0）：动作-only 文件（没有网格）在预览/截图前，
-// 自动找同资产的网格文件并绑定，用户不必先知道路径（对应需求「让工具自动识别然后绑定」）。
+// 自动识别同资产 mesh 文件（0.10.0；0.10.1 改为内容扫描、不依赖文件名）：
+// 动作-only 文件（没有网格）在预览/截图前，自动在附近找「真的有网格、骨骼能和动作对上」的模型文件并绑定。
 //
-// 只有 path 文件**确实没有网格**时才触发；候选先按命名/目录启发式排序，再逐个解析确认 meshes 非空
-// （最多试 3 个，避免长尾资产扫很久）。找到就带警告说明，找不到就退回无网格（骨架）渲染。
+// 判定全部来自文件内容（core/bind/scan.ts）：先字节探测出有网格的文件（FBX 的 Geometry、glTF 的 meshes），
+// 再按骨骼名覆盖率排序；`_skin` 之类文件名、`basic/` 之类目录名不再参与判定。
 // Node 专用（读 fs + 解析）。
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { analyzeModelCached } from '../analyze-file.js';
-import { discoverCompanionMeshes } from './discover.js';
+import { loadModelScene } from '../analyze-file.js';
+import { getCachedScene } from '../scene-cache.js';
+import { collectSkeletonNames, findCompanionMeshes } from './scan.js';
 
 export interface ResolvedCompanionFile {
   data: ArrayBuffer;
@@ -22,14 +23,11 @@ export interface AutoCompanionResolution {
   warnings: string[];
 }
 
-/** 最多解析多少个候选（每个都是一次完整场景加载） */
-const MAX_CANDIDATE_PARSES = 3;
-
 /**
- * 给一个「可能没有网格」的模型文件自动找同资产网格文件。
+ * 给一个「可能没有网格」的模型文件自动找同资产网格文件（内容扫描 + 骨骼覆盖率评分）。
  * - path 文件有网格 → 不触发（companion=null、无警告）；
  * - path 文件解析失败 → 不触发（错误交给后续渲染/分析链路报）；
- * - 找到 → companion + 一条「已自动识别」警告；找不到 → 一条「如何显式指定」警告。
+ * - 找到 → companion + 一条「已自动识别」警告（含覆盖率与其它候选）；找不到 → 「如何显式指定」警告。
  */
 export async function autoResolveCompanion(
   primaryAbs: string,
@@ -37,65 +35,48 @@ export async function autoResolveCompanion(
   primaryFileName: string = path.basename(primaryAbs),
 ): Promise<AutoCompanionResolution> {
   let hasMesh: boolean;
+  let skeletonNames: string[];
   try {
-    const report = await analyzeModelCached(primaryAbs, primaryData, primaryFileName);
-    hasMesh = report.meshes.length > 0;
+    const scene = await getCachedScene(
+      primaryAbs,
+      async () => (await loadModelScene(primaryData, primaryFileName)).scene,
+    );
+    hasMesh = false;
+    scene.object.traverse((child) => {
+      if ((child as { isMesh?: boolean }).isMesh === true) hasMesh = true;
+    });
+    skeletonNames = collectSkeletonNames(scene);
   } catch {
     // 解析失败（损坏/格式不支持）：不在这里二次报错，交给调用方原有的错误链路
     return { companion: null, warnings: [] };
   }
   if (hasMesh) return { companion: null, warnings: [] };
 
-  const candidates = await discoverCompanionMeshes(primaryAbs);
-  if (candidates.length === 0) {
+  const matches = await findCompanionMeshes(primaryAbs, skeletonNames);
+  if (matches.length === 0) {
     return { companion: null, warnings: [missingMeshWarning()] };
   }
-
-  const tried: string[] = [];
-  for (const candidate of candidates.slice(0, MAX_CANDIDATE_PARSES)) {
-    let companion: ResolvedCompanionFile | null = null;
-    try {
-      const buffer = await readFile(candidate.path);
-      const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
-      const report = await analyzeModelCached(candidate.path, data, candidate.name);
-      if (report.meshes.length > 0) {
-        companion = { data, fileName: candidate.name, abs: candidate.path, reason: candidate.reason };
-      } else {
-        tried.push(candidate.name);
-      }
-    } catch {
-      tried.push(candidate.name);
-    }
-    if (companion !== null) {
-      const alternatives = candidates
-        .filter((entry) => entry.path !== candidate.path)
-        .map((entry) => entry.name)
-        .slice(0, 3);
-      return {
-        companion,
-        warnings: [
-          `path 文件没有网格（动画-only）：已自动识别同资产的网格文件「${candidate.name}」（${candidate.reason}）并交给绑定；` +
-            '绑定按骨骼名自动匹配（未命中骨骼保持 rest 姿态）。替换网格用 mesh 参数显式指定。' +
-            (alternatives.length > 0 ? `其它候选：${alternatives.join('、')}。` : ''),
-        ],
-      };
-    }
+  const top = matches[0]!;
+  try {
+    const buffer = await readFile(top.path);
+    const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+    const alternatives = matches.slice(1, 4).map((match) => match.name);
+    return {
+      companion: { data, fileName: top.name, abs: top.path, reason: top.reason },
+      warnings: [
+        `path 文件没有网格（动画-only）：已按文件内容自动识别同资产的网格文件「${top.name}」并交给绑定（${top.reason}）；` +
+          '绑定按骨骼名自动匹配（未命中骨骼保持 rest 姿态）。替换网格用 mesh 参数显式指定。' +
+          (alternatives.length > 0 ? `其它候选：${alternatives.join('、')}。` : ''),
+      ],
+    };
+  } catch {
+    return { companion: null, warnings: [missingMeshWarning()] };
   }
-  return {
-    companion: null,
-    warnings: [
-      `path 文件没有网格（动画-only），同资产没有找到可用的网格文件` +
-        (tried.length > 0 ? `（已尝试：${tried.join('、')}）` : '') +
-        `：按骨架预览/截图；要带网格请用 mesh 参数指定网格文件。`,
-    ],
-  };
 }
 
 function missingMeshWarning(): string {
   return (
-    'path 文件没有网格（动画-only），同资产目录里也没有发现候选网格文件：按骨架预览/截图；' +
+    'path 文件没有网格（动画-only），附近也没有找到「有网格且骨骼能对上」的模型文件：按骨架预览/截图；' +
     '要带网格请用 mesh 参数指定网格文件（先 kinemesh_info 确认该文件 meshes 非空）。'
   );
 }
-
-

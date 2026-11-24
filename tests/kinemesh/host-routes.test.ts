@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildAnimatedCubeGltf, buildBinaryFbx, buildCubeObj, buildSkinnedMeshOnlyGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
+import { buildAnimatedCubeGltf, buildBinaryFbx, buildCubeAnimationOnlyGltf, buildCubeObj, buildSkinnedMeshOnlyGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
 import { apply } from '../../plugins/kinemesh/src/host.js';
 import { loadModelScene } from '../../plugins/kinemesh/src/core/analyze-file.js';
 import { sceneBoundsHeight } from '../../plugins/kinemesh/src/core/analyze/scene-info.js';
@@ -195,20 +195,25 @@ describe('/kinemesh 路由', () => {
 
   // ———————— 0.10.0：独立 mesh 文件（预览自动识别候选 + 发送时带 mesh 路径） ————————
 
-  it('GET /kinemesh/companions：动画-only 文件返回同资产候选网格文件', async () => {
+  it('GET /kinemesh/companions：动画-only 文件返回同资产候选网格文件（内容扫描，不依赖文件名）', async () => {
     const root = path.join(workDir, 'asset600');
     await mkdir(path.join(root, 'hit'), { recursive: true });
     await mkdir(path.join(root, 'basic'), { recursive: true });
-    const anim = path.join(root, 'hit', 'shake.fbx');
-    await writeFile(anim, '');
+    const anim = path.join(root, 'hit', 'shake.glb');
+    await writeFile(anim, Buffer.from(encodeGlb(buildCubeAnimationOnlyGltf())));
     await writeFile(path.join(root, 'basic', 'asset600_skin.glb'), Buffer.from(encodeGlb(buildSkinnedMeshOnlyGltf())));
     const { route } = setup();
     const { res, text } = await invoke(route, 'GET', `/kinemesh/companions?path=${encodeURIComponent(anim)}`);
     expect(res.statusCode).toBe(200);
-    const body = JSON.parse(text) as { ok: boolean; candidates: Array<{ name: string; path: string; reason: string }> };
+    const body = JSON.parse(text) as {
+      ok: boolean;
+      candidates: Array<{ name: string; path: string; reason: string; matchedBones: number; coverage: number }>;
+    };
     expect(body.ok).toBe(true);
-    expect(body.candidates[0]?.name).toBe('asset600_skin.glb');
-    expect(body.candidates[0]?.reason).toContain('_skin');
+    const target = body.candidates.find((candidate) => candidate.name === 'asset600_skin.glb');
+    expect(target).toBeDefined();
+    expect(target!.matchedBones).toBeGreaterThan(0);
+    expect(target!.reason).toContain('骨骼命中');
   });
 
   it('GET /kinemesh/companions：缺 path → 400，文件不存在 → 404', async () => {

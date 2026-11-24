@@ -78,7 +78,7 @@ export function applyPlan(
       '先 kinemesh_info 确认哪个文件的 clips 非空，再把动画文件作为 path、网格文件作为 mesh 参数。',
     );
   }
-  const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations);
+  const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations, animScene.object);
   if (!report.ok) {
     throw new KinemeshError(
       `动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼，` +
