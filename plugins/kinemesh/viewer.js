@@ -46920,6 +46920,38 @@ void main() {
 		return found;
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/lighting.ts
+	/**
+	* 贴图模式布光（0.6.4，数值刻意过大，别按物理正确去"修"）：
+	* 合计 8.4 是量化调出来的——Unity/Max 导出的深色贴图资产在深色舞台上看它是黑剪影。
+	*/
+	var TEXTURED_LIGHT_RIG = {
+		ambient: 2.6,
+		hemi: 2.4,
+		key: 1.7,
+		fill: 1,
+		rim: .7
+	};
+	/**
+	* solid 素模布光（0.6.7）：常规 3D 工具的 studio 观感。
+	* 实测（1005_tacy attack_00/04，900×900，three r187，无 tone mapping）：
+	*   素模像素 mean≈172～179、p99≈212～214、≥250 占比 0%（旧共享布光是 mean 248 / 69% 截断）。
+	* 调参铁律：合计 ≥4.5 就回到纯白；<3 则整具模型发灰发闷（明暗差 <10 级）。
+	*/
+	var SOLID_LIGHT_RIG = {
+		ambient: .32,
+		hemi: .75,
+		key: 2.2,
+		fill: .45,
+		rim: .38
+	};
+	/** solid 素模的共享材质基色：中性浅灰，贴近常规 3D 工具的默认素模色 */
+	var SOLID_MATERIAL_COLOR = 13817563;
+	/** 按渲染模式选光照强度：只有 solid 用素模布光，其余模式（贴图 / 线框 / 骨骼）沿用 0.6.4 贴图布光 */
+	function lightRigFor(mode) {
+		return mode === "solid" ? SOLID_LIGHT_RIG : TEXTURED_LIGHT_RIG;
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/material.ts
 	/** 兜底中性灰：亮到能在深色舞台上看清轮廓，又不至于过曝 */
 	var PREVIEW_FALLBACK_COLOR = 12173516;
@@ -46988,15 +47020,24 @@ void main() {
 		camera.position.set(2, 2, 2);
 		const controls = new OrbitControls(camera, renderer.domElement);
 		controls.enableDamping = false;
-		const ambient = new AmbientLight(16777215, 2.6);
-		const hemi = new HemisphereLight(16054271, 3291202, 2.4);
-		const keyLight = new DirectionalLight(16777215, 1.7);
+		const ambient = new AmbientLight(16777215, TEXTURED_LIGHT_RIG.ambient);
+		const hemi = new HemisphereLight(16054271, 3291202, TEXTURED_LIGHT_RIG.hemi);
+		const keyLight = new DirectionalLight(16777215, TEXTURED_LIGHT_RIG.key);
 		keyLight.position.set(4, 8, 6);
-		const fillLight = new DirectionalLight(15002879, 1);
+		const fillLight = new DirectionalLight(15002879, TEXTURED_LIGHT_RIG.fill);
 		fillLight.position.set(-6, 3, -4);
-		const rimLight = new DirectionalLight(16777215, .7);
+		const rimLight = new DirectionalLight(16777215, TEXTURED_LIGHT_RIG.rim);
 		rimLight.position.set(0, -4, -6);
 		scene.add(ambient, hemi, keyLight, fillLight, rimLight);
+		/** 按渲染模式套光照强度（solid = studio 素模布光，其余模式保持 0.6.4 的贴图布光） */
+		function applyLightRig(target) {
+			const rig = lightRigFor(target);
+			ambient.intensity = rig.ambient;
+			hemi.intensity = rig.hemi;
+			keyLight.intensity = rig.key;
+			fillLight.intensity = rig.fill;
+			rimLight.intensity = rig.rim;
+		}
 		let grid = new GridHelper(10, 20, 5660008, 4541268);
 		const axisLength = 5;
 		const axisX = new Line(new BufferGeometry().setFromPoints([new Vector3(-5, 0, 0), new Vector3(axisLength, 0, 0)]), new LineBasicMaterial({ color: 11818319 }));
@@ -47006,7 +47047,7 @@ void main() {
 		/** solid 素模模式共享材质：中性灰 + 受光照，常规 3D 工具的 solid shading。
 		*  DoubleSide：游戏资产常为单面，头发/裙摆从背面看会破洞。 */
 		const solidMaterial = new MeshLambertMaterial({
-			color: 13817563,
+			color: SOLID_MATERIAL_COLOR,
 			side: 2
 		});
 		/** 贴图异步复查定时器（换模型/卸载时清理） */
@@ -47079,6 +47120,7 @@ void main() {
 			suppressedAux = [];
 		}
 		function applyMode() {
+			applyLightRig(mode);
 			if (model === null) return;
 			for (const helper of skeletons) helper.visible = mode === "skeleton" || mode === "bones-overlay";
 			model.traverse((child) => {

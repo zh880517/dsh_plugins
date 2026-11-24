@@ -14,6 +14,7 @@ import {
   type ViewMode,
 } from '../viewstate.js';
 import { collectAuxiliaryObjects } from './auxiliary.js';
+import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
 import type { CanonicalScene } from '../types.js';
 
@@ -82,18 +83,28 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
 
-  // ———————— 预览光照（0.6.4）———————
-  // 原配置（hemi 1.1 + 单方向光 1.6）在深色舞台上看 Unity/Max 导出资产几乎是黑剪影。
-  // 改为「环境光 + 半球光 + 主光 + 两侧补光」的四向布光：正面/侧面都有光，避免背光面全黑。
-  const ambient = new THREE.AmbientLight(0xffffff, 2.6);
-  const hemi = new THREE.HemisphereLight(0xf4f7ff, 0x323842, 2.4);
-  const keyLight = new THREE.DirectionalLight(0xffffff, 1.7);
+  // ———————— 预览光照（0.6.4 贴图布光 / 0.6.7 素模布光）———————
+  // 强度表与理由见 viewer/lighting.ts：同一组灯对象，按模式只改 intensity（不重编材质）。
+  // solid 素模若沿用贴图布光（合计 8.4），Lambert 出射亮度会整块截断成纯白（0.6.6 实测 69% 像素 ≥250）。
+  const ambient = new THREE.AmbientLight(0xffffff, TEXTURED_LIGHT_RIG.ambient);
+  const hemi = new THREE.HemisphereLight(0xf4f7ff, 0x323842, TEXTURED_LIGHT_RIG.hemi);
+  const keyLight = new THREE.DirectionalLight(0xffffff, TEXTURED_LIGHT_RIG.key);
   keyLight.position.set(4, 8, 6);
-  const fillLight = new THREE.DirectionalLight(0xe4ecff, 1.0);
+  const fillLight = new THREE.DirectionalLight(0xe4ecff, TEXTURED_LIGHT_RIG.fill);
   fillLight.position.set(-6, 3, -4);
-  const rimLight = new THREE.DirectionalLight(0xffffff, 0.7);
+  const rimLight = new THREE.DirectionalLight(0xffffff, TEXTURED_LIGHT_RIG.rim);
   rimLight.position.set(0, -4, -6);
   scene.add(ambient, hemi, keyLight, fillLight, rimLight);
+
+  /** 按渲染模式套光照强度（solid = studio 素模布光，其余模式保持 0.6.4 的贴图布光） */
+  function applyLightRig(target: ViewMode): void {
+    const rig = lightRigFor(target);
+    ambient.intensity = rig.ambient;
+    hemi.intensity = rig.hemi;
+    keyLight.intensity = rig.key;
+    fillLight.intensity = rig.fill;
+    rimLight.intensity = rig.rim;
+  }
 
   let grid = new THREE.GridHelper(10, 20, 0x565d68, 0x454b54);
   // 常规 3D 工具的三轴观感：X 轴偏红、Z 轴偏蓝（Maya/Blender/UE 习惯）
@@ -111,7 +122,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
 
   /** solid 素模模式共享材质：中性灰 + 受光照，常规 3D 工具的 solid shading。
    *  DoubleSide：游戏资产常为单面，头发/裙摆从背面看会破洞。 */
-  const solidMaterial = new THREE.MeshLambertMaterial({ color: 0xd2d6db, side: THREE.DoubleSide });
+  const solidMaterial = new THREE.MeshLambertMaterial({ color: SOLID_MATERIAL_COLOR, side: THREE.DoubleSide });
   /** 贴图异步复查定时器（换模型/卸载时清理） */
   let textureCheckTimer: number | null = null;
   /** FBX 自带辅助对象（Dummy/locator/线框 gizmo 等），载入时隐藏（常规 3D 工具同样不显示） */
@@ -183,6 +194,9 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   }
 
   function applyMode(): void {
+    // 光照先于几何：素模与贴图模式要用的布光强度不同（模型未载入时也先把灯设好，
+    // 避免「先设 solid 再载模型」前几帧用错布光）
+    applyLightRig(mode);
     if (model === null) return;
     for (const helper of skeletons) helper.visible = mode === 'skeleton' || mode === 'bones-overlay';
     model.traverse((child) => {
