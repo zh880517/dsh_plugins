@@ -675,8 +675,8 @@ kinemesh_analyze(path, {
     常规 3D 工具默认不显示；载入时按「对象类型（Line/Points/Sprite/Camera/Light）+ 命名（dummy|helper|
     locator|marker|gizmo|collider|probe|reference|placeholder）」隐藏，**骨骼与网格永不触碰**
     （`core/viewer/auxiliary.ts`，纯函数可测）；
-  - 下拉仍可切 `default` 看贴图，`wireframe/skeleton/bones-overlay` 不变；截图管线缺省模式保持
-    `default`（AI 链路不变），需要素模时显式传 `mode:"solid"`。
+  - 预览的下拉可随时切素模 / 贴图 / 线框并叠加骨架线；**截图管线自 0.8.0 起同样「省略 mode 就按模型
+    自动选」**（与预览同一套 `auto-mode.ts` 规则，见 §3.8），需要固定模式时显式传 `mode:"solid"` 等。
 - **播放条与轨道（0.7.0，用户拍板改版）**：
   - **3D 舞台铺满页面**：舞台不再写死 `min(58vh,540px)`（只占半屏），改 `flex:1 1 min(46vh,420px)`
     ——容器高度确定时长满剩余空间；万一父容器高度是 auto（flex 链断），至少 420px 不回退成一条；
