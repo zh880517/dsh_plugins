@@ -14,6 +14,7 @@ import {
   type ViewMode,
 } from '../viewstate.js';
 import { collectAuxiliaryObjects } from './auxiliary.js';
+import { computeClipPlanes } from './clip-planes.js';
 import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
 import type { CanonicalScene } from '../types.js';
@@ -106,6 +107,25 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     rimLight.intensity = rig.rim;
   }
 
+  /**
+   * 裁剪面跟随观察距离（0.6.8）：修「播放/拖动视角时模型表面碎成斑点」。
+   * 原 near/far = 0.001 / 1e6（跨 9 个数量级）。透视深度缓冲的精度几乎全被 near 决定：
+   * 24 位深度在 z≈100 处的可分辨厚度 ≈ z²/(near·2^24) ≈ 0.6 单位。而这类厘米级游戏资产里
+   * 「皮肤 vs 短裤/护膝」两层表面只差 0.1～0.3 单位 → 互抢深度，表面碎成明暗斑点（z-fighting）。
+   * 按观察距离重设 near = distance×0.02、far = distance×20（跨 3 个数量级）后，
+   * 同一位置的可分辨厚度降到 ≈0.0003 单位，多层表面能正常分层。
+   */
+  function updateClipPlanes(): void {
+    const { near, far } = computeClipPlanes(camera.position.distanceTo(controls.target), bounds.radius);
+    if (Math.abs(camera.near - near) > near * 1e-3 || Math.abs(camera.far - far) > far * 1e-3) {
+      camera.near = near;
+      camera.far = far;
+      camera.updateProjectionMatrix();
+    }
+  }
+  // 拖动 / 滚轮缩放后距离变了，裁剪面跟着走（否则拉近看细节时又退回低精度）
+  controls.addEventListener('change', updateClipPlanes);
+
   let grid = new THREE.GridHelper(10, 20, 0x565d68, 0x454b54);
   // 常规 3D 工具的三轴观感：X 轴偏红、Z 轴偏蓝（Maya/Blender/UE 习惯）
   const axisLength = 5;
@@ -180,8 +200,24 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       const mesh = child as THREE.Mesh;
       if (mesh.isMesh) {
         mesh.geometry?.dispose();
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const material of materials) material?.dispose();
+        // solid 模式下 mesh.material 是共享的 solidMaterial：不能 dispose（下一个模型还要用它），
+        // 要释放的是被替换下来的原始材质（0.6.8 顺带修正：原实现既漏释放原始材质，又会把共享材质销毁）
+        const stored = (mesh.userData as Record<string, unknown>).kinemeshOriginalMaterial as
+          | THREE.Material
+          | THREE.Material[]
+          | null
+          | undefined;
+        const originals: THREE.Material[] =
+          stored === undefined || stored === null
+            ? Array.isArray(mesh.material)
+              ? mesh.material
+              : [mesh.material]
+            : Array.isArray(stored)
+              ? stored
+              : [stored];
+        for (const material of originals) {
+          if (material !== undefined && material !== null && material !== solidMaterial) material.dispose();
+        }
       }
     });
     model = null;
@@ -312,6 +348,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       frame = 0;
       playing = false;
       applyMode();
+      updateClipPlanes();
     },
 
     applyView(view) {
@@ -322,6 +359,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       camera.updateProjectionMatrix();
       controls.target.set(view.camera.target[0], view.camera.target[1], view.camera.target[2]);
       controls.update();
+      updateClipPlanes();
       setModeInternal(view.mode);
       const targetClip = view.clip;
       if (targetClip === null) {

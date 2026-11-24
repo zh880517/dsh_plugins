@@ -40145,6 +40145,23 @@ function collectAuxiliaryObjects(root) {
 }
 //#endregion
 //#region
+/** near = 观察距离 × 该系数（0.02 → far/near 跨 3 个数量级，精度足够分 0.001 单位级的层） */
+var NEAR_DISTANCE_FACTOR = .02;
+/**
+* 按「相机到注视点的距离」和「模型包围球半径」推导裁剪面。
+* 兜底：near 不小于半径的 1e-5（超小模型也不至于裁剪穿过模型）、far 至少覆盖 20 倍半径（地面网格常在模型半径量级）。
+*/
+function computeClipPlanes(distance, radius) {
+	const safeDistance = Number.isFinite(distance) && distance > 0 ? distance : 1e-6;
+	const safeRadius = Number.isFinite(radius) && radius > 0 ? radius : 1e-6;
+	const near = Math.max(safeDistance * NEAR_DISTANCE_FACTOR, safeRadius * 1e-5);
+	return {
+		near,
+		far: Math.max(safeDistance * 20, safeRadius * 20, near * 1e3)
+	};
+}
+//#endregion
+//#region
 /**
 * 贴图模式布光（0.6.4，数值刻意过大，别按物理正确去"修"）：
 * 合计 8.4 是量化调出来的——Unity/Max 导出的深色贴图资产在深色舞台上看它是黑剪影。
@@ -40262,6 +40279,23 @@ function mountViewer(container, options = {}) {
 		fillLight.intensity = rig.fill;
 		rimLight.intensity = rig.rim;
 	}
+	/**
+	* 裁剪面跟随观察距离（0.6.8）：修「播放/拖动视角时模型表面碎成斑点」。
+	* 原 near/far = 0.001 / 1e6（跨 9 个数量级）。透视深度缓冲的精度几乎全被 near 决定：
+	* 24 位深度在 z≈100 处的可分辨厚度 ≈ z²/(near·2^24) ≈ 0.6 单位。而这类厘米级游戏资产里
+	* 「皮肤 vs 短裤/护膝」两层表面只差 0.1～0.3 单位 → 互抢深度，表面碎成明暗斑点（z-fighting）。
+	* 按观察距离重设 near = distance×0.02、far = distance×20（跨 3 个数量级）后，
+	* 同一位置的可分辨厚度降到 ≈0.0003 单位，多层表面能正常分层。
+	*/
+	function updateClipPlanes() {
+		const { near, far } = computeClipPlanes(camera.position.distanceTo(controls.target), bounds.radius);
+		if (Math.abs(camera.near - near) > near * .001 || Math.abs(camera.far - far) > far * .001) {
+			camera.near = near;
+			camera.far = far;
+			camera.updateProjectionMatrix();
+		}
+	}
+	controls.addEventListener("change", updateClipPlanes);
 	let grid = new GridHelper(10, 20, 5660008, 4541268);
 	const axisLength = 5;
 	const axisX = new Line(new BufferGeometry().setFromPoints([new Vector3(-5, 0, 0), new Vector3(axisLength, 0, 0)]), new LineBasicMaterial({ color: 11818319 }));
@@ -40331,8 +40365,9 @@ function mountViewer(container, options = {}) {
 			const mesh = child;
 			if (mesh.isMesh) {
 				mesh.geometry?.dispose();
-				const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-				for (const material of materials) material?.dispose();
+				const stored = mesh.userData.kinemeshOriginalMaterial;
+				const originals = stored === void 0 || stored === null ? Array.isArray(mesh.material) ? mesh.material : [mesh.material] : Array.isArray(stored) ? stored : [stored];
+				for (const material of originals) if (material !== void 0 && material !== null && material !== solidMaterial) material.dispose();
 			}
 		});
 		model = null;
@@ -40438,6 +40473,7 @@ function mountViewer(container, options = {}) {
 			frame = 0;
 			playing = false;
 			applyMode();
+			updateClipPlanes();
 		},
 		applyView(view) {
 			const position = cameraPosition(view.camera);
@@ -40446,6 +40482,7 @@ function mountViewer(container, options = {}) {
 			camera.updateProjectionMatrix();
 			controls.target.set(view.camera.target[0], view.camera.target[1], view.camera.target[2]);
 			controls.update();
+			updateClipPlanes();
 			setModeInternal(view.mode);
 			const targetClip = view.clip;
 			if (targetClip === null) {
