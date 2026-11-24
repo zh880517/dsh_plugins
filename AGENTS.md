@@ -95,3 +95,20 @@ npm run release:plugin [-- --only <id>]   # 构建 → 提交 → 刷新索引 �
 - 页面优先与宿主同源（`dsh web` 或桌面版内置 Web 视图）；桌面壳用 `file://` 载入渲染器时，Client 用 `__DSH_TRANSPORT__.streamBaseUrl` 解析 Host 源，Host 的 CORS 头放行 null origin（见 `endpoint.ts` / `host.ts`）。
 - 插件 Client 半只从宿主拿 `react` / `react-dom`；不要 `import 'react/jsx-runtime'`（详见 `docs/plugins/aiworkflow/editor.md`）。
 - 本机 profile 的插件依赖是 `link:` 指向 `plugins/aiworkflow`；目录再迁移时必须同步改 `~/.dsh/profiles/<profile>/package.json` 或重新安装。
+
+## 安装 / 卸载插件到 DSH profile
+
+- **永远不要在 `~/.dsh/profiles/<profile>/` 里直接跑 `npm install` 或 `pnpm install`**：那会重解析整个依赖树，
+  把 DSH 宿主自己管理的 `node_modules/@deepseek-ai/` 核心包（dsh-base、dsh-web-app 等）全部删掉，导致
+  下次启动 51 个插件全 pending → 2 required 崩溃（2026-11-24 实际发生过）。
+- 正确姿势是用 `plugin_manager` 工具的 `install_bundle`（target = 插件包的**绝对目录路径**），或让用户
+  在 DSH 的 Plugins 页面手动安装。
+- 本仓库提供安装脚本 **`scripts/install-profile.ps1`**，封装了正确的安装流程：
+  ```powershell
+  # 安装 / 更新指定插件到当前 profile（缺省 desktop）
+  .\scripts\install-profile.ps1 -Plugin kinemesh
+  # 安装全部插件
+  .\scripts\install-profile.ps1 -All
+  # 卸载指定插件
+  .\scripts\install-profile.ps1 -Plugin kinemesh -Uninstall
+  ```
