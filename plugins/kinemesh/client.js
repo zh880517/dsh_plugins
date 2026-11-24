@@ -40145,6 +40145,59 @@ function collectAuxiliaryObjects(root) {
 }
 //#endregion
 //#region
+/**
+* 材质是否有可用的**贴图**外观：`map` 且 `map.image` 非空。
+* （three r155+ 的 `Texture.DEFAULT_IMAGE` 是 null，解码失败/不支持的格式——如 FBX 常见的 TGA——
+* 会留下空 image；0.6.4 的黑剪影就是它。真实资产实测：1005_tacy 的 4 张贴图在浏览器里全都解不出来，
+* 于是全部按「无贴图 → 素模」处理，与用户观感一致。）
+*
+* 顶点色**不算**可用贴图：游戏资产的顶点色常是暗色/肤色底，贴图模式下渲染仍是深色剪影，
+* 素模反而更能看清几何与动作（0.7.1 判定口径）。
+*/
+function materialHasUsableTexture(material) {
+	if (material === null || material === void 0) return false;
+	const withMap = material;
+	if (withMap.map === void 0 || withMap.map === null) return false;
+	return withMap.map.image !== null && withMap.map.image !== void 0;
+}
+/** 统计场景里的网格数与「有贴图/顶点色」的网格数（材质数组任一命中即算） */
+function collectSceneModeFacts(root) {
+	let meshCount = 0;
+	let texturedMeshCount = 0;
+	root.traverse((child) => {
+		const mesh = child;
+		if (mesh.isMesh !== true) return;
+		meshCount += 1;
+		const stored = mesh.userData.kinemeshOriginalMaterial;
+		const source = stored === void 0 || stored === null ? mesh.material : stored;
+		if ((Array.isArray(source) ? source : [source]).some((material) => materialHasUsableTexture(material))) texturedMeshCount += 1;
+	});
+	return {
+		meshCount,
+		texturedMeshCount
+	};
+}
+/** 三档判定：无 mesh → 骨架；有 mesh 无贴图 → 素模；有贴图 → 贴图模式 */
+function suggestModeFromFacts(facts) {
+	if (facts.meshCount <= 0) return {
+		mode: "skeleton",
+		reason: "no-mesh"
+	};
+	if (facts.texturedMeshCount <= 0) return {
+		mode: "solid",
+		reason: "no-texture"
+	};
+	return {
+		mode: "default",
+		reason: "textured"
+	};
+}
+/** 组合入口：直接对载入的场景对象给出建议 */
+function suggestViewMode(root) {
+	return suggestModeFromFacts(collectSceneModeFacts(root));
+}
+//#endregion
+//#region
 /** near = 观察距离 × 该系数（0.02 → far/near 跨 3 个数量级，精度足够分 0.001 单位级的层） */
 var NEAR_DISTANCE_FACTOR = .02;
 /**
@@ -40599,6 +40652,13 @@ function mountViewer(container, options = {}) {
 		},
 		sceneBounds() {
 			return bounds;
+		},
+		modeSuggestion() {
+			if (model === null) return {
+				mode: "solid",
+				reason: "no-texture"
+			};
+			return suggestViewMode(model);
 		},
 		setBoneLabels(bones) {
 			clearBoneLabels();
@@ -47696,6 +47756,10 @@ var ZH_TEXTS = {
 	"transport.pause": "暂停",
 	"transport.next": "下一帧",
 	"transport.last": "跳到最后一帧",
+	"mode.autoTitle": "载入时按模型自动选的显示模式（手动切换后由你决定）",
+	"mode.auto.no-mesh": "自动：骨架（模型没有 mesh）",
+	"mode.auto.no-texture": "自动：素模（没有可用贴图）",
+	"mode.auto.textured": "自动：贴图（检测到有效贴图）",
 	"pane.load": "加载",
 	"pane.loading": "加载中…",
 	"pane.staticClip": "（静态）",
@@ -47736,6 +47800,10 @@ var EN_TEXTS = {
 	"transport.pause": "Pause",
 	"transport.next": "Next frame",
 	"transport.last": "Go to last frame",
+	"mode.autoTitle": "Display mode picked automatically from the model (manual switch takes over)",
+	"mode.auto.no-mesh": "auto: skeleton (no mesh)",
+	"mode.auto.no-texture": "auto: solid (no usable texture)",
+	"mode.auto.textured": "auto: textured (valid texture found)",
 	"pane.load": "Load",
 	"pane.loading": "Loading…",
 	"pane.staticClip": "(static)",
@@ -48167,6 +48235,8 @@ function PreviewPane(props) {
 	const [clip, setClip] = react.useState("");
 	const [frame, setFrame] = react.useState(0);
 	const [mode, setMode] = react.useState("solid");
+	/** 自动选模式的理由（null = 用户手动选的，不显示自动提示） */
+	const [autoReason, setAutoReason] = react.useState(null);
 	const [playing, setPlaying] = react.useState(false);
 	const [viewText, setViewText] = react.useState("—");
 	const [state, setState] = react.useState({
@@ -48187,11 +48257,24 @@ function PreviewPane(props) {
 	const viewerRef = react.useRef(null);
 	const analysisSeq = react.useRef(0);
 	const lastRequestRef = react.useRef(null);
+	/** 当前模式（自动选模式的延迟复审要用最新值，state 闭包会过期） */
+	const modeRef = react.useRef("solid");
+	/** 用户手动改过模式 → 本次载入不再自动纠正 */
+	const manualModeRef = react.useRef(false);
+	/** 贴图异步解码后的自动模式复审定时器 */
+	const autoModeTimerRef = react.useRef(null);
+	react.useEffect(() => {
+		modeRef.current = mode;
+	}, [mode]);
 	react.useEffect(() => {
 		if (hostRef.current === null) return void 0;
 		const viewer = mountViewer(hostRef.current);
 		viewerRef.current = viewer;
 		return () => {
+			if (autoModeTimerRef.current !== null) {
+				window.clearTimeout(autoModeTimerRef.current);
+				autoModeTimerRef.current = null;
+			}
 			viewer.dispose();
 			viewerRef.current = null;
 		};
@@ -48241,6 +48324,37 @@ function PreviewPane(props) {
 			});
 		}
 	};
+	/**
+	* 载入后自动选渲染模式（0.7.1，用户拍板）：
+	* 无 mesh → 骨架；有 mesh 但没可用贴图 → 素模；有可用贴图 → 贴图模式。
+	* 同一路径的「上次手动选择」优先（用户改过就尊重）；
+	* 贴图是异步解码的，载入瞬间可能还没 image，故 1.6s 后用 viewer 现算的建议复审一次
+	* （只在本次是自动选的、且用户此后没手动改过时才纠正）。
+	*/
+	const applyAutoMode = (viewer, target, memory) => {
+		if (autoModeTimerRef.current !== null) {
+			window.clearTimeout(autoModeTimerRef.current);
+			autoModeTimerRef.current = null;
+		}
+		manualModeRef.current = false;
+		const suggestion = viewer.modeSuggestion();
+		const remembered = memory !== null && memory.path === target ? memory.mode : null;
+		const nextMode = remembered ?? suggestion.mode;
+		modeRef.current = nextMode;
+		setMode(nextMode);
+		setAutoReason(remembered === null ? suggestion.reason : null);
+		if (remembered === null) autoModeTimerRef.current = window.setTimeout(() => {
+			autoModeTimerRef.current = null;
+			if (manualModeRef.current) return;
+			const latest = viewerRef.current?.modeSuggestion();
+			if (latest === void 0 || latest.mode === modeRef.current) return;
+			modeRef.current = latest.mode;
+			setMode(latest.mode);
+			setAutoReason(latest.reason);
+			viewerRef.current?.setMode(latest.mode);
+		}, 1600);
+		return nextMode;
+	};
 	const load = async (rawTarget) => {
 		const target = (rawTarget ?? pathInput).trim();
 		if (target === "") return;
@@ -48273,17 +48387,19 @@ function PreviewPane(props) {
 				maxFrame
 			});
 			setLoadedPath(target);
-			const restore = resolveRestoreTarget(props.persistKey === void 0 ? null : readPaneMemory(props.persistKey), target, bounds.clips, maxFrame);
+			const memory = props.persistKey === void 0 ? null : readPaneMemory(props.persistKey);
+			const restore = resolveRestoreTarget(memory, target, bounds.clips, maxFrame);
 			const rememberedClip = restore.clip;
 			const startFrame = restore.frame;
 			setClip(rememberedClip);
 			setFrame(startFrame);
 			const baseView = defaultView(bounds.center, bounds.radius);
+			const nextMode = applyAutoMode(viewer, target, memory);
 			viewer.applyView({
 				...baseView,
 				clip: rememberedClip === "" ? null : rememberedClip,
 				frame: startFrame,
-				mode
+				mode: nextMode
 			});
 			if (rememberedClip !== "" && startFrame > 0) viewer.seekFrame(startFrame);
 			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
@@ -48422,6 +48538,8 @@ function PreviewPane(props) {
 		seek(clampFrame(target, state.maxFrame));
 	};
 	const changeMode = (next) => {
+		manualModeRef.current = true;
+		setAutoReason(null);
 		setMode(next);
 		viewerRef.current?.setMode(next);
 	};
@@ -48525,7 +48643,11 @@ function PreviewPane(props) {
 		maxFrame: state.maxFrame,
 		frame,
 		onSeek: seek
-	})), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), digestHeadline !== "" && /* @__PURE__ */ react.createElement("span", {
+	})), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), autoReason !== null && /* @__PURE__ */ react.createElement("span", {
+		className: "kinemesh-chip",
+		"data-kind": "auto",
+		title: translate("mode.autoTitle")
+	}, translate("mode.auto." + autoReason)), digestHeadline !== "" && /* @__PURE__ */ react.createElement("span", {
 		className: "kinemesh-chip",
 		title: translate("pane.digestChipTitle")
 	}, `digest ${digestHeadline}`), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), allowSend && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("pane.footHint")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {

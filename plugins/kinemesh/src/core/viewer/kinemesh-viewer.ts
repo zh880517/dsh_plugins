@@ -14,6 +14,7 @@ import {
   type ViewMode,
 } from '../viewstate.js';
 import { collectAuxiliaryObjects } from './auxiliary.js';
+import { suggestViewMode, type ModeSuggestion } from './auto-mode.js';
 import { computeClipPlanes } from './clip-planes.js';
 import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
@@ -50,6 +51,11 @@ export interface ViewerHandle {
   trackNames(): string[];
   /** 场景级信息（截图管线解析 ViewState 缺省值时用） */
   sceneBounds(): { center: [number, number, number]; radius: number; clips: string[]; durationSeconds: number };
+  /**
+   * 载入后推荐的渲染模式（0.7.1）：无 mesh → skeleton；有 mesh 无可用贴图 → solid；
+   * 有可用贴图 → default。reason 给面板一句人话（`no-mesh` / `no-texture` / `textured`）。
+   */
+  modeSuggestion(): ModeSuggestion;
   /**
    * B.4 骨骼名标注：给这些骨骼名建文字精灵（画在关节世界位置旁，随动画逐帧跟随）；
    * null / 空数组 = 清除。返回实际建标签数（名字未命中骨架的不计）。
@@ -465,6 +471,13 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
 
     sceneBounds() {
       return bounds;
+    },
+
+    modeSuggestion() {
+      // 实时按当前模型现算：贴图是异步解码的，载入瞬间可能还没 image，
+      // 客户端会在贴图复查后再问一次（0.7.1）
+      if (model === null) return { mode: 'solid', reason: 'no-texture' };
+      return suggestViewMode(model);
     },
 
     setBoneLabels(bones) {

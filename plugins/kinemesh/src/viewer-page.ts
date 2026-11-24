@@ -37,6 +37,8 @@ interface Bridge {
   frameInfo(): ReturnType<ViewerHandle['frameInfo']>;
   trackNames(): string[];
   setBoneLabels(spec: BoneLabelsSpec): BoneLabelsOutcome;
+  /** 载入后推荐的渲染模式（0.7.1）：无 mesh → skeleton / 无贴图 → solid / 有贴图 → default */
+  modeSuggestion(): ReturnType<ViewerHandle['modeSuggestion']>;
   ready(): Promise<void>;
 }
 
@@ -124,6 +126,9 @@ const bridge: Bridge = {
   },
   setBoneLabels(spec: BoneLabelsSpec): BoneLabelsOutcome {
     return setBoneLabels(spec);
+  },
+  modeSuggestion(): ReturnType<ViewerHandle['modeSuggestion']> {
+    return getViewer().modeSuggestion();
   },
   ready(): Promise<void> {
     return getViewer().ready();

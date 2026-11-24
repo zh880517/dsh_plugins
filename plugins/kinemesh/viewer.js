@@ -46920,6 +46920,59 @@ void main() {
 		return found;
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/auto-mode.ts
+	/**
+	* 材质是否有可用的**贴图**外观：`map` 且 `map.image` 非空。
+	* （three r155+ 的 `Texture.DEFAULT_IMAGE` 是 null，解码失败/不支持的格式——如 FBX 常见的 TGA——
+	* 会留下空 image；0.6.4 的黑剪影就是它。真实资产实测：1005_tacy 的 4 张贴图在浏览器里全都解不出来，
+	* 于是全部按「无贴图 → 素模」处理，与用户观感一致。）
+	*
+	* 顶点色**不算**可用贴图：游戏资产的顶点色常是暗色/肤色底，贴图模式下渲染仍是深色剪影，
+	* 素模反而更能看清几何与动作（0.7.1 判定口径）。
+	*/
+	function materialHasUsableTexture(material) {
+		if (material === null || material === void 0) return false;
+		const withMap = material;
+		if (withMap.map === void 0 || withMap.map === null) return false;
+		return withMap.map.image !== null && withMap.map.image !== void 0;
+	}
+	/** 统计场景里的网格数与「有贴图/顶点色」的网格数（材质数组任一命中即算） */
+	function collectSceneModeFacts(root) {
+		let meshCount = 0;
+		let texturedMeshCount = 0;
+		root.traverse((child) => {
+			const mesh = child;
+			if (mesh.isMesh !== true) return;
+			meshCount += 1;
+			const stored = mesh.userData.kinemeshOriginalMaterial;
+			const source = stored === void 0 || stored === null ? mesh.material : stored;
+			if ((Array.isArray(source) ? source : [source]).some((material) => materialHasUsableTexture(material))) texturedMeshCount += 1;
+		});
+		return {
+			meshCount,
+			texturedMeshCount
+		};
+	}
+	/** 三档判定：无 mesh → 骨架；有 mesh 无贴图 → 素模；有贴图 → 贴图模式 */
+	function suggestModeFromFacts(facts) {
+		if (facts.meshCount <= 0) return {
+			mode: "skeleton",
+			reason: "no-mesh"
+		};
+		if (facts.texturedMeshCount <= 0) return {
+			mode: "solid",
+			reason: "no-texture"
+		};
+		return {
+			mode: "default",
+			reason: "textured"
+		};
+	}
+	/** 组合入口：直接对载入的场景对象给出建议 */
+	function suggestViewMode(root) {
+		return suggestModeFromFacts(collectSceneModeFacts(root));
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/clip-planes.ts
 	/** near = 观察距离 × 该系数（0.02 → far/near 跨 3 个数量级，精度足够分 0.001 单位级的层） */
 	var NEAR_DISTANCE_FACTOR = .02;
@@ -47376,6 +47429,13 @@ void main() {
 			sceneBounds() {
 				return bounds;
 			},
+			modeSuggestion() {
+				if (model === null) return {
+					mode: "solid",
+					reason: "no-texture"
+				};
+				return suggestViewMode(model);
+			},
 			setBoneLabels(bones) {
 				clearBoneLabels();
 				if (model === null || bones === null || bones.length === 0) return 0;
@@ -47601,6 +47661,9 @@ void main() {
 		},
 		setBoneLabels(spec) {
 			return setBoneLabels(spec);
+		},
+		modeSuggestion() {
+			return getViewer().modeSuggestion();
 		},
 		ready() {
 			return getViewer().ready();

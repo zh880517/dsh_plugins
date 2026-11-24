@@ -4,6 +4,7 @@
 // 会话身份由 header utilities 槽捕获（aiworkflow 同款），页签注册用 conversation.view 槽（aiworkflow syncRunTab 同款）。
 // 预览用 core/viewer/kinemesh-viewer.ts（与 kinemesh_render 截图同一模块，构图一致）。
 import * as React from 'react';
+import type { ModeReason } from './core/viewer/auto-mode.js';
 import { mountViewer, type ViewerHandle } from './core/viewer/kinemesh-viewer.js';
 import { detectFormat } from './core/registry.js';
 import { resolveEndpoint } from './endpoint.js';
@@ -117,6 +118,10 @@ const ZH_TEXTS: Record<string, string> = {
   'transport.pause': '暂停',
   'transport.next': '下一帧',
   'transport.last': '跳到最后一帧',
+  'mode.autoTitle': '载入时按模型自动选的显示模式（手动切换后由你决定）',
+  'mode.auto.no-mesh': '自动：骨架（模型没有 mesh）',
+  'mode.auto.no-texture': '自动：素模（没有可用贴图）',
+  'mode.auto.textured': '自动：贴图（检测到有效贴图）',
   'pane.load': '加载',
   'pane.loading': '加载中…',
   'pane.staticClip': '（静态）',
@@ -157,6 +162,10 @@ const EN_TEXTS: Record<string, string> = {
   'transport.pause': 'Pause',
   'transport.next': 'Next frame',
   'transport.last': 'Go to last frame',
+  'mode.autoTitle': 'Display mode picked automatically from the model (manual switch takes over)',
+  'mode.auto.no-mesh': 'auto: skeleton (no mesh)',
+  'mode.auto.no-texture': 'auto: solid (no usable texture)',
+  'mode.auto.textured': 'auto: textured (valid texture found)',
   'pane.load': 'Load',
   'pane.loading': 'Loading…',
   'pane.staticClip': '(static)',
@@ -690,8 +699,11 @@ function PreviewPane(props: {
   const [loadedPath, setLoadedPath] = React.useState('');
   const [clip, setClip] = React.useState('');
   const [frame, setFrame] = React.useState(0);
-  // 默认 solid 素模：游戏资产常无可用贴图，素模是常规 3D 工具的默认显示方式，也最能看清动作
+  // 默认 solid 素模：游戏资产常无可用贴图，素模是常规 3D 工具的默认显示方式，也最能看清动作。
+  // 0.7.1 起载入后按模型自动选（无 mesh→骨架 / 无贴图→素模 / 有贴图→贴图），见 applyAutoMode
   const [mode, setMode] = React.useState<ViewMode>('solid');
+  /** 自动选模式的理由（null = 用户手动选的，不显示自动提示） */
+  const [autoReason, setAutoReason] = React.useState<ModeReason | null>(null);
   const [playing, setPlaying] = React.useState(false);
   const [viewText, setViewText] = React.useState('—');
   const [state, setState] = React.useState<LoadState>({ phase: 'empty', error: null, clips: [], maxFrame: 0 });
@@ -708,6 +720,15 @@ function PreviewPane(props: {
   const viewerRef = React.useRef<ViewerHandle | null>(null);
   const analysisSeq = React.useRef(0);
   const lastRequestRef = React.useRef<{ path: string; nonce: number } | null>(null);
+  /** 当前模式（自动选模式的延迟复审要用最新值，state 闭包会过期） */
+  const modeRef = React.useRef<ViewMode>('solid');
+  /** 用户手动改过模式 → 本次载入不再自动纠正 */
+  const manualModeRef = React.useRef(false);
+  /** 贴图异步解码后的自动模式复审定时器 */
+  const autoModeTimerRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   React.useEffect(() => {
     if (hostRef.current === null) return undefined;
@@ -715,6 +736,10 @@ function PreviewPane(props: {
     const viewer = mountViewer(hostRef.current);
     viewerRef.current = viewer;
     return () => {
+      if (autoModeTimerRef.current !== null) {
+        window.clearTimeout(autoModeTimerRef.current);
+        autoModeTimerRef.current = null;
+      }
       viewer.dispose();
       viewerRef.current = null;
     };
@@ -761,6 +786,40 @@ function PreviewPane(props: {
     }
   };
 
+  /**
+   * 载入后自动选渲染模式（0.7.1，用户拍板）：
+   * 无 mesh → 骨架；有 mesh 但没可用贴图 → 素模；有可用贴图 → 贴图模式。
+   * 同一路径的「上次手动选择」优先（用户改过就尊重）；
+   * 贴图是异步解码的，载入瞬间可能还没 image，故 1.6s 后用 viewer 现算的建议复审一次
+   * （只在本次是自动选的、且用户此后没手动改过时才纠正）。
+   */
+  const applyAutoMode = (viewer: ViewerHandle, target: string, memory: PaneMemory | null): ViewMode => {
+    if (autoModeTimerRef.current !== null) {
+      window.clearTimeout(autoModeTimerRef.current);
+      autoModeTimerRef.current = null;
+    }
+    manualModeRef.current = false;
+    const suggestion = viewer.modeSuggestion();
+    const remembered = memory !== null && memory.path === target ? memory.mode : null;
+    const nextMode = remembered ?? suggestion.mode;
+    modeRef.current = nextMode;
+    setMode(nextMode);
+    setAutoReason(remembered === null ? suggestion.reason : null);
+    if (remembered === null) {
+      autoModeTimerRef.current = window.setTimeout(() => {
+        autoModeTimerRef.current = null;
+        if (manualModeRef.current) return;
+        const latest = viewerRef.current?.modeSuggestion();
+        if (latest === undefined || latest.mode === modeRef.current) return;
+        modeRef.current = latest.mode;
+        setMode(latest.mode);
+        setAutoReason(latest.reason);
+        viewerRef.current?.setMode(latest.mode);
+      }, 1600);
+    }
+    return nextMode;
+  };
+
   const load = async (rawTarget?: string): Promise<void> => {
     const target = (rawTarget ?? pathInput).trim();
     if (target === '') return;
@@ -795,11 +854,12 @@ function PreviewPane(props: {
       // 0.6.2 修复：必须走 applyView(clip) 激活对应 action，否则 activeAction 恒为 null，
       // 拖时间轴只改内部帧号、不调 mixer.setTime → 画面不动（旧实现只 setClip 不激活）
       const baseView = defaultView(bounds.center, bounds.radius);
+      const nextMode = applyAutoMode(viewer, target, memory);
       viewer.applyView({
         ...baseView,
         clip: rememberedClip === '' ? null : rememberedClip,
         frame: startFrame,
-        mode,
+        mode: nextMode,
       });
       if (rememberedClip !== '' && startFrame > 0) viewer.seekFrame(startFrame);
       if (props.sessionId !== '') previewSession.markUsed(props.sessionId);
@@ -929,6 +989,9 @@ function PreviewPane(props: {
   };
 
   const changeMode = (next: ViewMode): void => {
+    // 手动选择即锁定：本次载入不再被自动模式纠正
+    manualModeRef.current = true;
+    setAutoReason(null);
     setMode(next);
     viewerRef.current?.setMode(next);
   };
@@ -1074,6 +1137,11 @@ function PreviewPane(props: {
       )}
       <div className="kinemesh-readout">
         <span className="kinemesh-chip">{viewText}</span>
+        {autoReason !== null && (
+          <span className="kinemesh-chip" data-kind="auto" title={translate('mode.autoTitle')}>
+            {translate('mode.auto.' + autoReason)}
+          </span>
+        )}
         {digestHeadline !== '' && (
           <span className="kinemesh-chip" title={translate('pane.digestChipTitle')}>
             {`digest ${digestHeadline}`}
