@@ -5,16 +5,20 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
+  bonesOfMode,
   cameraFromPosition,
   cameraPosition,
+  composeViewMode,
   DEFAULT_DISTANCE_FACTOR,
   DEFAULT_FOV,
   RENDER_FPS,
+  surfaceOfMode,
+  type SurfaceMode,
   type ViewState,
   type ViewMode,
 } from '../viewstate.js';
 import { collectAuxiliaryObjects } from './auxiliary.js';
-import { suggestViewMode, type ModeSuggestion } from './auto-mode.js';
+import { suggestViewMode, collectSceneModeFacts, type ModeSuggestion } from './auto-mode.js';
 import { computeClipPlanes } from './clip-planes.js';
 import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
@@ -42,6 +46,11 @@ export interface ViewerHandle {
   /** 拖转/滚轮之后的实时回读：相机位置反解为球坐标 */
   getViewState(): ViewState;
   setMode(mode: ViewMode): void;
+  /**
+   * 表面方式（互斥）+ 骨架叠加开关（0.7.2 面板 UI 用）：与 `setMode` 的单一模式是同一套状态，
+   * 只是拆成两个控件分别设置；`getViewState().mode` 仍会合成回 `ViewMode`（AI 契约不变）。
+   */
+  setDisplay(display: { surface: SurfaceMode; bones: boolean }): void;
   play(clipName?: string): void;
   pause(): void;
   /** 跳帧：渲染完一帧后才 resolve（截图管线靠它保证确定性） */
@@ -104,9 +113,9 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   rimLight.position.set(0, -4, -6);
   scene.add(ambient, hemi, keyLight, fillLight, rimLight);
 
-  /** 按渲染模式套光照强度（solid = studio 素模布光，其余模式保持 0.6.4 的贴图布光） */
-  function applyLightRig(target: ViewMode): void {
-    const rig = lightRigFor(target);
+  /** 套光照强度（0.7.2：只看表面方式——素模用自己的 studio 布光，其余沿用 0.6.4 贴图布光） */
+  function applyLightRig(solidSurface: boolean): void {
+    const rig = lightRigFor(solidSurface ? 'solid' : 'default');
     ambient.intensity = rig.ambient;
     hemi.intensity = rig.hemi;
     keyLight.intensity = rig.key;
@@ -169,7 +178,11 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   let clipName: string | null = null;
   let frame = 0;
   let playing = false;
-  let mode: ViewMode = 'default';
+  // 0.7.2：表面显示方式（互斥）与骨架叠加开关解耦——面板上素模/贴图/线框三选一，骨架单独勾选
+  let surface: SurfaceMode = 'default';
+  let bonesVisible = false;
+  /** 当前模型是否有网格（无网格时模式口径一律按 skeleton，AI 侧不会误判） */
+  let modelHasMesh = false;
   let currentView: ViewState | null = null;
 
   const clock = new THREE.Clock();
@@ -241,16 +254,16 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   function applyMode(): void {
     // 光照先于几何：素模与贴图模式要用的布光强度不同（模型未载入时也先把灯设好，
     // 避免「先设 solid 再载模型」前几帧用错布光）
-    applyLightRig(mode);
+    applyLightRig(surface === 'solid');
     if (model === null) return;
-    for (const helper of skeletons) helper.visible = mode === 'skeleton' || mode === 'bones-overlay';
+    for (const helper of skeletons) helper.visible = bonesVisible;
     model.traverse((child) => {
       const mesh = child as THREE.Mesh;
       if (!mesh.isMesh) return;
-      mesh.visible = mode !== 'skeleton';
+      mesh.visible = surface !== 'none';
       // solid 素模（0.6.5）：用共享中性灰材质替换原材质，一键看清几何/动作，不受贴图与材质问题影响
       const stored = (mesh.userData as Record<string, unknown>).kinemeshOriginalMaterial as THREE.Material | THREE.Material[] | undefined;
-      if (mode === 'solid') {
+      if (surface === 'solid') {
         if (stored !== undefined && (mesh.userData as Record<string, unknown>).kinemeshOriginalMaterial !== null) {
           mesh.material = solidMaterial;
         }
@@ -261,7 +274,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       for (const material of materials) {
         const wireframeFlag = material as THREE.MeshBasicMaterial;
         if (wireframeFlag.wireframe !== undefined) {
-          wireframeFlag.wireframe = mode === 'wireframe';
+          wireframeFlag.wireframe = surface === 'wireframe';
         }
       }
     });
@@ -326,6 +339,8 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       // 骨骼（Bone）永不触碰——蒙皮依赖骨骼层级。
       suppressedAux = collectAuxiliaryObjects(model);
       for (const aux of suppressedAux) aux.visible = false;
+      // 0.7.2：记录「有没有网格」——无网格模型的模式口径一律按 skeleton（与自动选模式同源）
+      modelHasMesh = collectSceneModeFacts(model).meshCount > 0;
       scene.add(model);
       // B.4 标注的目标索引：名字 → 对象（重名取首个命中；换模型即作废重建）
       namedObjects = new Map<string, THREE.Object3D>();
@@ -406,12 +421,19 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         camera: cameraData,
         clip: clipName,
         frame,
-        mode,
+        mode: composeViewMode(surface, bonesVisible, modelHasMesh),
       };
     },
 
     setMode(next) {
       setModeInternal(next);
+    },
+
+    setDisplay(next) {
+      surface = next.surface;
+      bonesVisible = next.bones;
+      applyMode();
+      renderer.render(scene, camera);
     },
 
     play(clip) {
@@ -554,8 +576,10 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         });
   if (resizeObserver !== null) resizeObserver.observe(container);
 
+  /** 旧 `ViewMode` 入口（AI 截图 / CLI / MCP / 内存回写）：拆成「表面 + 骨架」两个开关 */
   function setModeInternal(next: ViewMode): void {
-    mode = next;
+    surface = surfaceOfMode(next);
+    bonesVisible = bonesOfMode(next);
     applyMode();
     // 立即出一张帧：截图管线在 applyView 后立即截图，不等下一个 rAF
     renderer.render(scene, camera);

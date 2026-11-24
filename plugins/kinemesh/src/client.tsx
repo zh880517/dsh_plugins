@@ -9,7 +9,7 @@ import { mountViewer, type ViewerHandle } from './core/viewer/kinemesh-viewer.js
 import { detectFormat } from './core/registry.js';
 import { resolveEndpoint } from './endpoint.js';
 import { Styles } from './styles.js';
-import { RENDER_FPS, type ViewState, type ViewMode } from './core/viewstate.js';
+import { RENDER_FPS, SURFACE_MODES, composeViewMode, type SurfaceMode, type ViewState, type ViewMode } from './core/viewstate.js';
 
 export const inject = ['slots', 'locale'];
 
@@ -20,7 +20,6 @@ const CONVERSATION_VIEW_SLOT = 'conversation.view';
 const ENTRY_ID = 'kinemesh-launcher';
 const PANEL_ID = 'kinemesh';
 const PREVIEW_TAB_ID = 'kinemesh-preview';
-const VIEW_MODES: ViewMode[] = ['default', 'solid', 'wireframe', 'skeleton', 'bones-overlay'];
 
 // ———————— 预览状态记忆（0.6.0）———————
 // 切换侧边栏面板/会话页签时组件会卸载，React state 随之丢失；把「已打开模型 + clip + 帧 + 模式」
@@ -30,7 +29,27 @@ export interface PaneMemory {
   path: string;
   clip: string;
   frame: number;
-  mode: ViewMode;
+  /** 表面显示方式（互斥：贴图 / 素模 / 线框）——0.7.2 起与骨架叠加拆开记 */
+  surface: DisplaySurface;
+  /** 是否叠加骨架线 */
+  bones: boolean;
+}
+
+/** 面板的表面选项（不含 `none`：「不画网格」只出现在无 mesh 模型身上，由骨架叠加自然覆盖） */
+export type DisplaySurface = Exclude<SurfaceMode, 'none'>;
+
+/** 面板显示状态（0.7.2）：表面互斥 + 骨架叠加 */
+export interface DisplayState {
+  surface: DisplaySurface;
+  bones: boolean;
+}
+export const DEFAULT_DISPLAY: DisplayState = { surface: 'solid', bones: false };
+
+/** 自动选模式建议 → 面板显示状态：纯骨架模型勾上骨架叠加；无贴图走素模；有贴图走贴图 */
+export function displayFromSuggestion(suggestion: { mode: ViewMode }): DisplayState {
+  if (suggestion.mode === 'skeleton') return { surface: 'solid', bones: true };
+  if (suggestion.mode === 'default') return { surface: 'default', bones: false };
+  return { surface: 'solid', bones: false };
 }
 
 const paneMemories = new Map<string, PaneMemory>();
@@ -118,10 +137,16 @@ const ZH_TEXTS: Record<string, string> = {
   'transport.pause': '暂停',
   'transport.next': '下一帧',
   'transport.last': '跳到最后一帧',
-  'mode.autoTitle': '载入时按模型自动选的显示模式（手动切换后由你决定）',
+  'mode.autoTitle': '载入时按模型自动选的显示方式（手动切换后由你决定）',
   'mode.auto.no-mesh': '自动：骨架（模型没有 mesh）',
   'mode.auto.no-texture': '自动：素模（没有可用贴图）',
   'mode.auto.textured': '自动：贴图（检测到有效贴图）',
+  'surface.solid': '素模',
+  'surface.default': '贴图',
+  'surface.wireframe': '线框',
+  'display.surfaceTitle': '表面显示方式（互斥）：素模 / 贴图 / 线框',
+  'display.bones': '叠加骨架',
+  'display.bonesTitle': '在表面上叠加骨骼线（可与素模 / 贴图 / 线框任意组合）',
   'pane.load': '加载',
   'pane.loading': '加载中…',
   'pane.staticClip': '（静态）',
@@ -162,10 +187,16 @@ const EN_TEXTS: Record<string, string> = {
   'transport.pause': 'Pause',
   'transport.next': 'Next frame',
   'transport.last': 'Go to last frame',
-  'mode.autoTitle': 'Display mode picked automatically from the model (manual switch takes over)',
+  'mode.autoTitle': 'Display picked automatically from the model (manual switch takes over)',
   'mode.auto.no-mesh': 'auto: skeleton (no mesh)',
   'mode.auto.no-texture': 'auto: solid (no usable texture)',
   'mode.auto.textured': 'auto: textured (valid texture found)',
+  'surface.solid': 'solid',
+  'surface.default': 'textured',
+  'surface.wireframe': 'wireframe',
+  'display.surfaceTitle': 'Surface display (exclusive): solid / textured / wireframe',
+  'display.bones': 'overlay bones',
+  'display.bonesTitle': 'Draw bone lines on top (combines with solid / textured / wireframe)',
   'pane.load': 'Load',
   'pane.loading': 'Loading…',
   'pane.staticClip': '(static)',
@@ -699,9 +730,10 @@ function PreviewPane(props: {
   const [loadedPath, setLoadedPath] = React.useState('');
   const [clip, setClip] = React.useState('');
   const [frame, setFrame] = React.useState(0);
-  // 默认 solid 素模：游戏资产常无可用贴图，素模是常规 3D 工具的默认显示方式，也最能看清动作。
-  // 0.7.1 起载入后按模型自动选（无 mesh→骨架 / 无贴图→素模 / 有贴图→贴图），见 applyAutoMode
-  const [mode, setMode] = React.useState<ViewMode>('solid');
+  // 0.7.2：表面显示方式（贴图/素模/线框，互斥）与骨架叠加（开关）是两个独立控件；
+  // 载入后按模型自动选（无 mesh→骨架叠加 / 无贴图→素模 / 有贴图→贴图），见 applyAutoMode
+  const [surface, setSurface] = React.useState<DisplaySurface>('solid');
+  const [bonesOn, setBonesOn] = React.useState(false);
   /** 自动选模式的理由（null = 用户手动选的，不显示自动提示） */
   const [autoReason, setAutoReason] = React.useState<ModeReason | null>(null);
   const [playing, setPlaying] = React.useState(false);
@@ -720,15 +752,15 @@ function PreviewPane(props: {
   const viewerRef = React.useRef<ViewerHandle | null>(null);
   const analysisSeq = React.useRef(0);
   const lastRequestRef = React.useRef<{ path: string; nonce: number } | null>(null);
-  /** 当前模式（自动选模式的延迟复审要用最新值，state 闭包会过期） */
-  const modeRef = React.useRef<ViewMode>('solid');
-  /** 用户手动改过模式 → 本次载入不再自动纠正 */
+  /** 当前显示状态（自动选模式的延迟复审要用最新值，state 闭包会过期） */
+  const displayRef = React.useRef<DisplayState>({ surface: 'solid', bones: false });
+  /** 用户手动改过显示状态 → 本次载入不再自动纠正 */
   const manualModeRef = React.useRef(false);
   /** 贴图异步解码后的自动模式复审定时器 */
   const autoModeTimerRef = React.useRef<number | null>(null);
   React.useEffect(() => {
-    modeRef.current = mode;
-  }, [mode]);
+    displayRef.current = { surface, bones: bonesOn };
+  }, [surface, bonesOn]);
 
   React.useEffect(() => {
     if (hostRef.current === null) return undefined;
@@ -753,8 +785,9 @@ function PreviewPane(props: {
       const info = viewer.frameInfo();
       if (info !== null) setFrame(info.frame);
       const view = viewer.getViewState() as ViewState;
+      const current = displayRef.current;
       setViewText(
-        `az ${Math.round(view.camera.azimuth)}° · el ${Math.round(view.camera.elevation)}° · d ${view.camera.distance.toFixed(2)} · ${view.mode}`,
+        `az ${Math.round(view.camera.azimuth)}° · el ${Math.round(view.camera.elevation)}° · d ${view.camera.distance.toFixed(2)} · ${current.surface}${current.bones ? ' + 骨架' : ''}`,
       );
     }, 250);
     return () => {
@@ -787,37 +820,40 @@ function PreviewPane(props: {
   };
 
   /**
-   * 载入后自动选渲染模式（0.7.1，用户拍板）：
-   * 无 mesh → 骨架；有 mesh 但没可用贴图 → 素模；有可用贴图 → 贴图模式。
+   * 载入后自动选显示状态（0.7.1 / 0.7.2 拆成两个控件）：
+   * 无 mesh → 叠加骨架；有 mesh 但没可用贴图 → 素模；有可用贴图 → 贴图。
    * 同一路径的「上次手动选择」优先（用户改过就尊重）；
    * 贴图是异步解码的，载入瞬间可能还没 image，故 1.6s 后用 viewer 现算的建议复审一次
    * （只在本次是自动选的、且用户此后没手动改过时才纠正）。
    */
-  const applyAutoMode = (viewer: ViewerHandle, target: string, memory: PaneMemory | null): ViewMode => {
+  const applyAutoMode = (viewer: ViewerHandle, target: string, memory: PaneMemory | null): DisplayState => {
     if (autoModeTimerRef.current !== null) {
       window.clearTimeout(autoModeTimerRef.current);
       autoModeTimerRef.current = null;
     }
     manualModeRef.current = false;
     const suggestion = viewer.modeSuggestion();
-    const remembered = memory !== null && memory.path === target ? memory.mode : null;
-    const nextMode = remembered ?? suggestion.mode;
-    modeRef.current = nextMode;
-    setMode(nextMode);
+    const remembered = memory !== null && memory.path === target ? { surface: memory.surface, bones: memory.bones } : null;
+    const nextDisplay = remembered ?? displayFromSuggestion(suggestion);
+    displayRef.current = nextDisplay;
+    setSurface(nextDisplay.surface);
+    setBonesOn(nextDisplay.bones);
     setAutoReason(remembered === null ? suggestion.reason : null);
     if (remembered === null) {
       autoModeTimerRef.current = window.setTimeout(() => {
         autoModeTimerRef.current = null;
         if (manualModeRef.current) return;
         const latest = viewerRef.current?.modeSuggestion();
-        if (latest === undefined || latest.mode === modeRef.current) return;
-        modeRef.current = latest.mode;
-        setMode(latest.mode);
+        if (latest === undefined || latest.mode === composeViewMode(displayRef.current.surface, displayRef.current.bones, true)) return;
+        const corrected = displayFromSuggestion(latest);
+        displayRef.current = corrected;
+        setSurface(corrected.surface);
+        setBonesOn(corrected.bones);
         setAutoReason(latest.reason);
-        viewerRef.current?.setMode(latest.mode);
+        viewerRef.current?.setDisplay(corrected);
       }, 1600);
     }
-    return nextMode;
+    return nextDisplay;
   };
 
   const load = async (rawTarget?: string): Promise<void> => {
@@ -854,13 +890,15 @@ function PreviewPane(props: {
       // 0.6.2 修复：必须走 applyView(clip) 激活对应 action，否则 activeAction 恒为 null，
       // 拖时间轴只改内部帧号、不调 mixer.setTime → 画面不动（旧实现只 setClip 不激活）
       const baseView = defaultView(bounds.center, bounds.radius);
-      const nextMode = applyAutoMode(viewer, target, memory);
+      const nextDisplay = applyAutoMode(viewer, target, memory);
       viewer.applyView({
         ...baseView,
         clip: rememberedClip === '' ? null : rememberedClip,
         frame: startFrame,
-        mode: nextMode,
+        mode: nextDisplay.surface,
       });
+      // 0.7.2：表面与骨架是两个控件——applyView 先立起表面，再叠加骨架开关
+      viewer.setDisplay(nextDisplay);
       if (rememberedClip !== '' && startFrame > 0) viewer.seekFrame(startFrame);
       if (props.sessionId !== '') previewSession.markUsed(props.sessionId);
       props.onLoaded?.(target);
@@ -875,8 +913,8 @@ function PreviewPane(props: {
   // 状态记忆（0.6.0：切到别的侧边栏面板/页签再回来，已加载模型与进度不丢；进程内内存，重启清空）
   React.useEffect(() => {
     if (props.persistKey === undefined || loadedPath === '') return;
-    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, mode });
-  }, [props.persistKey, loadedPath, clip, frame, mode]);
+    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, surface, bones: bonesOn });
+  }, [props.persistKey, loadedPath, clip, frame, surface, bonesOn]);
 
   // 首次挂载恢复上次的模型（必须在 load 定义之后）
   const restoredRef = React.useRef(false);
@@ -955,8 +993,9 @@ function PreviewPane(props: {
       ...viewer.getViewState(),
       clip: nextClip === '' ? null : nextClip,
       frame: 0,
-      mode,
+      mode: displayRef.current.surface,
     });
+    viewer.setDisplay(displayRef.current);
     const info = viewer.frameInfo();
     setFrame(info?.frame ?? 0);
     void fetchAnalysis(loadedPath, nextClip);
@@ -988,12 +1027,24 @@ function PreviewPane(props: {
     seek(clampFrame(target, state.maxFrame));
   };
 
-  const changeMode = (next: ViewMode): void => {
-    // 手动选择即锁定：本次载入不再被自动模式纠正
+  /** 表面方式（互斥，0.7.2）：手动选择即锁定，本次载入不再被自动纠正 */
+  const changeSurface = (next: DisplaySurface): void => {
     manualModeRef.current = true;
     setAutoReason(null);
-    setMode(next);
-    viewerRef.current?.setMode(next);
+    const display: DisplayState = { surface: next, bones: bonesOn };
+    displayRef.current = display;
+    setSurface(next);
+    viewerRef.current?.setDisplay(display);
+  };
+
+  /** 骨架叠加开关（0.7.2）：与表面方式独立，可叠在素模/贴图/线框上 */
+  const toggleBones = (next: boolean): void => {
+    manualModeRef.current = true;
+    setAutoReason(null);
+    const display: DisplayState = { surface: displayRef.current.surface, bones: next };
+    displayRef.current = display;
+    setBonesOn(next);
+    viewerRef.current?.setDisplay(display);
   };
 
   const send = async (): Promise<void> => {
@@ -1078,13 +1129,18 @@ function PreviewPane(props: {
             </option>
           ))}
         </select>
-        <select className="kinemesh-select" value={mode} onChange={(event) => changeMode(event.target.value as ViewMode)}>
-          {VIEW_MODES.map((name) => (
+        {/* 0.7.2：表面方式互斥（贴图 / 素模 / 线框），骨架叠加是独立开关 */}
+        <select className="kinemesh-select" value={surface} onChange={(event) => changeSurface(event.target.value as DisplaySurface)} title={translate('display.surfaceTitle')}>
+          {SURFACE_MODES.map((name) => (
             <option key={name} value={name}>
-              {name}
+              {translate('surface.' + name)}
             </option>
           ))}
         </select>
+        <label className="kinemesh-check" title={translate('display.bonesTitle')}>
+          <input type="checkbox" checked={bonesOn} onChange={(event) => toggleBones(event.target.checked)} />
+          {translate('display.bones')}
+        </label>
       </div>
       {state.error !== null && <div className="kinemesh-banner">{state.error}</div>}
       {sent !== null && (

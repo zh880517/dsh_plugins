@@ -6,6 +6,36 @@ import { KinemeshError } from './errors.js';
 export type ViewMode = 'default' | 'solid' | 'wireframe' | 'skeleton' | 'bones-overlay';
 export type ViewPreset = 'front' | 'side' | 'back' | 'three-quarter' | 'orbit8';
 
+/**
+ * 表面显示方式（0.7.2）：预览面板把它做成「互斥选择」，与「骨架叠加开关」解耦。
+ * · default = 贴图 / solid = 素模 / wireframe = 线框 / none = 不画网格（纯骨架模式）
+ * 对外契约仍是 `ViewMode`（AI 截图 / CLI / MCP 不感知这条解耦）。
+ */
+export type SurfaceMode = 'default' | 'solid' | 'wireframe' | 'none';
+
+/** 表面互斥选项（客户端下拉用）：不含 `none`——「只画骨架」由叠加开关 + 无网格模型自然覆盖 */
+export const SURFACE_MODES: Exclude<SurfaceMode, 'none'>[] = ['solid', 'default', 'wireframe'];
+
+/** 旧 `ViewMode` → 表面方式（skeleton 不画网格，其余同名前四项） */
+export function surfaceOfMode(mode: ViewMode): SurfaceMode {
+  if (mode === 'skeleton') return 'none';
+  if (mode === 'bones-overlay') return 'default';
+  return mode;
+}
+
+/** 旧 `ViewMode` → 骨架线是否显示（skeleton / bones-overlay 两种模式才显示） */
+export function bonesOfMode(mode: ViewMode): boolean {
+  return mode === 'skeleton' || mode === 'bones-overlay';
+}
+
+/** 表面 + 骨架 → 旧 `ViewMode`（回写记忆 / 发给 AI 时保持单一模式口径；无 mesh 一律 skeleton） */
+export function composeViewMode(surface: SurfaceMode, bones: boolean, hasMesh: boolean): ViewMode {
+  if (!hasMesh) return 'skeleton';
+  if (surface === 'none') return 'skeleton';
+  if (!bones) return surface;
+  return surface === 'default' ? 'bones-overlay' : surface;
+}
+
 export interface ViewStateCamera {
   /** 方位角（度，绕 Y 轴；0 = 从 +Z 看，即正面） */
   azimuth: number;

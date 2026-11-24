@@ -5,6 +5,8 @@ import {
   clampFrame,
   clearPaneMemories,
   computeTickStep,
+  DEFAULT_DISPLAY,
+  displayFromSuggestion,
   energyPoints,
   formatDigestHeadline,
   frameTicks,
@@ -20,6 +22,11 @@ import {
   stepFrame,
   writePaneMemory,
 } from '../../plugins/kinemesh/src/client.js';
+import {
+  bonesOfMode,
+  composeViewMode,
+  surfaceOfMode,
+} from '../../plugins/kinemesh/src/core/viewstate.js';
 
 describe('时间轴帧号刻度（0.6.3：短动作帧数少，需要刻度才好定位）', () => {
   it('短动作（16 帧）用 2 帧步长：0/2/4/.../16，标签数 9 不挤', () => {
@@ -61,23 +68,23 @@ describe('时间轴帧号刻度（0.6.3：短动作帧数少，需要刻度才�
 describe('预览状态记忆（0.6.0：切面板/页签回来数据不丢）', () => {
   it('写入后可读回同样内容；不同 persistKey 互不影响', () => {
     clearPaneMemories();
-    writePaneMemory('standalone', { path: 'E:\\a.fbx', clip: 'Take 001', frame: 42, mode: 'skeleton' });
-    writePaneMemory('tab', { path: 'E:\\b.glb', clip: '', frame: 0, mode: 'default' });
-    expect(readPaneMemory('standalone')).toEqual({ path: 'E:\\a.fbx', clip: 'Take 001', frame: 42, mode: 'skeleton' });
-    expect(readPaneMemory('tab')).toEqual({ path: 'E:\\b.glb', clip: '', frame: 0, mode: 'default' });
+    writePaneMemory('standalone', { path: 'E:\\a.fbx', clip: 'Take 001', frame: 42, surface: 'solid', bones: true });
+    writePaneMemory('tab', { path: 'E:\\b.glb', clip: '', frame: 0, surface: 'default', bones: false });
+    expect(readPaneMemory('standalone')).toEqual({ path: 'E:\\a.fbx', clip: 'Take 001', frame: 42, surface: 'solid', bones: true });
+    expect(readPaneMemory('tab')).toEqual({ path: 'E:\\b.glb', clip: '', frame: 0, surface: 'default', bones: false });
     expect(readPaneMemory('missing')).toBeNull();
   });
 
   it('空路径不覆盖已有记忆（避免误清）', () => {
     clearPaneMemories();
-    writePaneMemory('standalone', { path: 'E:\\a.fbx', clip: 'x', frame: 1, mode: 'default' });
-    writePaneMemory('standalone', { path: '   ', clip: '', frame: 0, mode: 'default' });
+    writePaneMemory('standalone', { path: 'E:\\a.fbx', clip: 'x', frame: 1, surface: 'default', bones: false });
+    writePaneMemory('standalone', { path: '   ', clip: '', frame: 0, surface: 'default', bones: false });
     expect(readPaneMemory('standalone')?.path).toBe('E:\\a.fbx');
   });
 
   it('写入是快照拷贝：外部对象后续修改不影响记忆', () => {
     clearPaneMemories();
-    const memory = { path: 'E:\\a.fbx', clip: 'c', frame: 3, mode: 'default' as const };
+    const memory = { path: 'E:\\a.fbx', clip: 'c', frame: 3, surface: 'default', bones: false };
     writePaneMemory('k', memory);
     memory.frame = 99;
     expect(readPaneMemory('k')?.frame).toBe(3);
@@ -90,17 +97,17 @@ describe('加载后恢复目标（0.6.2：自动选首个 clip + 恢复记忆进
   });
 
   it('记忆命中同一路径且 clip 仍存在：恢复 clip 与帧号', () => {
-    const memory = { path: 'E:\\a.fbx', clip: 'Idle', frame: 42, mode: 'default' as const };
+    const memory = { path: 'E:\\a.fbx', clip: 'Idle', frame: 42, surface: 'default', bones: false };
     expect(resolveRestoreTarget(memory, 'E:\\a.fbx', ['Take 001', 'Idle'], 60)).toEqual({ clip: 'Idle', frame: 42 });
   });
 
   it('路径不同：不套用记忆（取首个 clip + 0 帧）', () => {
-    const memory = { path: 'E:\\other.fbx', clip: 'Idle', frame: 42, mode: 'default' as const };
+    const memory = { path: 'E:\\other.fbx', clip: 'Idle', frame: 42, surface: 'default', bones: false };
     expect(resolveRestoreTarget(memory, 'E:\\a.fbx', ['Take 001'], 60)).toEqual({ clip: 'Take 001', frame: 0 });
   });
 
   it('记忆里的 clip 已不存在：回落首个 clip；帧号按 maxFrame 夹紧', () => {
-    const memory = { path: 'E:\\a.fbx', clip: 'Gone', frame: 999, mode: 'default' as const };
+    const memory = { path: 'E:\\a.fbx', clip: 'Gone', frame: 999, surface: 'default', bones: false };
     expect(resolveRestoreTarget(memory, 'E:\\a.fbx', ['Take 001'], 16)).toEqual({ clip: 'Take 001', frame: 16 });
   });
 
@@ -276,5 +283,42 @@ describe('发送 digest 挑选（review Important #1：静态态不附错配 dig
   it('选定 clip 时附当前 analysis 的 summaryDigest；无分析数据时不附', () => {
     expect(pickSendDigest('Walk', analysis)).toBe(analysis.summaryDigest);
     expect(pickSendDigest('Walk', null)).toBeNull();
+  });
+});
+
+describe('显示方式拆分（0.7.2：表面互斥 + 骨架叠加开关）', () => {
+  it('旧 ViewMode → 表面方式：skeleton 不画网格，bones-overlay 用贴图表面', () => {
+    expect(surfaceOfMode('default')).toBe('default');
+    expect(surfaceOfMode('solid')).toBe('solid');
+    expect(surfaceOfMode('wireframe')).toBe('wireframe');
+    expect(surfaceOfMode('skeleton')).toBe('none');
+    expect(surfaceOfMode('bones-overlay')).toBe('default');
+  });
+
+  it('旧 ViewMode → 骨架可见性：只有 skeleton / bones-overlay 显示骨架', () => {
+    for (const mode of ['default', 'solid', 'wireframe'] as const) expect(bonesOfMode(mode)).toBe(false);
+    expect(bonesOfMode('skeleton')).toBe(true);
+    expect(bonesOfMode('bones-overlay')).toBe(true);
+  });
+
+  it('表面 + 骨架合成回单一模式（回写记忆 / 发给 AI 的口径）', () => {
+    expect(composeViewMode('solid', false, true)).toBe('solid');
+    expect(composeViewMode('solid', true, true)).toBe('solid'); // 素模+骨架：契约里没有对应值，保留表面值
+    expect(composeViewMode('wireframe', true, true)).toBe('wireframe');
+    expect(composeViewMode('default', true, true)).toBe('bones-overlay');
+    expect(composeViewMode('default', false, true)).toBe('default');
+    // 无 mesh：无论表面选什么，模式口径一律 skeleton（AI 侧不会误判「显示网格」）
+    expect(composeViewMode('solid', false, false)).toBe('skeleton');
+    expect(composeViewMode('default', true, false)).toBe('skeleton');
+  });
+
+  it('自动建议 → 面板显示状态：纯骨架勾骨架叠加，无贴图走素模，有贴图走贴图', () => {
+    expect(displayFromSuggestion({ mode: 'skeleton' })).toEqual({ surface: 'solid', bones: true });
+    expect(displayFromSuggestion({ mode: 'solid' })).toEqual({ surface: 'solid', bones: false });
+    expect(displayFromSuggestion({ mode: 'default' })).toEqual({ surface: 'default', bones: false });
+  });
+
+  it('默认显示状态就是素模、不叠骨架（0.6.6 起的观感）', () => {
+    expect(DEFAULT_DISPLAY).toEqual({ surface: 'solid', bones: false });
   });
 });

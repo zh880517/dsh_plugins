@@ -39,6 +39,8 @@ interface Bridge {
   setBoneLabels(spec: BoneLabelsSpec): BoneLabelsOutcome;
   /** 载入后推荐的渲染模式（0.7.1）：无 mesh → skeleton / 无贴图 → solid / 有贴图 → default */
   modeSuggestion(): ReturnType<ViewerHandle['modeSuggestion']>;
+  /** 表面 + 骨架叠加（0.7.2 面板 UI 的同一套状态；截图桥接一般直接走 applyView 的 mode） */
+  setDisplay(display: Parameters<ViewerHandle['setDisplay']>[0]): void;
   ready(): Promise<void>;
 }
 
@@ -129,6 +131,9 @@ const bridge: Bridge = {
   },
   modeSuggestion(): ReturnType<ViewerHandle['modeSuggestion']> {
     return getViewer().modeSuggestion();
+  },
+  setDisplay(display: Parameters<ViewerHandle['setDisplay']>[0]): void {
+    getViewer().setDisplay(display);
   },
   ready(): Promise<void> {
     return getViewer().ready();

@@ -570,7 +570,14 @@ kinemesh_analyze(path, {
     `window.__DSH_HOST_PATHS__.pathFor(file)`（Electron `webUtils.getPathForFile`）取真实绝对路径，
     走同一 `/kinemesh/model` 加载链路；纯浏览器环境拿不到路径（安全限制）→ 三段式提示改用粘贴路径。
     扩展名不符/多文件只取第一个，均给出中文提示；
-  - 渲染模式（default/wireframe/skeleton/bones-overlay）、clip 选择、播放/暂停；
+  - **显示方式拆成两个控件（0.7.2，用户拍板）**：表面方式互斥下拉（`素模 solid` / `贴图 default` /
+    `线框 wireframe`）+ **独立勾选框「叠加骨架」**——以前是一个 5 值下拉（default/solid/wireframe/
+    skeleton/bones-overlay），无法表达「素模 + 骨架」这类组合。实现上 viewer 内部把状态拆成
+    `surface`（default/solid/wireframe/none）+ `bonesVisible` 两个开关（`applyMode()` 一次应用），
+    而对外契约仍是单一 `ViewMode`：`surfaceOfMode` / `bonesOfMode` 负责旧模式→拆解，
+    `composeViewMode(表面, 骨架, 有无 mesh)` 负责合成回去（`getViewState()` / 记忆 / 发给 AI 都用合成值；
+    无 mesh 时一律合成 `skeleton`，AI 侧不会误判「显示网格」）。截图 / CLI / MCP 的 `mode` 入参语义不变；
+  - clip 选择、播放/暂停、逐帧/首末帧（0.7.0 播放条）；
   - 视角实时回读球坐标 ViewState（与 AI 截图同口径）；
   - 「发送给 AI 分析」（原浮层能力迁入页面，浮层保留入口）。
 - **主题适配（0.5.3 修正）**：颜色**只用宿主真实存在的 `--dsw-alias-*` token**（`--dsw-alias-bg-overlay` /

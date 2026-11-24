@@ -46857,6 +46857,23 @@ void main() {
 	}
 	//#endregion
 	//#region plugins/kinemesh/src/core/viewstate.ts
+	/** 旧 `ViewMode` → 表面方式（skeleton 不画网格，其余同名前四项） */
+	function surfaceOfMode(mode) {
+		if (mode === "skeleton") return "none";
+		if (mode === "bones-overlay") return "default";
+		return mode;
+	}
+	/** 旧 `ViewMode` → 骨架线是否显示（skeleton / bones-overlay 两种模式才显示） */
+	function bonesOfMode(mode) {
+		return mode === "skeleton" || mode === "bones-overlay";
+	}
+	/** 表面 + 骨架 → 旧 `ViewMode`（回写记忆 / 发给 AI 时保持单一模式口径；无 mesh 一律 skeleton） */
+	function composeViewMode(surface, bones, hasMesh) {
+		if (!hasMesh) return "skeleton";
+		if (surface === "none") return "skeleton";
+		if (!bones) return surface;
+		return surface === "default" ? "bones-overlay" : surface;
+	}
 	var DEFAULT_DISTANCE_FACTOR = 2.2;
 	/** 球坐标 → 相机位置（Y 轴向上，azimuth 0 = 从 +Z 看） */
 	function cameraPosition(camera) {
@@ -47120,9 +47137,9 @@ void main() {
 		const rimLight = new DirectionalLight(16777215, TEXTURED_LIGHT_RIG.rim);
 		rimLight.position.set(0, -4, -6);
 		scene.add(ambient, hemi, keyLight, fillLight, rimLight);
-		/** 按渲染模式套光照强度（solid = studio 素模布光，其余模式保持 0.6.4 的贴图布光） */
-		function applyLightRig(target) {
-			const rig = lightRigFor(target);
+		/** 套光照强度（0.7.2：只看表面方式——素模用自己的 studio 布光，其余沿用 0.6.4 贴图布光） */
+		function applyLightRig(solidSurface) {
+			const rig = lightRigFor(solidSurface ? "solid" : "default");
 			ambient.intensity = rig.ambient;
 			hemi.intensity = rig.hemi;
 			keyLight.intensity = rig.key;
@@ -47183,7 +47200,10 @@ void main() {
 		let clipName = null;
 		let frame = 0;
 		let playing = false;
-		let mode = "default";
+		let surface = "default";
+		let bonesVisible = false;
+		/** 当前模型是否有网格（无网格时模式口径一律按 skeleton，AI 侧不会误判） */
+		let modelHasMesh = false;
 		const clock = new Clock();
 		const seekResolvers = [];
 		let firstFrameResolve = null;
@@ -47230,21 +47250,21 @@ void main() {
 			suppressedAux = [];
 		}
 		function applyMode() {
-			applyLightRig(mode);
+			applyLightRig(surface === "solid");
 			if (model === null) return;
-			for (const helper of skeletons) helper.visible = mode === "skeleton" || mode === "bones-overlay";
+			for (const helper of skeletons) helper.visible = bonesVisible;
 			model.traverse((child) => {
 				const mesh = child;
 				if (!mesh.isMesh) return;
-				mesh.visible = mode !== "skeleton";
+				mesh.visible = surface !== "none";
 				const stored = mesh.userData.kinemeshOriginalMaterial;
-				if (mode === "solid") {
+				if (surface === "solid") {
 					if (stored !== void 0 && mesh.userData.kinemeshOriginalMaterial !== null) mesh.material = solidMaterial;
 				} else if (stored !== void 0) mesh.material = stored;
 				const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 				for (const material of materials) {
 					const wireframeFlag = material;
-					if (wireframeFlag.wireframe !== void 0) wireframeFlag.wireframe = mode === "wireframe";
+					if (wireframeFlag.wireframe !== void 0) wireframeFlag.wireframe = surface === "wireframe";
 				}
 			});
 			grid.visible = true;
@@ -47288,6 +47308,7 @@ void main() {
 				}, 1200);
 				suppressedAux = collectAuxiliaryObjects(model);
 				for (const aux of suppressedAux) aux.visible = false;
+				modelHasMesh = collectSceneModeFacts(model).meshCount > 0;
 				scene.add(model);
 				namedObjects = /* @__PURE__ */ new Map();
 				model.traverse((child) => {
@@ -47368,11 +47389,17 @@ void main() {
 					], camera.fov),
 					clip: clipName,
 					frame,
-					mode
+					mode: composeViewMode(surface, bonesVisible, modelHasMesh)
 				};
 			},
 			setMode(next) {
 				setModeInternal(next);
+			},
+			setDisplay(next) {
+				surface = next.surface;
+				bonesVisible = next.bones;
+				applyMode();
+				renderer.render(scene, camera);
 			},
 			play(clip) {
 				const name = clip ?? clipName ?? bounds.clips[0] ?? null;
@@ -47501,8 +47528,10 @@ void main() {
 			renderer.render(scene, camera);
 		});
 		if (resizeObserver !== null) resizeObserver.observe(container);
+		/** 旧 `ViewMode` 入口（AI 截图 / CLI / MCP / 内存回写）：拆成「表面 + 骨架」两个开关 */
 		function setModeInternal(next) {
-			mode = next;
+			surface = surfaceOfMode(next);
+			bonesVisible = bonesOfMode(next);
 			applyMode();
 			renderer.render(scene, camera);
 		}
@@ -47664,6 +47693,9 @@ void main() {
 		},
 		modeSuggestion() {
 			return getViewer().modeSuggestion();
+		},
+		setDisplay(display) {
+			getViewer().setDisplay(display);
 		},
 		ready() {
 			return getViewer().ready();

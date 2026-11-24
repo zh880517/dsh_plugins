@@ -27,6 +27,12 @@ export const css = `
 .kinemesh-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
 .kinemesh-select{height:28px;padding:0 8px;border-radius:8px;font:inherit;font-size:12px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+/* 0.7.2：骨架叠加开关（与表面下拉并列的独立控件） */
+.kinemesh-check{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 9px;border-radius:8px;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);
+  color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer;user-select:none;white-space:nowrap}
+.kinemesh-check:hover{background:var(--dsw-alias-bg-layer-2)}
+.kinemesh-check input{margin:0;width:13px;height:13px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
 .kinemesh-btn{height:28px;padding:0 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);
   background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer}
 .kinemesh-btn:hover{background:var(--dsw-alias-bg-layer-2)}

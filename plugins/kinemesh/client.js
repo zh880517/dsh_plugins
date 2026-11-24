@@ -40081,6 +40081,29 @@ function reasonOf(error) {
 }
 //#endregion
 //#region
+/** 表面互斥选项（客户端下拉用）：不含 `none`——「只画骨架」由叠加开关 + 无网格模型自然覆盖 */
+var SURFACE_MODES = [
+	"solid",
+	"default",
+	"wireframe"
+];
+/** 旧 `ViewMode` → 表面方式（skeleton 不画网格，其余同名前四项） */
+function surfaceOfMode(mode) {
+	if (mode === "skeleton") return "none";
+	if (mode === "bones-overlay") return "default";
+	return mode;
+}
+/** 旧 `ViewMode` → 骨架线是否显示（skeleton / bones-overlay 两种模式才显示） */
+function bonesOfMode(mode) {
+	return mode === "skeleton" || mode === "bones-overlay";
+}
+/** 表面 + 骨架 → 旧 `ViewMode`（回写记忆 / 发给 AI 时保持单一模式口径；无 mesh 一律 skeleton） */
+function composeViewMode(surface, bones, hasMesh) {
+	if (!hasMesh) return "skeleton";
+	if (surface === "none") return "skeleton";
+	if (!bones) return surface;
+	return surface === "default" ? "bones-overlay" : surface;
+}
 var DEFAULT_DISTANCE_FACTOR = 2.2;
 /** 球坐标 → 相机位置（Y 轴向上，azimuth 0 = 从 +Z 看） */
 function cameraPosition(camera) {
@@ -40344,9 +40367,9 @@ function mountViewer(container, options = {}) {
 	const rimLight = new DirectionalLight(16777215, TEXTURED_LIGHT_RIG.rim);
 	rimLight.position.set(0, -4, -6);
 	scene.add(ambient, hemi, keyLight, fillLight, rimLight);
-	/** 按渲染模式套光照强度（solid = studio 素模布光，其余模式保持 0.6.4 的贴图布光） */
-	function applyLightRig(target) {
-		const rig = lightRigFor(target);
+	/** 套光照强度（0.7.2：只看表面方式——素模用自己的 studio 布光，其余沿用 0.6.4 贴图布光） */
+	function applyLightRig(solidSurface) {
+		const rig = lightRigFor(solidSurface ? "solid" : "default");
 		ambient.intensity = rig.ambient;
 		hemi.intensity = rig.hemi;
 		keyLight.intensity = rig.key;
@@ -40407,7 +40430,10 @@ function mountViewer(container, options = {}) {
 	let clipName = null;
 	let frame = 0;
 	let playing = false;
-	let mode = "default";
+	let surface = "default";
+	let bonesVisible = false;
+	/** 当前模型是否有网格（无网格时模式口径一律按 skeleton，AI 侧不会误判） */
+	let modelHasMesh = false;
 	const clock = new Clock();
 	const seekResolvers = [];
 	let firstFrameResolve = null;
@@ -40454,21 +40480,21 @@ function mountViewer(container, options = {}) {
 		suppressedAux = [];
 	}
 	function applyMode() {
-		applyLightRig(mode);
+		applyLightRig(surface === "solid");
 		if (model === null) return;
-		for (const helper of skeletons) helper.visible = mode === "skeleton" || mode === "bones-overlay";
+		for (const helper of skeletons) helper.visible = bonesVisible;
 		model.traverse((child) => {
 			const mesh = child;
 			if (!mesh.isMesh) return;
-			mesh.visible = mode !== "skeleton";
+			mesh.visible = surface !== "none";
 			const stored = mesh.userData.kinemeshOriginalMaterial;
-			if (mode === "solid") {
+			if (surface === "solid") {
 				if (stored !== void 0 && mesh.userData.kinemeshOriginalMaterial !== null) mesh.material = solidMaterial;
 			} else if (stored !== void 0) mesh.material = stored;
 			const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 			for (const material of materials) {
 				const wireframeFlag = material;
-				if (wireframeFlag.wireframe !== void 0) wireframeFlag.wireframe = mode === "wireframe";
+				if (wireframeFlag.wireframe !== void 0) wireframeFlag.wireframe = surface === "wireframe";
 			}
 		});
 		grid.visible = true;
@@ -40512,6 +40538,7 @@ function mountViewer(container, options = {}) {
 			}, 1200);
 			suppressedAux = collectAuxiliaryObjects(model);
 			for (const aux of suppressedAux) aux.visible = false;
+			modelHasMesh = collectSceneModeFacts(model).meshCount > 0;
 			scene.add(model);
 			namedObjects = /* @__PURE__ */ new Map();
 			model.traverse((child) => {
@@ -40592,11 +40619,17 @@ function mountViewer(container, options = {}) {
 				], camera.fov),
 				clip: clipName,
 				frame,
-				mode
+				mode: composeViewMode(surface, bonesVisible, modelHasMesh)
 			};
 		},
 		setMode(next) {
 			setModeInternal(next);
+		},
+		setDisplay(next) {
+			surface = next.surface;
+			bonesVisible = next.bones;
+			applyMode();
+			renderer.render(scene, camera);
 		},
 		play(clip) {
 			const name = clip ?? clipName ?? bounds.clips[0] ?? null;
@@ -40725,8 +40758,10 @@ function mountViewer(container, options = {}) {
 		renderer.render(scene, camera);
 	});
 	if (resizeObserver !== null) resizeObserver.observe(container);
+	/** 旧 `ViewMode` 入口（AI 截图 / CLI / MCP / 内存回写）：拆成「表面 + 骨架」两个开关 */
 	function setModeInternal(next) {
-		mode = next;
+		surface = surfaceOfMode(next);
+		bonesVisible = bonesOfMode(next);
 		applyMode();
 		renderer.render(scene, camera);
 	}
@@ -47575,6 +47610,12 @@ var css = `
 .kinemesh-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
 .kinemesh-select{height:28px;padding:0 8px;border-radius:8px;font:inherit;font-size:12px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+/* 0.7.2：骨架叠加开关（与表面下拉并列的独立控件） */
+.kinemesh-check{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 9px;border-radius:8px;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);
+  color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer;user-select:none;white-space:nowrap}
+.kinemesh-check:hover{background:var(--dsw-alias-bg-layer-2)}
+.kinemesh-check input{margin:0;width:13px;height:13px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
 .kinemesh-btn{height:28px;padding:0 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);
   background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer}
 .kinemesh-btn:hover{background:var(--dsw-alias-bg-layer-2)}
@@ -47674,13 +47715,25 @@ var MAIN_SLOT = "main";
 var CONVERSATION_VIEW_SLOT = "conversation.view";
 var PANEL_ID = "kinemesh";
 var PREVIEW_TAB_ID = "kinemesh-preview";
-var VIEW_MODES = [
-	"default",
-	"solid",
-	"wireframe",
-	"skeleton",
-	"bones-overlay"
-];
+var DEFAULT_DISPLAY = {
+	surface: "solid",
+	bones: false
+};
+/** 自动选模式建议 → 面板显示状态：纯骨架模型勾上骨架叠加；无贴图走素模；有贴图走贴图 */
+function displayFromSuggestion(suggestion) {
+	if (suggestion.mode === "skeleton") return {
+		surface: "solid",
+		bones: true
+	};
+	if (suggestion.mode === "default") return {
+		surface: "default",
+		bones: false
+	};
+	return {
+		surface: "solid",
+		bones: false
+	};
+}
 var paneMemories = /* @__PURE__ */ new Map();
 /** 读某块预览区的上次状态（无则 null） */
 function readPaneMemory(key) {
@@ -47756,10 +47809,16 @@ var ZH_TEXTS = {
 	"transport.pause": "暂停",
 	"transport.next": "下一帧",
 	"transport.last": "跳到最后一帧",
-	"mode.autoTitle": "载入时按模型自动选的显示模式（手动切换后由你决定）",
+	"mode.autoTitle": "载入时按模型自动选的显示方式（手动切换后由你决定）",
 	"mode.auto.no-mesh": "自动：骨架（模型没有 mesh）",
 	"mode.auto.no-texture": "自动：素模（没有可用贴图）",
 	"mode.auto.textured": "自动：贴图（检测到有效贴图）",
+	"surface.solid": "素模",
+	"surface.default": "贴图",
+	"surface.wireframe": "线框",
+	"display.surfaceTitle": "表面显示方式（互斥）：素模 / 贴图 / 线框",
+	"display.bones": "叠加骨架",
+	"display.bonesTitle": "在表面上叠加骨骼线（可与素模 / 贴图 / 线框任意组合）",
 	"pane.load": "加载",
 	"pane.loading": "加载中…",
 	"pane.staticClip": "（静态）",
@@ -47800,10 +47859,16 @@ var EN_TEXTS = {
 	"transport.pause": "Pause",
 	"transport.next": "Next frame",
 	"transport.last": "Go to last frame",
-	"mode.autoTitle": "Display mode picked automatically from the model (manual switch takes over)",
+	"mode.autoTitle": "Display picked automatically from the model (manual switch takes over)",
 	"mode.auto.no-mesh": "auto: skeleton (no mesh)",
 	"mode.auto.no-texture": "auto: solid (no usable texture)",
 	"mode.auto.textured": "auto: textured (valid texture found)",
+	"surface.solid": "solid",
+	"surface.default": "textured",
+	"surface.wireframe": "wireframe",
+	"display.surfaceTitle": "Surface display (exclusive): solid / textured / wireframe",
+	"display.bones": "overlay bones",
+	"display.bonesTitle": "Draw bone lines on top (combines with solid / textured / wireframe)",
 	"pane.load": "Load",
 	"pane.loading": "Loading…",
 	"pane.staticClip": "(static)",
@@ -48234,7 +48299,8 @@ function PreviewPane(props) {
 	const [loadedPath, setLoadedPath] = react.useState("");
 	const [clip, setClip] = react.useState("");
 	const [frame, setFrame] = react.useState(0);
-	const [mode, setMode] = react.useState("solid");
+	const [surface, setSurface] = react.useState("solid");
+	const [bonesOn, setBonesOn] = react.useState(false);
 	/** 自动选模式的理由（null = 用户手动选的，不显示自动提示） */
 	const [autoReason, setAutoReason] = react.useState(null);
 	const [playing, setPlaying] = react.useState(false);
@@ -48257,15 +48323,21 @@ function PreviewPane(props) {
 	const viewerRef = react.useRef(null);
 	const analysisSeq = react.useRef(0);
 	const lastRequestRef = react.useRef(null);
-	/** 当前模式（自动选模式的延迟复审要用最新值，state 闭包会过期） */
-	const modeRef = react.useRef("solid");
-	/** 用户手动改过模式 → 本次载入不再自动纠正 */
+	/** 当前显示状态（自动选模式的延迟复审要用最新值，state 闭包会过期） */
+	const displayRef = react.useRef({
+		surface: "solid",
+		bones: false
+	});
+	/** 用户手动改过显示状态 → 本次载入不再自动纠正 */
 	const manualModeRef = react.useRef(false);
 	/** 贴图异步解码后的自动模式复审定时器 */
 	const autoModeTimerRef = react.useRef(null);
 	react.useEffect(() => {
-		modeRef.current = mode;
-	}, [mode]);
+		displayRef.current = {
+			surface,
+			bones: bonesOn
+		};
+	}, [surface, bonesOn]);
 	react.useEffect(() => {
 		if (hostRef.current === null) return void 0;
 		const viewer = mountViewer(hostRef.current);
@@ -48286,7 +48358,8 @@ function PreviewPane(props) {
 			const info = viewer.frameInfo();
 			if (info !== null) setFrame(info.frame);
 			const view = viewer.getViewState();
-			setViewText(`az ${Math.round(view.camera.azimuth)}° · el ${Math.round(view.camera.elevation)}° · d ${view.camera.distance.toFixed(2)} · ${view.mode}`);
+			const current = displayRef.current;
+			setViewText(`az ${Math.round(view.camera.azimuth)}° · el ${Math.round(view.camera.elevation)}° · d ${view.camera.distance.toFixed(2)} · ${current.surface}${current.bones ? " + 骨架" : ""}`);
 		}, 250);
 		return () => {
 			window.clearInterval(timer);
@@ -48325,8 +48398,8 @@ function PreviewPane(props) {
 		}
 	};
 	/**
-	* 载入后自动选渲染模式（0.7.1，用户拍板）：
-	* 无 mesh → 骨架；有 mesh 但没可用贴图 → 素模；有可用贴图 → 贴图模式。
+	* 载入后自动选显示状态（0.7.1 / 0.7.2 拆成两个控件）：
+	* 无 mesh → 叠加骨架；有 mesh 但没可用贴图 → 素模；有可用贴图 → 贴图。
 	* 同一路径的「上次手动选择」优先（用户改过就尊重）；
 	* 贴图是异步解码的，载入瞬间可能还没 image，故 1.6s 后用 viewer 现算的建议复审一次
 	* （只在本次是自动选的、且用户此后没手动改过时才纠正）。
@@ -48338,22 +48411,28 @@ function PreviewPane(props) {
 		}
 		manualModeRef.current = false;
 		const suggestion = viewer.modeSuggestion();
-		const remembered = memory !== null && memory.path === target ? memory.mode : null;
-		const nextMode = remembered ?? suggestion.mode;
-		modeRef.current = nextMode;
-		setMode(nextMode);
+		const remembered = memory !== null && memory.path === target ? {
+			surface: memory.surface,
+			bones: memory.bones
+		} : null;
+		const nextDisplay = remembered ?? displayFromSuggestion(suggestion);
+		displayRef.current = nextDisplay;
+		setSurface(nextDisplay.surface);
+		setBonesOn(nextDisplay.bones);
 		setAutoReason(remembered === null ? suggestion.reason : null);
 		if (remembered === null) autoModeTimerRef.current = window.setTimeout(() => {
 			autoModeTimerRef.current = null;
 			if (manualModeRef.current) return;
 			const latest = viewerRef.current?.modeSuggestion();
-			if (latest === void 0 || latest.mode === modeRef.current) return;
-			modeRef.current = latest.mode;
-			setMode(latest.mode);
+			if (latest === void 0 || latest.mode === composeViewMode(displayRef.current.surface, displayRef.current.bones, true)) return;
+			const corrected = displayFromSuggestion(latest);
+			displayRef.current = corrected;
+			setSurface(corrected.surface);
+			setBonesOn(corrected.bones);
 			setAutoReason(latest.reason);
-			viewerRef.current?.setMode(latest.mode);
+			viewerRef.current?.setDisplay(corrected);
 		}, 1600);
-		return nextMode;
+		return nextDisplay;
 	};
 	const load = async (rawTarget) => {
 		const target = (rawTarget ?? pathInput).trim();
@@ -48394,13 +48473,14 @@ function PreviewPane(props) {
 			setClip(rememberedClip);
 			setFrame(startFrame);
 			const baseView = defaultView(bounds.center, bounds.radius);
-			const nextMode = applyAutoMode(viewer, target, memory);
+			const nextDisplay = applyAutoMode(viewer, target, memory);
 			viewer.applyView({
 				...baseView,
 				clip: rememberedClip === "" ? null : rememberedClip,
 				frame: startFrame,
-				mode: nextMode
+				mode: nextDisplay.surface
 			});
+			viewer.setDisplay(nextDisplay);
 			if (rememberedClip !== "" && startFrame > 0) viewer.seekFrame(startFrame);
 			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
 			props.onLoaded?.(target);
@@ -48428,14 +48508,16 @@ function PreviewPane(props) {
 			path: loadedPath,
 			clip,
 			frame,
-			mode
+			surface,
+			bones: bonesOn
 		});
 	}, [
 		props.persistKey,
 		loadedPath,
 		clip,
 		frame,
-		mode
+		surface,
+		bonesOn
 	]);
 	const restoredRef = react.useRef(false);
 	react.useEffect(() => {
@@ -48508,8 +48590,9 @@ function PreviewPane(props) {
 			...viewer.getViewState(),
 			clip: nextClip === "" ? null : nextClip,
 			frame: 0,
-			mode
+			mode: displayRef.current.surface
 		});
+		viewer.setDisplay(displayRef.current);
 		const info = viewer.frameInfo();
 		setFrame(info?.frame ?? 0);
 		fetchAnalysis(loadedPath, nextClip);
@@ -48537,11 +48620,29 @@ function PreviewPane(props) {
 		}
 		seek(clampFrame(target, state.maxFrame));
 	};
-	const changeMode = (next) => {
+	/** 表面方式（互斥，0.7.2）：手动选择即锁定，本次载入不再被自动纠正 */
+	const changeSurface = (next) => {
 		manualModeRef.current = true;
 		setAutoReason(null);
-		setMode(next);
-		viewerRef.current?.setMode(next);
+		const display = {
+			surface: next,
+			bones: bonesOn
+		};
+		displayRef.current = display;
+		setSurface(next);
+		viewerRef.current?.setDisplay(display);
+	};
+	/** 骨架叠加开关（0.7.2）：与表面方式独立，可叠在素模/贴图/线框上 */
+	const toggleBones = (next) => {
+		manualModeRef.current = true;
+		setAutoReason(null);
+		const display = {
+			surface: displayRef.current.surface,
+			bones: next
+		};
+		displayRef.current = display;
+		setBonesOn(next);
+		viewerRef.current?.setDisplay(display);
 	};
 	const send = async () => {
 		if (viewerRef.current === null || loadedPath === "" || props.sessionId === "") return;
@@ -48611,12 +48712,20 @@ function PreviewPane(props) {
 		value: name
 	}, name))), /* @__PURE__ */ react.createElement("select", {
 		className: "kinemesh-select",
-		value: mode,
-		onChange: (event) => changeMode(event.target.value)
-	}, VIEW_MODES.map((name) => /* @__PURE__ */ react.createElement("option", {
+		value: surface,
+		onChange: (event) => changeSurface(event.target.value),
+		title: translate("display.surfaceTitle")
+	}, SURFACE_MODES.map((name) => /* @__PURE__ */ react.createElement("option", {
 		key: name,
 		value: name
-	}, name)))), state.error !== null && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-banner" }, state.error), sent !== null && /* @__PURE__ */ react.createElement("div", {
+	}, translate("surface." + name)))), /* @__PURE__ */ react.createElement("label", {
+		className: "kinemesh-check",
+		title: translate("display.bonesTitle")
+	}, /* @__PURE__ */ react.createElement("input", {
+		type: "checkbox",
+		checked: bonesOn,
+		onChange: (event) => toggleBones(event.target.checked)
+	}), translate("display.bones"))), state.error !== null && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-banner" }, state.error), sent !== null && /* @__PURE__ */ react.createElement("div", {
 		className: "kinemesh-banner",
 		"data-kind": "ok"
 	}, sent), /* @__PURE__ */ react.createElement("div", {
@@ -48864,12 +48973,14 @@ function apply(ctx) {
 	}));
 }
 //#endregion
+exports.DEFAULT_DISPLAY = DEFAULT_DISPLAY;
 exports.MODEL_FILE_EXTENSIONS = MODEL_FILE_EXTENSIONS;
 exports.StandalonePreviewPage = StandalonePreviewPage;
 exports.apply = apply;
 exports.clampFrame = clampFrame;
 exports.clearPaneMemories = clearPaneMemories;
 exports.computeTickStep = computeTickStep;
+exports.displayFromSuggestion = displayFromSuggestion;
 exports.energyPoints = energyPoints;
 exports.formatDigestHeadline = formatDigestHeadline;
 exports.frameTicks = frameTicks;
