@@ -13,10 +13,11 @@ import { RENDER_FPS, type ViewState, type ViewMode } from './core/viewstate.js';
 export const inject = ['slots', 'locale'];
 
 const HEADER_SLOT = 'conversation.session.header.utilities';
-const INPUT_LEFT_SLOT = 'conversation.input.left';
-const OVERLAY_SLOT = 'shell.overlay';
+const SIDEBAR_LIST_SLOT = 'sidebar.panellist';
+const MAIN_SLOT = 'main';
 const CONVERSATION_VIEW_SLOT = 'conversation.view';
 const ENTRY_ID = 'kinemesh-launcher';
+const PANEL_ID = 'kinemesh';
 const PREVIEW_TAB_ID = 'kinemesh-preview';
 const VIEW_MODES: ViewMode[] = ['default', 'wireframe', 'skeleton', 'bones-overlay'];
 
@@ -48,52 +49,13 @@ export function hostPathOfFile(file: File): string | null {
   }
 }
 
-/** 点开入口时记下的会话连接（run/分析要绑到它） */
-let connection: { sessionId: string; draft: string; actions: { setDraft?: (draft: string) => void } | null } | null = null;
-
-/**
- * 浮层开关 store（aiworkflow pickerStore 同款闭包写法）。
- * **必须由订阅方用 React.useSyncExternalStore 消费**——注册回调是裸函数、内部无 hook 时，
- * set() 通知不到任何组件，点击按钮会「没有任何反应」（0.5.2 修复的真实缺陷）。
- * 用闭包变量而非 this：方法可直接作为 subscribe/getSnapshot 传给 useSyncExternalStore。
- */
-export function createOverlayStore(): {
-  subscribe: (listener: () => void) => () => void;
-  getSnapshot: () => boolean;
-  set: (next: boolean) => void;
-} {
-  let open = false;
-  const listeners = new Set<() => void>();
-  return {
-    subscribe(listener: () => void): () => void {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    getSnapshot(): boolean {
-      return open;
-    },
-    set(next: boolean): void {
-      if (open === next) return;
-      open = next;
-      for (const listener of listeners) listener();
-    },
-  };
-}
-
-const overlayStore = createOverlayStore();
-
-/** 浮层主体：订阅 store 的可见性（裸函数注册不重渲染，必须在此订阅） */
-function PreviewOverlay(): React.ReactElement | null {
-  const visible = React.useSyncExternalStore(overlayStore.subscribe, overlayStore.getSnapshot);
-  return visible ? <PreviewDialog onClose={() => overlayStore.set(false)} /> : null;
-}
-
 // ———————— locale（§6.10.4：页签文案与页面文本走 locale 服务，缺键回退中文） ————————
 
 const LOCALE_NS = 'kinemesh-preview';
 const ZH_TEXTS: Record<string, string> = {
+  'panel.label': '动析预览',
+  'standalone.title': '动析 · 模型预览',
+  'standalone.subtitle': '本地只读：拖转视角、拖帧播放、看强度曲线（此页不接 AI 分析）',
   'tab.preview': '模型预览',
   'page.models': '本会话的模型',
   'page.emptySession': '会话信息不可用，先用「动析」浮层打开一次预览。',
@@ -123,6 +85,9 @@ const ZH_TEXTS: Record<string, string> = {
   'dialog.close': '关闭',
 };
 const EN_TEXTS: Record<string, string> = {
+  'panel.label': 'Kinemesh preview',
+  'standalone.title': 'Kinemesh · model preview',
+  'standalone.subtitle': 'Local read-only: orbit, scrub, play and inspect the energy curve (no AI in this page)',
   'tab.preview': 'Model preview',
   'page.models': 'Session models',
   'page.emptySession': 'Session info unavailable; open the preview overlay once first.',
@@ -340,36 +305,6 @@ function SessionCapture({ sessionId, store }: { sessionId: string; store: typeof
   return null;
 }
 
-// ———————— 预览浮层入口按钮（M3 原样） ————————
-
-function LauncherButton(props: any): React.ReactElement {
-  const draft =
-    typeof props?.useInput === 'function'
-      ? props.useInput((state: { draft?: string } | undefined) => state?.draft ?? '')
-      : '';
-  const onClick = (): void => {
-    connection = {
-      sessionId: typeof props?.sessionId === 'string' ? props.sessionId : '',
-      draft: typeof draft === 'string' ? draft : '',
-      actions: (props?.inputActions as { setDraft?: (draft: string) => void } | undefined) ?? null,
-    };
-    overlayStore.set(true);
-  };
-  return (
-    <React.Fragment>
-      <Styles />
-      <button type="button" className="kinemesh-launchbtn" onClick={onClick} title="打开 3D 预览（动析）">
-        <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 3.5 20 8l-8 4.5L4 8Z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-          <path d="M4 8v8l8 4.5V12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-          <path d="M20 8v8l-8 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        </svg>
-        <span>动析</span>
-      </button>
-    </React.Fragment>
-  );
-}
-
 // ———————— 强度曲线时间轴（§6.10.3）：曲线 + 播放头 + 分段色带 + 循环高亮 ————————
 
 const TIMELINE_VB_W = 600;
@@ -481,16 +416,19 @@ function PreviewPane(props: {
   sessionId: string;
   /** 输入框附言（浮层传入；页面无） */
   note?: string | null;
-  /** 是否显示路径输入（浮层 true；页面由左侧列表驱动） */
+  /** 是否显示路径输入（独立预览页 true；会话页签由左侧列表驱动） */
   showPathInput?: boolean;
+  /** 是否显示「发送给 AI 分析」（独立预览页 false——纯工具内置功能，不接 AI） */
+  allowSend?: boolean;
   /** 外部请求加载某路径（页面选中/打开模型时） */
   loadRequest?: { path: string; nonce: number } | null;
   /** 加载成功上报（页面刷新会话列表用） */
   onLoaded?: (path: string) => void;
-  /** 发送成功上报（浮层清附言并关闭） */
+  /** 发送成功上报 */
   onSendSuccess?: () => void;
 }): React.ReactElement {
   const showPathInput = props.showPathInput !== false;
+  const allowSend = props.allowSend !== false;
   const [pathInput, setPathInput] = React.useState('');
   const [loadedPath, setLoadedPath] = React.useState('');
   const [clip, setClip] = React.useState('');
@@ -849,54 +787,60 @@ function PreviewPane(props: {
         )}
         <span>{`time = frame / ${RENDER_FPS}`}</span>
       </div>
-      <div className="kinemesh-foot">
-        <span className="kinemesh-sub">{translate('pane.footHint')}</span>
-        <span className="kinemesh-spacer" />
-        <button
-          type="button"
-          className="kinemesh-btn"
-          data-primary="true"
-          onClick={() => void send()}
-          disabled={state.phase !== 'ready' || sending || props.sessionId === ''}
-        >
-          {sending ? translate('pane.sending') : translate('pane.send')}
-        </button>
-      </div>
+      {allowSend && (
+        <div className="kinemesh-foot">
+          <span className="kinemesh-sub">{translate('pane.footHint')}</span>
+          <span className="kinemesh-spacer" />
+          <button
+            type="button"
+            className="kinemesh-btn"
+            data-primary="true"
+            onClick={() => void send()}
+            disabled={state.phase !== 'ready' || sending || props.sessionId === ''}
+          >
+            {sending ? translate('pane.sending') : translate('pane.send')}
+          </button>
+        </div>
+      )}
     </React.Fragment>
   );
 }
 
-// ———————— 预览浮层（M3 入口，PreviewPane 复用） ————————
+// ———————— 独立预览页（左侧侧边栏入口，0.6.0：纯工具内置功能，不接 AI） ————————
 
-function PreviewDialog({ onClose }: { onClose: () => void }): React.ReactElement {
+/** 侧边栏图标（与「动析」品牌一致的多面体） */
+function KinemeshIcon({ size = 18, active = false }: { size?: number; active?: boolean }): React.ReactElement {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" style={{ display: 'block' }}>
+      <path
+        d="M12 3.5 20 8l-8 4.5L4 8Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+        opacity={active ? 1 : 0.85}
+      />
+      <path d="M4 8v8l8 4.5V12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M20 8v8l-8 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" opacity={active ? 1 : 0.6} />
+    </svg>
+  );
+}
+
+/**
+ * 独立预览页：DSH 左侧侧边栏入口打开的纯预览（拖转 / 播放 / 强度曲线 / 拖入文件），
+ * **不显示「发送给 AI 分析」**（那是会话页签的功能）。不依赖会话，无 sessionId 也可用。
+ */
+export function StandalonePreviewPage(): React.ReactElement {
   return (
     <React.Fragment>
       <Styles />
-      <div className="kinemesh-backdrop" onClick={onClose} role="presentation">
-        <div className="kinemesh-dialog" role="dialog" aria-label={translate('dialog.title')} onClick={(event) => event.stopPropagation()}>
-          <header className="kinemesh-head">
-            <span className="kinemesh-title">{translate('dialog.title')}</span>
-            <span className="kinemesh-sub">{translate('dialog.subtitle')}</span>
-            <span className="kinemesh-spacer" />
-            <button type="button" className="kinemesh-iconbtn" onClick={onClose} aria-label={translate('dialog.close')}>
-              ✕
-            </button>
-          </header>
-          <PreviewPane
-            sessionId={connection?.sessionId ?? ''}
-            note={connection?.draft ?? null}
-            onSendSuccess={() => {
-              const draft = connection?.draft ?? '';
-              if (draft.trim() !== '') {
-                try {
-                  connection?.actions?.setDraft?.('');
-                } catch {
-                  // 清空失败不影响已投递的分析
-                }
-              }
-              onClose();
-            }}
-          />
+      <div className="kinemesh-standalone">
+        <header className="kinemesh-standalonehead">
+          <span className="kinemesh-title">{translate('standalone.title')}</span>
+          <span className="kinemesh-sub">{translate('standalone.subtitle')}</span>
+        </header>
+        <div className="kinemesh-standalonemain">
+          <PreviewPane sessionId="" showPathInput allowSend={false} />
         </div>
       </div>
     </React.Fragment>
@@ -1103,18 +1047,25 @@ export function apply(ctx: any): void {
     ),
   );
 
+  // ———— 左侧侧边栏入口 + 主面板：独立预览页（0.6.0，纯工具内置功能，不接 AI） ————
+  // 与 aiworkflow 同款机制：sidebar.panellist 出图标，main 槽按同 id 切到该面板。
+  const layout = ctx.get('layout') as { selectPanel?: (panelId: string | null) => void } | undefined;
   ctx.effect(() =>
-    ctx.slots.inject(INPUT_LEFT_SLOT, () =>
-      ctx.slots.register({ name: INPUT_LEFT_SLOT, id: ENTRY_ID, order: 35 }, (props: Record<string, unknown>) => (
-        <LauncherButton {...props} />
-      )),
+    ctx.slots.inject(SIDEBAR_LIST_SLOT, () =>
+      ctx.slots.register(
+        { name: SIDEBAR_LIST_SLOT, id: PANEL_ID, order: 50, label: () => translate('panel.label') },
+        (props: { size?: number; active?: boolean }) => <KinemeshIcon size={props.size} active={props.active} />,
+      ),
     ),
   );
   ctx.effect(() =>
-    ctx.slots.inject(OVERLAY_SLOT, () =>
-      // 渲染 PreviewOverlay（组件内部 useSyncExternalStore 订阅开关），不能直接把
-      // `overlayStore.getSnapshot() ? … : null` 写成裸函数——那样 set(true) 不会触发重渲染
-      ctx.slots.register({ name: OVERLAY_SLOT, id: ENTRY_ID, order: 45 }, () => <PreviewOverlay />),
-    ),
+    ctx.slots.inject(MAIN_SLOT, () => {
+      try {
+        return ctx.slots.register({ name: MAIN_SLOT, key: PANEL_ID }, () => <StandalonePreviewPage />);
+      } catch {
+        return () => undefined;
+      }
+    }),
   );
+  void layout;
 }

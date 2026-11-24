@@ -514,32 +514,56 @@ kinemesh_analyze(path, {
 测试延续现有策略：fixtures 合成「已知答案」的动画（构造循环=两端同姿、构造顿挫=末帧速度不为零、
 构造位移=线性 root 轨迹），真实资产做兜底。版本 0.5.0。
 
-### 6.10 DSH 模型预览页（会话页签，M6e 承载）
+### 6.10 DSH 交互（0.6.0 重构：左侧独立预览页 + `/kinemesh` 命令 + 会话页签）
 
-需求（用户拍板）：当前会话用过 kinemesh，就在顶部「对话」页签旁出现「模型预览」页。左=本会话
-用到的模型文件列表（默认选第一个），右=预览工具；动画资产加可拖进度条并叠加强度曲线。
+> 0.6.0 按用户要求重构了三处入口（原「输入框左侧动析胶囊 + 浮层预览」已移除）：
+> ① **左侧侧边栏独立预览页**（纯工具内置功能，不接 AI）；② **`/kinemesh` 命令**替代胶囊按钮；
+> ③ **会话页签**保留「左列表 + 预览 + 发送给 AI 分析当前帧」。三者共用 `PreviewPane` 组件。
 
-#### 6.10.1 页签注册（沿用 aiworkflow 运行图页签的已验证模式）
+#### 6.10.1 三个入口
+
+| 入口 | 机制 | 是否接 AI |
+|---|---|---|
+| 左侧侧边栏「动析预览」 | `sidebar.panellist` 图标 + `main` 槽主面板（aiworkflow 同款）；`PreviewPane allowSend={false}` | **否**（拖转/播放/曲线/拖入文件） |
+| `/kinemesh` 命令 | Host `ctx.commands.register`；命令 + 拖入附件 + 要求 → 注入分析指令 | 是（由 Agent 调工具分析） |
+| 会话「模型预览」页签 | `conversation.view`（条件注册：本会话用过 kinemesh） | 是（「发送给 AI 分析」当前帧） |
+
+#### 6.10.2 `/kinemesh` 命令（Host 侧）
+
+- 注册：`ctx.commands.register({ name:'kinemesh', description, input:{hint, attachments:true}, handler })`；
+- `handler` 收到 `CommandInvocation = { commandId, agent, rawInput, attachments, signal }`：
+  - `rawInput` 里可直接写路径（支持盘符/UNC/`~`/引号包裹含空格路径），非模型路径忽略；
+  - `attachments` 是拖入输入框的文件（`FileBlock.attachment = {attachmentId,name,bytes}`，**无磁盘路径**）
+    → 经 Host `fileUploads.resolve(agent, attachmentId)` 取内容，落 `%TEMP%/kinemesh-command-attachments/`
+    下的临时文件（按扩展名保留），再把路径交给 Agent；
+  - 解析不出内容/写盘失败 → 该附件计入「读不出」，最终无可用模型时返回 error + 用法提示
+    （改用 `/kinemesh <路径>`）；
+  - 成功：先记录会话模型表（页签左列表可见），再 `agent.followup()` 注入中文指令
+    （含全部路径、用户要求、工具使用顺序、防幻觉约束）；Agent 离线 → error 附路径；
+- 纯逻辑（扩展名判定 / 路径提取 / 消息组装 / 附件择优 / 内容落盘 / 模型头嗅探）在
+  `src/command.ts`，`runCommand` 注入依赖便于单测（`tests/kinemesh/command.test.ts` 17 例）。
+
+#### 6.10.3 会话页签注册（沿用 aiworkflow 运行图页签的已验证模式）
 
 - 槽位 **`conversation.view`**：aiworkflow 已用它注册「运行图」会话页签（条件注册、随会话
   出现/消失），模式在本仓库内已验证，不新造机制；
 - 注册条目 `{name:'conversation.view', id:'kinemesh-preview', order:20, label:「模型预览」}`；
 - **出现条件**：本会话「用过 kinemesh」= 任一 kinemesh 工具（info/render/analyze/skeleton）以某路径
-  执行成功，或在预览（浮层/页面）里加载过模型——**Agent 工具直调经 exec.agent.id 记入同一张会话表**
-  （aiworkflow 同款口径；CLI / MCP 进程无会话概念不进表），HTTP 路由（model/info/analyze）处理成功
-  也记入；
+  执行成功、`/kinemesh` 命令解析成功、或在预览页里加载过模型——**Agent 工具直调经 exec.agent.id
+  记入同一张会话表**（aiworkflow 同款口径；CLI / MCP 进程无会话概念不进表），HTTP 路由
+  （model/info/analyze）处理成功也记入；
 - 会话身份与数据：header utilities 槽捕获 sessionId（`dsh:<sessionId>`，aiworkflow 同款口径）；
   Host 维护 `sessionId → 有序去重路径表`（内存，按首次出现顺序，不持久化——会话级功能，
   Host 重启即清空、重新使用即恢复）；客户端在 sessionId 变化时同步注册/注销页签
   （aiworkflow `syncRunTab` 同款）+ 轻量拉取列表；
 - 切到没用过的会话页签消失。
 
-#### 6.10.2 页面布局
+#### 6.10.4 页面布局
 
 - **左侧模型列表**：host `GET /kinemesh/session-models?sessionId=` 返回路径 + 轻量信息
   （文件名 / 是否有动画 / clip 数 / 文件体积）；条目 = 文件名 + 动画徽标 + 完整路径 tooltip；
-  默认选中**第一个**；底部「打开模型」输入路径可手动添加（与浮层共用加载路由，成功即入列表）；
-- **右侧预览工具**：M3 浮层预览的内容重构为共用组件 `PreviewPane`（浮层与页面共用，不新增
+  默认选中**第一个**；底部「打开模型」输入路径可手动添加（与会话页签共用加载路由，成功即入列表）；
+- **右侧预览工具**：共用组件 `PreviewPane`（独立页/页签共用，不新增
   第二套渲染路径）：
   - OrbitControls 全套：按住拖转视角、滚轮缩放、平移（viewer 模块已有）；
   - **拖入文件（0.5.3）**：把 `.fbx/.glb/.gltf/.obj` 拖到预览区即加载——桌面版经 preload 暴露的

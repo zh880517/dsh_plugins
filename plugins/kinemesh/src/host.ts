@@ -19,6 +19,7 @@ import { resolveNormalization } from './core/motion/normalize.js';
 import { loadVocab } from './core/motion/vocab.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { composeAnalyzeMessage, parseAnalyzeRequest } from './analyze.js';
+import { registerCommand } from './command.js';
 import { registerTools } from './tools.js';
 
 export const inject = ['webServer', 'tools'];
@@ -32,7 +33,10 @@ export function apply(ctx: any): void {
   // 会话模型表（§6.10.1）：Agent 工具直调（exec.agent.id）与 HTTP 路由（预览加载/发送分析）
   // 都记入同一张表——「会话用过 kinemesh」以工具使用为准，预览页签随之出现。
   const sessions = createSessionModels();
-  ctx.effect(() => registerTools(ctx, (sessionId, absPath) => sessions.record(sessionId, absPath)));
+  const record = (sessionId: string, absPath: string): void => sessions.record(sessionId, absPath);
+  ctx.effect(() => registerTools(ctx, record));
+  // `/kinemesh` 命令（0.6.0）：替代原输入框「动析」按钮——命令 + 拖入附件即启动分析
+  ctx.effect(() => registerCommand(ctx, record));
   ctx.effect(() => {
     const disposeRoute = ctx.webServer.register({
       kind: 'prefix',

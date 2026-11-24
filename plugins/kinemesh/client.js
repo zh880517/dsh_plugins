@@ -47283,6 +47283,16 @@ var css = `
 
 .kinemesh-foot{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
 
+/* ———— 独立预览页（侧边栏入口，0.6.0：纯预览不接 AI） ———— */
+.kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:420px;overflow:auto;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
+.kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px}
+.kinemesh-standalonemain{flex:1;min-height:0;display:flex;flex-direction:column;padding-bottom:12px}
+.kinemesh-standalonemain .kinemesh-stage{margin:0 18px}
+.kinemesh-standalonemain .kinemesh-toolbar,
+.kinemesh-standalonemain .kinemesh-controls,
+.kinemesh-standalonemain .kinemesh-readout{padding-left:18px;padding-right:18px}
+
 /* ———— 模型预览页（conversation.view 页签，M6e） ———— */
 .kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;
   color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
@@ -47319,10 +47329,10 @@ function Styles() {
 //#region
 var inject = ["slots", "locale"];
 var HEADER_SLOT = "conversation.session.header.utilities";
-var INPUT_LEFT_SLOT = "conversation.input.left";
-var OVERLAY_SLOT = "shell.overlay";
+var SIDEBAR_LIST_SLOT = "sidebar.panellist";
+var MAIN_SLOT = "main";
 var CONVERSATION_VIEW_SLOT = "conversation.view";
-var ENTRY_ID = "kinemesh-launcher";
+var PANEL_ID = "kinemesh";
 var PREVIEW_TAB_ID = "kinemesh-preview";
 var VIEW_MODES = [
 	"default",
@@ -47357,41 +47367,11 @@ function hostPathOfFile(file) {
 		return null;
 	}
 }
-/** 点开入口时记下的会话连接（run/分析要绑到它） */
-var connection = null;
-/**
-* 浮层开关 store（aiworkflow pickerStore 同款闭包写法）。
-* **必须由订阅方用 React.useSyncExternalStore 消费**——注册回调是裸函数、内部无 hook 时，
-* set() 通知不到任何组件，点击按钮会「没有任何反应」（0.5.2 修复的真实缺陷）。
-* 用闭包变量而非 this：方法可直接作为 subscribe/getSnapshot 传给 useSyncExternalStore。
-*/
-function createOverlayStore() {
-	let open = false;
-	const listeners = /* @__PURE__ */ new Set();
-	return {
-		subscribe(listener) {
-			listeners.add(listener);
-			return () => {
-				listeners.delete(listener);
-			};
-		},
-		getSnapshot() {
-			return open;
-		},
-		set(next) {
-			if (open === next) return;
-			open = next;
-			for (const listener of listeners) listener();
-		}
-	};
-}
-var overlayStore = createOverlayStore();
-/** 浮层主体：订阅 store 的可见性（裸函数注册不重渲染，必须在此订阅） */
-function PreviewOverlay() {
-	return react.useSyncExternalStore(overlayStore.subscribe, overlayStore.getSnapshot) ? /* @__PURE__ */ react.createElement(PreviewDialog, { onClose: () => overlayStore.set(false) }) : null;
-}
 var LOCALE_NS = "kinemesh-preview";
 var ZH_TEXTS = {
+	"panel.label": "动析预览",
+	"standalone.title": "动析 · 模型预览",
+	"standalone.subtitle": "本地只读：拖转视角、拖帧播放、看强度曲线（此页不接 AI 分析）",
 	"tab.preview": "模型预览",
 	"page.models": "本会话的模型",
 	"page.emptySession": "会话信息不可用，先用「动析」浮层打开一次预览。",
@@ -47421,6 +47401,9 @@ var ZH_TEXTS = {
 	"dialog.close": "关闭"
 };
 var EN_TEXTS = {
+	"panel.label": "Kinemesh preview",
+	"standalone.title": "Kinemesh · model preview",
+	"standalone.subtitle": "Local read-only: orbit, scrub, play and inspect the energy curve (no AI in this page)",
 	"tab.preview": "Model preview",
 	"page.models": "Session models",
 	"page.emptySession": "Session info unavailable; open the preview overlay once first.",
@@ -47585,46 +47568,6 @@ function SessionCapture({ sessionId, store }) {
 	}, [sessionId, store]);
 	return null;
 }
-function LauncherButton(props) {
-	const draft = typeof props?.useInput === "function" ? props.useInput((state) => state?.draft ?? "") : "";
-	const onClick = () => {
-		connection = {
-			sessionId: typeof props?.sessionId === "string" ? props.sessionId : "",
-			draft: typeof draft === "string" ? draft : "",
-			actions: props?.inputActions ?? null
-		};
-		overlayStore.set(true);
-	};
-	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("button", {
-		type: "button",
-		className: "kinemesh-launchbtn",
-		onClick,
-		title: "打开 3D 预览（动析）"
-	}, /* @__PURE__ */ react.createElement("svg", {
-		width: "13",
-		height: "13",
-		viewBox: "0 0 24 24",
-		"aria-hidden": "true"
-	}, /* @__PURE__ */ react.createElement("path", {
-		d: "M12 3.5 20 8l-8 4.5L4 8Z",
-		fill: "none",
-		stroke: "currentColor",
-		strokeWidth: "1.6",
-		strokeLinejoin: "round"
-	}), /* @__PURE__ */ react.createElement("path", {
-		d: "M4 8v8l8 4.5V12",
-		fill: "none",
-		stroke: "currentColor",
-		strokeWidth: "1.6",
-		strokeLinejoin: "round"
-	}), /* @__PURE__ */ react.createElement("path", {
-		d: "M20 8v8l-8 4.5",
-		fill: "none",
-		stroke: "currentColor",
-		strokeWidth: "1.6",
-		strokeLinejoin: "round"
-	})), /* @__PURE__ */ react.createElement("span", null, "动析")));
-}
 var TIMELINE_VB_W = 600;
 var TIMELINE_VB_H = 44;
 var TIMELINE_CURVE_H = 28;
@@ -47701,6 +47644,7 @@ function MotionTimeline(props) {
 }
 function PreviewPane(props) {
 	const showPathInput = props.showPathInput !== false;
+	const allowSend = props.allowSend !== false;
 	const [pathInput, setPathInput] = react.useState("");
 	const [loadedPath, setLoadedPath] = react.useState("");
 	const [clip, setClip] = react.useState("");
@@ -48032,7 +47976,7 @@ function PreviewPane(props) {
 	}), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-frame" }, "f", frame, " / f", Math.max(state.maxFrame, 0))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-readout" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-chip" }, viewText), digestHeadline !== "" && /* @__PURE__ */ react.createElement("span", {
 		className: "kinemesh-chip",
 		title: translate("pane.digestChipTitle")
-	}, `digest ${digestHeadline}`), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("pane.footHint")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
+	}, `digest ${digestHeadline}`), /* @__PURE__ */ react.createElement("span", null, `time = frame / 30`)), allowSend && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-foot" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("pane.footHint")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
 		type: "button",
 		className: "kinemesh-btn",
 		"data-primary": "true",
@@ -48040,30 +47984,45 @@ function PreviewPane(props) {
 		disabled: state.phase !== "ready" || sending || props.sessionId === ""
 	}, sending ? translate("pane.sending") : translate("pane.send"))));
 }
-function PreviewDialog({ onClose }) {
-	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", {
-		className: "kinemesh-backdrop",
-		onClick: onClose,
-		role: "presentation"
-	}, /* @__PURE__ */ react.createElement("div", {
-		className: "kinemesh-dialog",
-		role: "dialog",
-		"aria-label": translate("dialog.title"),
-		onClick: (event) => event.stopPropagation()
-	}, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-head" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, translate("dialog.title")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("dialog.subtitle")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-spacer" }), /* @__PURE__ */ react.createElement("button", {
-		type: "button",
-		className: "kinemesh-iconbtn",
-		onClick: onClose,
-		"aria-label": translate("dialog.close")
-	}, "✕")), /* @__PURE__ */ react.createElement(PreviewPane, {
-		sessionId: connection?.sessionId ?? "",
-		note: connection?.draft ?? null,
-		onSendSuccess: () => {
-			if ((connection?.draft ?? "").trim() !== "") try {
-				connection?.actions?.setDraft?.("");
-			} catch {}
-			onClose();
-		}
+/** 侧边栏图标（与「动析」品牌一致的多面体） */
+function KinemeshIcon({ size = 18, active = false }) {
+	return /* @__PURE__ */ react.createElement("svg", {
+		width: size,
+		height: size,
+		viewBox: "0 0 24 24",
+		"aria-hidden": "true",
+		style: { display: "block" }
+	}, /* @__PURE__ */ react.createElement("path", {
+		d: "M12 3.5 20 8l-8 4.5L4 8Z",
+		fill: "none",
+		stroke: "currentColor",
+		strokeWidth: "1.6",
+		strokeLinejoin: "round",
+		opacity: active ? 1 : .85
+	}), /* @__PURE__ */ react.createElement("path", {
+		d: "M4 8v8l8 4.5V12",
+		fill: "none",
+		stroke: "currentColor",
+		strokeWidth: "1.6",
+		strokeLinejoin: "round"
+	}), /* @__PURE__ */ react.createElement("path", {
+		d: "M20 8v8l-8 4.5",
+		fill: "none",
+		stroke: "currentColor",
+		strokeWidth: "1.6",
+		strokeLinejoin: "round",
+		opacity: active ? 1 : .6
+	}));
+}
+/**
+* 独立预览页：DSH 左侧侧边栏入口打开的纯预览（拖转 / 播放 / 强度曲线 / 拖入文件），
+* **不显示「发送给 AI 分析」**（那是会话页签的功能）。不依赖会话，无 sessionId 也可用。
+*/
+function StandalonePreviewPage() {
+	return /* @__PURE__ */ react.createElement(react.Fragment, null, /* @__PURE__ */ react.createElement(Styles, null), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalone" }, /* @__PURE__ */ react.createElement("header", { className: "kinemesh-standalonehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-title" }, translate("standalone.title")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-sub" }, translate("standalone.subtitle"))), /* @__PURE__ */ react.createElement("div", { className: "kinemesh-standalonemain" }, /* @__PURE__ */ react.createElement(PreviewPane, {
+		sessionId: "",
+		showPathInput: true,
+		allowSend: false
 	}))));
 }
 function PreviewPage({ sessionId }) {
@@ -48207,21 +48166,31 @@ function apply(ctx) {
 		sessionId: typeof props.sessionId === "string" ? props.sessionId : "",
 		store: previewSession
 	}))));
-	ctx.effect(() => ctx.slots.inject(INPUT_LEFT_SLOT, () => ctx.slots.register({
-		name: INPUT_LEFT_SLOT,
-		id: ENTRY_ID,
-		order: 35
-	}, (props) => /* @__PURE__ */ react.createElement(LauncherButton, props))));
-	ctx.effect(() => ctx.slots.inject(OVERLAY_SLOT, () => ctx.slots.register({
-		name: OVERLAY_SLOT,
-		id: ENTRY_ID,
-		order: 45
-	}, () => /* @__PURE__ */ react.createElement(PreviewOverlay, null))));
+	ctx.get("layout");
+	ctx.effect(() => ctx.slots.inject(SIDEBAR_LIST_SLOT, () => ctx.slots.register({
+		name: SIDEBAR_LIST_SLOT,
+		id: PANEL_ID,
+		order: 50,
+		label: () => translate("panel.label")
+	}, (props) => /* @__PURE__ */ react.createElement(KinemeshIcon, {
+		size: props.size,
+		active: props.active
+	}))));
+	ctx.effect(() => ctx.slots.inject(MAIN_SLOT, () => {
+		try {
+			return ctx.slots.register({
+				name: MAIN_SLOT,
+				key: PANEL_ID
+			}, () => /* @__PURE__ */ react.createElement(StandalonePreviewPage, null));
+		} catch {
+			return () => void 0;
+		}
+	}));
 }
 //#endregion
 exports.MODEL_FILE_EXTENSIONS = MODEL_FILE_EXTENSIONS;
+exports.StandalonePreviewPage = StandalonePreviewPage;
 exports.apply = apply;
-exports.createOverlayStore = createOverlayStore;
 exports.energyPoints = energyPoints;
 exports.formatDigestHeadline = formatDigestHeadline;
 exports.frameToPercent = frameToPercent;

@@ -61,6 +61,16 @@ export const css = `
 
 .kinemesh-foot{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
 
+/* ———— 独立预览页（侧边栏入口，0.6.0：纯预览不接 AI） ———— */
+.kinemesh-standalone{display:flex;flex-direction:column;width:100%;height:100%;min-height:420px;overflow:auto;
+  color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
+.kinemesh-standalonehead{display:flex;align-items:baseline;gap:8px;padding:14px 18px 4px}
+.kinemesh-standalonemain{flex:1;min-height:0;display:flex;flex-direction:column;padding-bottom:12px}
+.kinemesh-standalonemain .kinemesh-stage{margin:0 18px}
+.kinemesh-standalonemain .kinemesh-toolbar,
+.kinemesh-standalonemain .kinemesh-controls,
+.kinemesh-standalonemain .kinemesh-readout{padding-left:18px;padding-right:18px}
+
 /* ———— 模型预览页（conversation.view 页签，M6e） ———— */
 .kinemesh-page{display:flex;width:100%;height:100%;min-height:420px;overflow:hidden;
   color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;font-family:inherit}
