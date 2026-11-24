@@ -40175,6 +40175,125 @@ function collectAuxiliaryObjects(root) {
 }
 //#endregion
 //#region
+/** 全局轴配色：与 0.6.6 的网格轴线一致（X 偏红 / Z 偏蓝），补齐 Y 偏绿 */
+var AXIS_COLORS = {
+	x: 11818319,
+	y: 5744735,
+	z: 5207220
+};
+/** 轴标签文字颜色（比轴线亮一点，深色舞台下更清楚） */
+var AXIS_LABEL_COLORS = {
+	x: "#e5837c",
+	y: "#79d68a",
+	z: "#84a7f0"
+};
+/** 地面网格上的 X/Z 轴长线（从 -length 到 +length；Y 轴留给左下角指示器） */ function createGroundAxisLines(length) {
+	const makeLine = (from, to, color) => {
+		return new Line(new BufferGeometry().setFromPoints([new Vector3(...from), new Vector3(...to)]), new LineBasicMaterial({ color }));
+	};
+	return [makeLine([
+		-length,
+		0,
+		0
+	], [
+		length,
+		0,
+		0
+	], AXIS_COLORS.x), makeLine([
+		0,
+		0,
+		-length
+	], [
+		0,
+		0,
+		length
+	], AXIS_COLORS.z)];
+}
+/**
+* 建全局轴参考：三根轴线 + 三枚轴端字母标签。
+* @param length    轴线长度（场景单位；viewer 里用网格的 5 单位，随网格一起缩放）
+* @param labelHeight 标签世界高度（同样会被网格缩放，0.7 换算到身高 186 的模型约 35px）
+*/
+function createAxisGuides(length, labelHeight = .7) {
+	const lines = [];
+	const labels = [];
+	const makeLine = (to, color) => {
+		return new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, 0), new Vector3(...to)]), new LineBasicMaterial({ color }));
+	};
+	const axes = [
+		{
+			key: "x",
+			to: [
+				length,
+				0,
+				0
+			]
+		},
+		{
+			key: "y",
+			to: [
+				0,
+				length,
+				0
+			]
+		},
+		{
+			key: "z",
+			to: [
+				0,
+				0,
+				length
+			]
+		}
+	];
+	for (const axis of axes) {
+		lines.push(makeLine(axis.to, AXIS_COLORS[axis.key]));
+		const label = makeAxisLabel(axis.key.toUpperCase(), AXIS_LABEL_COLORS[axis.key], labelHeight);
+		if (label !== null) {
+			label.position.set(axis.to[0] * 1.08, axis.to[1] * 1.08, axis.to[2] * 1.08);
+			labels.push(label);
+		}
+	}
+	return {
+		lines,
+		labels
+	};
+}
+/** 轴端字母精灵：canvas 2D 画字 + 深色描边保证在亮/暗背景都读得清 */
+function makeAxisLabel(text, color, worldHeight) {
+	if (typeof document === "undefined") return null;
+	const px = 64;
+	const canvas = document.createElement("canvas");
+	const probe = canvas.getContext("2d");
+	if (probe === null) return null;
+	const font = `700 48px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif`;
+	probe.font = font;
+	const textWidth = Math.ceil(probe.measureText(text).width);
+	canvas.width = Math.max(textWidth + 16, px);
+	canvas.height = px;
+	const ctx = canvas.getContext("2d");
+	if (ctx === null) return null;
+	ctx.font = font;
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.lineWidth = 6;
+	ctx.strokeStyle = "rgba(14, 16, 20, 0.9)";
+	ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 2);
+	ctx.fillStyle = color;
+	ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+	const texture = new CanvasTexture(canvas);
+	texture.colorSpace = SRGBColorSpace;
+	const sprite = new Sprite(new SpriteMaterial({
+		map: texture,
+		transparent: true,
+		depthTest: false
+	}));
+	sprite.scale.set(worldHeight * canvas.width / canvas.height, worldHeight, 1);
+	sprite.renderOrder = 998;
+	return sprite;
+}
+//#endregion
+//#region
 /**
 * 材质是否有可用的**贴图**外观：`map` 且 `map.image` 非空。
 * （three r155+ 的 `Texture.DEFAULT_IMAGE` 是 null，解码失败/不支持的格式——如 FBX 常见的 TGA——
@@ -40454,11 +40573,38 @@ function mountViewer(container, options = {}) {
 	}
 	controls.addEventListener("change", updateClipPlanes);
 	let grid = new GridHelper(10, 20, 5660008, 4541268);
-	const axisLength = 5;
-	const axisX = new Line(new BufferGeometry().setFromPoints([new Vector3(-5, 0, 0), new Vector3(axisLength, 0, 0)]), new LineBasicMaterial({ color: 11818319 }));
-	const axisZ = new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, -5), new Vector3(0, 0, axisLength)]), new LineBasicMaterial({ color: 5207220 }));
-	grid.add(axisX, axisZ);
+	const groundAxes = createGroundAxisLines(5);
+	grid.add(...groundAxes);
 	scene.add(grid);
+	const axisScene = new Scene();
+	const axisGizmo = createAxisGuides(1, .5);
+	axisScene.add(...axisGizmo.lines, ...axisGizmo.labels);
+	const axisCamera = new OrthographicCamera(-1.6, 1.6, 1.6, -1.6, .01, 20);
+	/** 主场景渲染 + 左下角轴指示器（所有立即出帧路径都走这里，保证截图/预览一致） */
+	function renderFrame() {
+		renderer.autoClear = true;
+		renderer.setViewport(0, 0, renderer.domElement.width / renderer.getPixelRatio(), renderer.domElement.height / renderer.getPixelRatio());
+		renderer.setScissorTest(false);
+		renderer.render(scene, camera);
+		const size = renderer.getSize(new Vector2());
+		const box = Math.max(64, Math.round(Math.min(size.x, size.y) * .18));
+		const margin = Math.max(8, Math.round(Math.min(size.x, size.y) * .02));
+		const offset = camera.position.clone().sub(controls.target);
+		if (offset.lengthSq() > 0) {
+			axisCamera.position.copy(offset.normalize().multiplyScalar(4));
+			axisCamera.up.copy(camera.up);
+			axisCamera.lookAt(0, 0, 0);
+			axisCamera.updateMatrixWorld();
+			renderer.autoClear = false;
+			renderer.setViewport(margin, margin, box, box);
+			renderer.setScissor(margin, margin, box, box);
+			renderer.setScissorTest(true);
+			renderer.clearDepth();
+			renderer.render(axisScene, axisCamera);
+			renderer.setScissorTest(false);
+			renderer.autoClear = true;
+		}
+	}
 	/** solid 素模模式共享材质：中性灰 + 受光照，常规 3D 工具的 solid shading。
 	*  DoubleSide：游戏资产常为单面，头发/裙摆从背面看会破洞。 */
 	const solidMaterial = new MeshLambertMaterial({
@@ -40515,7 +40661,7 @@ function mountViewer(container, options = {}) {
 			}
 			controls.update();
 			positionBoneLabels();
-			renderer.render(scene, camera);
+			renderFrame();
 			if (firstFrameResolve !== null) {
 				firstFrameResolve();
 				firstFrameResolve = null;
@@ -40539,7 +40685,7 @@ function mountViewer(container, options = {}) {
 	});
 	renderer.domElement.addEventListener("webglcontextrestored", () => {
 		ensureRenderLoop();
-		renderer.render(scene, camera);
+		renderFrame();
 	});
 	function clearModel() {
 		clearBoneLabels();
@@ -40618,7 +40764,7 @@ function mountViewer(container, options = {}) {
 						normalizePreviewMaterial(material);
 					}
 				});
-				renderer.render(scene, camera);
+				renderFrame();
 			}, 1200);
 			suppressedAux = collectAuxiliaryObjects(model);
 			for (const aux of suppressedAux) aux.visible = false;
@@ -40713,7 +40859,7 @@ function mountViewer(container, options = {}) {
 			surface = next.surface;
 			bonesVisible = next.bones;
 			applyMode();
-			renderer.render(scene, camera);
+			renderFrame();
 			ensureRenderLoop();
 		},
 		play(clip) {
@@ -40758,7 +40904,7 @@ function mountViewer(container, options = {}) {
 			playing = false;
 			if (action.paused) action.paused = false;
 			mixer.setTime(frame / 30);
-			renderer.render(scene, camera);
+			renderFrame();
 			ensureRenderLoop();
 			return new Promise((resolve) => {
 				seekResolvers.push(resolve);
@@ -40766,7 +40912,7 @@ function mountViewer(container, options = {}) {
 					const index = seekResolvers.indexOf(resolve);
 					if (index < 0) return;
 					seekResolvers.splice(index, 1);
-					renderer.render(scene, camera);
+					renderFrame();
 					resolve();
 				}, 250);
 			});
@@ -40838,7 +40984,7 @@ function mountViewer(container, options = {}) {
 			controls.target.set(center.x, center.y, center.z);
 			controls.update();
 			updateClipPlanes();
-			renderer.render(scene, camera);
+			renderFrame();
 			const size = box.getSize(new Vector3());
 			return {
 				center: [
@@ -40868,7 +41014,7 @@ function mountViewer(container, options = {}) {
 				shown += 1;
 			}
 			positionBoneLabels();
-			renderer.render(scene, camera);
+			renderFrame();
 			return shown;
 		},
 		resize(nextWidth, nextHeight) {
@@ -40911,7 +41057,7 @@ function mountViewer(container, options = {}) {
 		renderer.setSize(nextWidth, nextHeight);
 		camera.aspect = nextWidth / nextHeight;
 		camera.updateProjectionMatrix();
-		renderer.render(scene, camera);
+		renderFrame();
 	});
 	if (resizeObserver !== null) resizeObserver.observe(container);
 	/** 旧 `ViewMode` 入口（AI 截图 / CLI / MCP / 内存回写）：拆成「表面 + 骨架」两个开关 */
@@ -40919,7 +41065,7 @@ function mountViewer(container, options = {}) {
 		surface = surfaceOfMode(next);
 		bonesVisible = bonesOfMode(next);
 		applyMode();
-		renderer.render(scene, camera);
+		renderFrame();
 		ensureRenderLoop();
 	}
 	function clearBoneLabels() {

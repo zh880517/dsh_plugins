@@ -19,6 +19,7 @@ import {
   type ViewMode,
 } from '../viewstate.js';
 import { collectAuxiliaryObjects } from './auxiliary.js';
+import { createAxisGuides, createGroundAxisLines } from './axes.js';
 import { suggestViewMode, collectSceneModeFacts, type ModeSuggestion } from './auto-mode.js';
 import { computeClipPlanes } from './clip-planes.js';
 import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
@@ -159,18 +160,46 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   controls.addEventListener('change', updateClipPlanes);
 
   let grid = new THREE.GridHelper(10, 20, 0x565d68, 0x454b54);
-  // 常规 3D 工具的三轴观感：X 轴偏红、Z 轴偏蓝（Maya/Blender/UE 习惯）
+  // 地面上的 X/Z 轴长线（随网格一起缩放，指示正方向）
   const axisLength = 5;
-  const axisX = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-axisLength, 0, 0), new THREE.Vector3(axisLength, 0, 0)]),
-    new THREE.LineBasicMaterial({ color: 0xb4554f }),
-  );
-  const axisZ = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, -axisLength), new THREE.Vector3(0, 0, axisLength)]),
-    new THREE.LineBasicMaterial({ color: 0x4f74b4 }),
-  );
-  grid.add(axisX, axisZ);
+  const groundAxes = createGroundAxisLines(axisLength);
+  grid.add(...groundAxes);
   scene.add(grid);
+
+  // 0.8.1：左下角全局 XYZ 轴指示器（HUD gizmo）——X 红 / Y 绿 / Z 蓝 + 字母标签，
+  // 每帧跟随主相机朝向、独立正交相机渲染在固定像素框里（常规 3D 工具的做法）：
+  // 不会跟模型抢画面、不被遮挡，AI 截图里也能读到朝向。
+  const axisScene = new THREE.Scene();
+  const axisGizmo = createAxisGuides(1, 0.5);
+  axisScene.add(...axisGizmo.lines, ...axisGizmo.labels);
+  const axisCamera = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.01, 20);
+
+  /** 主场景渲染 + 左下角轴指示器（所有立即出帧路径都走这里，保证截图/预览一致） */
+  function renderFrame(): void {
+    renderer.autoClear = true;
+    renderer.setViewport(0, 0, renderer.domElement.width / renderer.getPixelRatio(), renderer.domElement.height / renderer.getPixelRatio());
+    renderer.setScissorTest(false);
+    renderer.render(scene, camera);
+    // 轴指示器：固定像素框（随画幅短边缩放），叠在左下角
+    const size = renderer.getSize(new THREE.Vector2());
+    const box = Math.max(64, Math.round(Math.min(size.x, size.y) * 0.18));
+    const margin = Math.max(8, Math.round(Math.min(size.x, size.y) * 0.02));
+    const offset = camera.position.clone().sub(controls.target);
+    if (offset.lengthSq() > 0) {
+      axisCamera.position.copy(offset.normalize().multiplyScalar(4));
+      axisCamera.up.copy(camera.up);
+      axisCamera.lookAt(0, 0, 0);
+      axisCamera.updateMatrixWorld();
+      renderer.autoClear = false;
+      renderer.setViewport(margin, margin, box, box);
+      renderer.setScissor(margin, margin, box, box);
+      renderer.setScissorTest(true);
+      renderer.clearDepth();
+      renderer.render(axisScene, axisCamera);
+      renderer.setScissorTest(false);
+      renderer.autoClear = true;
+    }
+  }
 
   /** solid 素模模式共享材质：中性灰 + 受光照，常规 3D 工具的 solid shading。
    *  DoubleSide：游戏资产常为单面，头发/裙摆从背面看会破洞。 */
@@ -225,7 +254,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       }
       controls.update();
       positionBoneLabels();
-      renderer.render(scene, camera);
+      renderFrame();
       if (firstFrameResolve !== null) {
         firstFrameResolve();
         firstFrameResolve = null;
@@ -255,7 +284,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   renderer.domElement.addEventListener('webglcontextrestored', () => {
     contextLost = false;
     ensureRenderLoop();
-    renderer.render(scene, camera);
+    renderFrame();
   });
 
   function clearModel(): void {
@@ -378,7 +407,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
             normalizePreviewMaterial(material);
           }
         });
-        renderer.render(scene, camera);
+        renderFrame();
       }, 1200);
       // 辅助对象过滤：Unity/Max 导出的 FBX 常带 Dummy、IK 目标、locator、线框 gizmo，
       // 预览里会变成虚线/尖刺/红绿轴等杂线（常规 3D 工具默认不显示）。只隐藏、不删除；
@@ -479,7 +508,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       surface = next.surface;
       bonesVisible = next.bones;
       applyMode();
-      renderer.render(scene, camera);
+      renderFrame();
       ensureRenderLoop();
     },
 
@@ -532,7 +561,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       if (action.paused) action.paused = false;
       mixer.setTime(frame / RENDER_FPS);
       // 立即出帧：跳转必须马上可见，不能等渲染循环（循环若停过就永远等不到）
-      renderer.render(scene, camera);
+      renderFrame();
       ensureRenderLoop();
       return new Promise<void>((resolve) => {
         seekResolvers.push(resolve);
@@ -541,7 +570,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
           const index = seekResolvers.indexOf(resolve);
           if (index < 0) return;
           seekResolvers.splice(index, 1);
-          renderer.render(scene, camera);
+          renderFrame();
           resolve();
         }, 250);
       });
@@ -608,7 +637,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       controls.target.set(center.x, center.y, center.z);
       controls.update();
       updateClipPlanes();
-      renderer.render(scene, camera);
+      renderFrame();
       const size = box.getSize(new THREE.Vector3());
       return {
         center: [center.x, center.y, center.z],
@@ -634,7 +663,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       }
       positionBoneLabels();
       // 立即出一帧：截图管线在 applyView / setBoneLabels 后立即截图，不等下一个 rAF
-      renderer.render(scene, camera);
+      renderFrame();
       return shown;
     },
 
@@ -686,7 +715,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
           renderer.setSize(nextWidth, nextHeight);
           camera.aspect = nextWidth / nextHeight;
           camera.updateProjectionMatrix();
-          renderer.render(scene, camera);
+          renderFrame();
         });
   if (resizeObserver !== null) resizeObserver.observe(container);
 
@@ -696,7 +725,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     bonesVisible = bonesOfMode(next);
     applyMode();
     // 立即出一张帧：截图管线在 applyView 后立即截图，不等下一个 rAF
-    renderer.render(scene, camera);
+    renderFrame();
     ensureRenderLoop();
   }
 

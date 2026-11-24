@@ -630,6 +630,15 @@ kinemesh_analyze(path, {
     卸载模型时必须显式摘除 + 释放（`core/viewer/skeleton-helpers.ts`，纯对象操作 + 单测）。
     漏摘会让 `skeleton` / `bones-overlay` 模式「换一个 FBX 后残留旧骨架」——真实资产实测：
     换模型后画面多出 4740 个像素的旧骨架线段，修好后与「全新载入」对照图逐像素一致（diff = 0）。
+  - **全局 XYZ 轴参考（0.8.1，用户拍板）**：地面保留 X/Z 两条长线（红/蓝，指示正负方向），
+    另在视口**左下角加轴指示器（HUD gizmo）**——X 红 / Y 绿 / Z 蓝三根短轴 + X/Y/Z 字母标签。
+    实现：独立 `axisScene` + 正交相机，每帧把主相机的朝向复制过来（位置 = 视线方向反推），
+    在主场景渲染后用 `setViewport + setScissor + clearDepth` 叠在左下角固定像素框里
+    （短边 × 18%，最少 64px），`sizeAttenuation` 关闭语义下标签始终可读、不被模型遮挡，
+    且**截图管线同一条渲染路径**所以 AI 图片里也带朝向参考。所有立即出帧路径统一走
+    `renderFrame()`（主场景 + 轴指示器），避免预览与截图构图不一致。
+    退化场景：主相机与注视点重合时（`offset.lengthSq() === 0`）跳过指示器绘制。
+    回归：`tests/kinemesh/axes.test.ts`（三轴端点/配色/标签位置/离线无 document 不出标签）。
   - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）。**所有渲染模式都显示**
     （0.6.10：`default / solid / wireframe / skeleton / bones-overlay` 一视同仁——线框与骨架
     模式下同样需要地面/轴向参照；地面不参与包围盒，显示与否不影响机位适配）；
