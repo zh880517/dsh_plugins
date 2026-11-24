@@ -67,6 +67,23 @@ interface ParsedArgv {
   flags: Record<string, string>;
 }
 
+/** 各子命令的合法 flag（含互为别名的 --out / --out-dir）；未知选项三段式报错而非静默忽略 */
+const KNOWN_FLAGS: Record<string, string[]> = {
+  info: [],
+  analyze: ['clip', 'out', 'out-dir', 'range', 'sample-fps', 'joints', 'detail', 'curves-for', 'smooth', 'loop-mode', 'normalize', 'vocab', 'bone-map'],
+  skeleton: ['shots', 'bone-map', 'out', 'out-dir'],
+  render: ['clip', 'frames', 'frame', 'view-preset', 'azimuth', 'elevation', 'distance', 'target', 'fov', 'mode', 'bone-labels', 'width', 'height', 'out-dir', 'out'],
+};
+
+/** --out / --out-dir 互为别名：analyze/skeleton 规范为 --out，render 规范为 --out-dir */
+function normalizeFlagAliases(command: string, flags: Record<string, string>): void {
+  if (command === 'analyze' || command === 'skeleton') {
+    if (flags.out === undefined && flags['out-dir'] !== undefined) flags.out = flags['out-dir'];
+  } else if (command === 'render') {
+    if (flags['out-dir'] === undefined && flags.out !== undefined) flags['out-dir'] = flags.out;
+  }
+}
+
 function parseArgv(argv: string[]): ParsedArgv {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
@@ -330,6 +347,18 @@ export async function main(argv: string[]): Promise<number> {
   if (command === '') {
     process.stderr.write(USAGE);
     return 2;
+  }
+  if (command === 'info' || command === 'analyze' || command === 'skeleton' || command === 'render') {
+    const known = KNOWN_FLAGS[command]!;
+    const unknown = Object.keys(flags).filter((key) => !known.includes(key));
+    if (unknown.length > 0) {
+      return fail(
+        `未认识的选项：${unknown.map((key) => `--${key}`).join('、')}（${command} 子命令）。`,
+        '用 kinemesh --help 查看该子命令的全部选项；注意输出目录参数 analyze/skeleton 是 --out、render 是 --out-dir（已互为别名，两个名字都接受）。',
+        '解析命令行参数',
+      );
+    }
+    normalizeFlagAliases(command, flags);
   }
   if (command === 'info') return runInfo(positional[0]);
   if (command === 'analyze') return runAnalyzeCli(positional[0], flags);

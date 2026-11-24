@@ -33,7 +33,9 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 ```
 
 `info`：输出模型结构信息 JSON——动画片段（名称/时长/通道数/根运动）、骨骼（数量/最大深度/是否人形）、
-网格（三角面/顶点/蒙皮比例/材质数）、贴图、包围盒与单位体检。
+网格（三角面/顶点/蒙皮比例/材质数）、贴图、包围盒与单位体检。info 的 `rootMotion` 量的是
+**根骨骼位移轨道的净位移**（Bip001 级，game 里常 false）；analyze 的位移口径用 **hips 关节**——
+角色靠 hips 动画位移时（如 attack_04 走 1.2 身高）两者会不一致，以 analyze 的 `rootTotalDisp` 为准。
 
 `analyze` 选项（DSH 工具 `kinemesh_analyze` / MCP 同名同参）：
 
@@ -45,10 +47,17 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 | `--detail <name>` | summary / standard / full（缺省 standard；full=+全部关节曲线） |
 | `--curves-for <joints>` | 指定关节加出 motion-curves/&lt;joint&gt;.csv（逗号分隔） |
 | `--sample-fps <n>` | 采样率 1–60（缺省 15） |
+| `--smooth <n>` | 能量平滑窗口（采样帧，缺省 5） |
+| `--joints <list>` | 关节清单（规范 id 或骨骼名）或 auto |
 | `--loop-mode <name>` | strict / pose-only（bestLoopRange 口径，缺省 strict；verdict 恒 strict） |
 | `--normalize <name>` | height / none（缺省 height，数值单位为身高倍数） |
-| `--out <dir>` | 中间文件输出目录（缺省系统临时目录；读不到时用它指向工作区重跑） |
 | `--vocab <file>` | kinemesh-vocab.json 词汇表路径（缺省按 资产同目录 &gt; 工作区 &gt; builtin 发现） |
+| `--bone-map <file>` | kinemesh-bones.json 映射文件路径（缺省按 资产同目录 &gt; 工作区 发现） |
+| `--out <dir>` | 中间文件输出目录（缺省系统临时目录；读不到时用它指向工作区重跑） |
+
+强度档位口径（两列表见 motion-summary.json 的 constants）：**分段档 = max(均值档, 峰值档)**
+（爆发短段不被均值稀释），**全片档只按均值**（整片节奏口径）——比较两部动画整体强度用全片档，
+找爆发瞬间看分段档。
 
 成功返回 `{ok, dir, files:[{name,bytes,what}], summaryDigest, warnings?, hint?}`：`summaryDigest`
 内联分段表 + 全片统计 + loopCheck + **keyframeRender 配方**（关键帧号 × front/side × skeleton）；
@@ -64,6 +73,17 @@ node <本目录>/cli/kinemesh.cjs render <file> [选项]
 | `--bone-labels <batch>` | 骨骼名文字标注（B.4，与 `--mode skeleton` / `bones-overlay` 联用）：`auto`（第 1 批）/ 批次号（1 起，stride 分批防叠）/ `all`（全部骨骼名，允许重叠，调试） |
 | `--width/--height` | 像素尺寸（缺省 1280×720） |
 | `--out-dir <dir>` | PNG 输出目录（缺省系统临时目录） |
+
+`skeleton` 选项（DSH 工具 `kinemesh_skeleton` / MCP 同名同参）：
+
+| 选项 | 说明 |
+|---|---|
+| `--shots <name>` | auto（缺省，CORE15 有缺口才渲染标注截图）/ none（只出 report）/ all（全量批次） |
+| `--bone-map <file>` | kinemesh-bones.json 映射文件路径（缺省按 资产同目录 &gt; 工作区 发现） |
+| `--out <dir>` | 输出目录（缺省系统临时目录；report 与 labels-*.png 都落这里） |
+
+通用：`--out` 与 `--out-dir` 互为别名（所有子命令两个名字都接受）；**未知选项直接三段式报错**
+（不静默忽略）——拼错选项名会立刻被告知，用 `--help` 查全部选项。
 
 ## 输出结构
 

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { KinemeshError, reasonOf } from '../errors.js';
-import { orbit8Azimuths, resolveView, type NormalizedViewInput, type ViewState } from '../viewstate.js';
+import { orbit8Azimuths, RENDER_FPS, resolveView, type NormalizedViewInput, type ViewState } from '../viewstate.js';
 
 export interface RenderRequest {
   data: ArrayBuffer;
@@ -64,6 +64,13 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
   if (frames.length > MAX_FRAMES) {
     throw new KinemeshError(`一次最多渲染 ${MAX_FRAMES} 帧（收到 ${frames.length}）。`, '分批调用；连拍动画关键帧建议 5～9 帧。');
   }
+  // 帧号必须是合法的非负整数（CLI 侧已滤，DSH/MCP 直调在此兜底——0.5.1 交验发现 f999 出垃圾帧）
+  if (frames.some((frame) => !Number.isInteger(frame) || frame < 0)) {
+    throw new KinemeshError(
+      'frames 含非法帧号（需非负整数）。',
+      '帧号按 30fps 口径（time = frame/30）；先 kinemesh_info 查 clips[].duration，或直接用 analyze digest 的 keyframeRender 配方帧号。',
+    );
+  }
   const width = clampInt(request.width ?? 1280, 64, 4096);
   const height = clampInt(request.height ?? 720, 64, 4096);
   const workDir = path.join(request.outDir ?? path.join(tmpdir(), 'kinemesh-shots'), `run-${Date.now()}-${process.pid}`);
@@ -84,6 +91,17 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
     });
     session.warnings.push(...resolution.warnings);
     const baseView = resolution.view;
+    // 0.5.1 交验发现：超出片段时长的帧号曾静默出垃圾帧（ok:true）——载入后按真实时长拒绝
+    if (baseView.clip !== null && Number.isFinite(loadOutcome.durationSeconds) && loadOutcome.durationSeconds > 0) {
+      const maxFrame = Math.round(loadOutcome.durationSeconds * RENDER_FPS);
+      const over = frames.filter((frame) => frame > maxFrame);
+      if (over.length > 0) {
+        throw new KinemeshError(
+          `帧号超出片段「${baseView.clip}」范围：${over.join('、')} > ${maxFrame}（时长 ${loadOutcome.durationSeconds.toFixed(3)}s × ${RENDER_FPS}fps）。`,
+          `帧号范围 0–${maxFrame}；先 kinemesh_info 查 clips[].duration，或直接用 analyze digest 的 keyframeRender 配方帧号。`,
+        );
+      }
+    }
     await applyBoneLabels(session, request.boneLabels, baseView.mode);
     const azimuths = resolution.orbit8 ? orbit8Azimuths() : [baseView.camera.azimuth];
     const baseName = sanitizeBaseName(request.fileName);

@@ -52404,6 +52404,7 @@ async function renderScreenshots(request) {
 	const frames = request.frames;
 	if (!Array.isArray(frames) || frames.length === 0) throw new KinemeshError("frames 为空：至少给一个帧号。", "frames 是整数数组，例如 \"frames\": [30]；静态模型传 [0]。");
 	if (frames.length > MAX_FRAMES) throw new KinemeshError(`一次最多渲染 ${MAX_FRAMES} 帧（收到 ${frames.length}）。`, "分批调用；连拍动画关键帧建议 5～9 帧。");
+	if (frames.some((frame) => !Number.isInteger(frame) || frame < 0)) throw new KinemeshError("frames 含非法帧号（需非负整数）。", "帧号按 30fps 口径（time = frame/30）；先 kinemesh_info 查 clips[].duration，或直接用 analyze digest 的 keyframeRender 配方帧号。");
 	const width = clampInt(request.width ?? 1280, 64, 4096);
 	const height = clampInt(request.height ?? 720, 64, 4096);
 	const workDir = path.join(request.outDir ?? path.join(tmpdir(), "kinemesh-shots"), `run-${Date.now()}-${process.pid}`);
@@ -52420,6 +52421,11 @@ async function renderScreenshots(request) {
 		});
 		session.warnings.push(...resolution.warnings);
 		const baseView = resolution.view;
+		if (baseView.clip !== null && Number.isFinite(loadOutcome.durationSeconds) && loadOutcome.durationSeconds > 0) {
+			const maxFrame = Math.round(loadOutcome.durationSeconds * 30);
+			const over = frames.filter((frame) => frame > maxFrame);
+			if (over.length > 0) throw new KinemeshError(`帧号超出片段「${baseView.clip}」范围：${over.join("、")} > ${maxFrame}（时长 ${loadOutcome.durationSeconds.toFixed(3)}s × 30fps）。`, `帧号范围 0–${maxFrame}；先 kinemesh_info 查 clips[].duration，或直接用 analyze digest 的 keyframeRender 配方帧号。`);
+		}
 		await applyBoneLabels(session, request.boneLabels, baseView.mode);
 		const azimuths = resolution.orbit8 ? orbit8Azimuths() : [baseView.camera.azimuth];
 		const baseName = sanitizeBaseName(request.fileName);
@@ -53496,6 +53502,14 @@ function describeSegments(channels, sample, ranges, options = {}) {
 				guess = "fall";
 				basis = `腾空占比 ${percentileBasis(airRatio)}，hips 未显著升高（${percentileBasis(hipsRise)}）`;
 			}
+		} else if (peakJointSpeed >= 3 * Math.max(rootSpeed, .1) && meanE >= .8 && dur <= .8 && turnNet < 120 && STRIKE_PUNCH_JOINTS.has(peakJoint.id)) {
+			label = "action";
+			guess = "strike-punch";
+			basis = `末端主导：${peakJoint.id} 峰值 ${percentileBasis(peakJointSpeed)} H/s ≥ 3× 根速度（${percentileBasis(rootSpeed)}）`;
+		} else if (peakJointSpeed >= 3 * Math.max(rootSpeed, .1) && meanE >= .8 && dur <= .8 && turnNet < 120 && STRIKE_KICK_JOINTS.has(peakJoint.id)) {
+			label = "action";
+			guess = "strike-kick";
+			basis = `末端主导：${peakJoint.id} 峰值 ${percentileBasis(peakJointSpeed)} H/s ≥ 3× 根速度（${percentileBasis(rootSpeed)}）`;
 		} else if (rootSpeed >= 1.2) {
 			label = "contact-move";
 			guess = "run";
@@ -54915,7 +54929,7 @@ function buildSummary(input) {
 		relativeLevel: segment.relativeLevel,
 		features: segment.features
 	}));
-	const clipLevel = intensityLevel(meanE, maxE);
+	const clipLevel = intensityLevel(meanE, meanE);
 	const facts = segments.map((segment) => {
 		return `frame ${channels.frames[segment.start] ?? segment.start}–${channels.frames[segment.end] ?? segment.end}：${segment.features.support}，强度 ${segment.level}（均值 ${roundLength(segment.features.meanE)}、峰值 ${roundLength(segment.features.peakE)}），位移 ${roundLength(segment.features.rootDisp)} 身高，方向 ${segment.features.dirMode}，guess ${segment.guess}`;
 	});
@@ -54924,7 +54938,7 @@ function buildSummary(input) {
 	const clipFact = `总时长 ${roundLength(input.duration)}s（${frames30} 帧@30fps），平均强度 ${clipLevel}，主方向 ${mainDir}` + (input.loopSentence ? `；${input.loopSentence}` : "");
 	facts.push(clipFact);
 	return {
-		calibVersion: "0",
+		calibVersion: "1",
 		constants: {
 			SAMPLE_FPS_DEFAULT: 15,
 			SAMPLE_FPS_MIN: 1,

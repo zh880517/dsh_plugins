@@ -116,6 +116,36 @@ export function buildSineSwingClip(
   return new THREE.AnimationClip('Swing', duration, [track]);
 }
 
+/**
+ * 垫步挥击（0.5.1 A.8 末端主导回归）：hips 0.25 H/s 匀速前进（低于 CONTACT_VEL 0.3，双脚保持
+ * 接触不误腾空）+ R.Hand 0.8 振幅 0.4s 周期猛摆（手部世界速度峰值 ≈ 0.8·2π/0.4 ≈ 12.6 H/s，
+ * |v| 均值 ≈ 8.0 → meanE ≈ 1.06 ≥ high 档下界 0.8）。旧决策表把这类段判成 walk；
+ * 前置判据应判 strike-punch。
+ */
+export function buildLungeStrikeClip(
+  rig: HumanoidRig,
+  options: { duration?: number; sampleFps?: number } = {},
+): THREE.AnimationClip {
+  const duration = options.duration ?? 2;
+  const sampleFps = options.sampleFps ?? 15;
+  const keys = Math.round(duration * sampleFps);
+  const times: number[] = [];
+  const hips = rig.bones.Hips.position;
+  const hand = rig.bones.RightHand.position;
+  const hipsValues: number[] = [];
+  const handValues: number[] = [];
+  for (let k = 0; k <= keys; k += 1) {
+    const t = k / sampleFps;
+    times.push(t);
+    hipsValues.push(hips.x, hips.y, hips.z + 0.25 * t);
+    handValues.push(hand.x, hand.y + 0.8 * Math.sin((2 * Math.PI * t) / 0.4), hand.z);
+  }
+  return new THREE.AnimationClip('LungeStrike', duration, [
+    new THREE.VectorKeyframeTrack('Hips.position', times, hipsValues),
+    new THREE.VectorKeyframeTrack('RightHand.position', times, handValues),
+  ]);
+}
+
 /** 恒角速自转：hips 每 90° 一个关键帧（quaternion slerp 恒角速、方向无歧义） */
 export function buildSpinClip(
   rig: HumanoidRig,

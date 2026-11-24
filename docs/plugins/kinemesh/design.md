@@ -486,7 +486,8 @@ kinemesh_analyze(path, {
 ### 6.8 复用与边界
 
 **复用**：viewer 的 RENDER_FPS 口径与 clip 选择；humanoid.ts 的关节惯例；units.ts 的身高与单位体检
-（体检告警时 normalize 降级 raw 并把告警带进 summary）；analyze-file.ts 的加载与自愈报错。
+（**H ≤ 0 / 缺失时** normalize 降级 raw 并把告警带进 summary——单位体检的「厘米未换算」告警**不**
+触发降级：身高本身有效，归一后仍是正确的身高倍数，仅提示导出单位问题）；analyze-file.ts 的加载与自愈报错。
 
 **非目标（v1 明确不做）**：
 - 不做语义动作识别的深度模型（Unimotion 路线）——非确定性与本需求目标相反；
@@ -821,23 +822,26 @@ viewer 的 setTime 走同一求值链路）。
 `turnNet = |wrap(heading(end) − heading(start))|`；`turnTotal`（A.4）；`bodyDir`（A.5 段众数）；
 `airRatio`（airborne 帧占比）；`hipsLow = mean(段内 hips y) < P10(全片 hips y) − 0.05`。
 
-决策表（**自上而下首条命中**）：
+决策表（**自上而下首条命中**；#2/#3 为 0.5.1 新增「末端主导 strike」前置判据——真实攻击资产交验
+发现带垫步/转体的挥击被移动类规则抢先命中，3/4 首段误报 walk）：
 
 | # | 条件 | label | guess |
 |---|---|---|---|
 | 1 | airRatio > 0.5 | airborne | 段内 hips 最高 − 段首 ≥ 0.05H（hipsRise）→ `jump`；否则 `fall`（落回原高的跳跃仍判 jump） |
-| 2 | rootSpeed ≥ 1.2 H/s | contact-move | `run` |
-| 3 | rootSpeed ≥ 0.3 ∧ bodyDir = back | contact-move | `backpedal`（倒退走） |
-| 4 | rootSpeed ≥ 0.3 ∧ bodyDir ∈ {left, right} | contact-move | `strafe-l` / `strafe-r`（侧移） |
-| 5 | rootSpeed ≥ 0.3 H/s | contact-move | `walk` |
-| 6 | turnTotal ≥ 270° | action | `spin`（自转/旋转攻击） |
-| 7 | turnNet ≥ 45° ∧ rootSpeed < 0.3 | contact-move | `turn` |
-| 8 | peakE ≥ 2.0 ∧ dur ≤ 0.8s ∧ peakJoint ∈ {Hand, LowerArm} | action | `strike-punch` |
-| 9 | peakE ≥ 2.0 ∧ dur ≤ 0.8s ∧ peakJoint ∈ {Foot, LowerLeg, Toe} | action | `strike-kick` |
-| 10 | hipsLow | action | `crouch` |
-| 11 | meanE < 0.05 | idle | `idle` |
-| 12 | 前一段 guess ∈ {strike-punch, strike-kick, jump, spin} ∧ meanE < 0.5×前段 meanE | action | `recover` |
-| 13 | 兜底 | action | `gesture` |
+| 2 | peakJointSpeed ≥ 3×max(rootSpeed, 0.1) ∧ meanE ≥ 0.8 ∧ dur ≤ 0.8s ∧ turnNet < 120° ∧ peakJoint ∈ {Hand, LowerArm} | action | `strike-punch`（末端主导） |
+| 3 | 同 #2 但 peakJoint ∈ {Foot, LowerLeg, Toe} | action | `strike-kick`（末端主导） |
+| 4 | rootSpeed ≥ 1.2 H/s | contact-move | `run` |
+| 5 | rootSpeed ≥ 0.3 ∧ bodyDir = back | contact-move | `backpedal`（倒退走） |
+| 6 | rootSpeed ≥ 0.3 ∧ bodyDir ∈ {left, right} | contact-move | `strafe-l` / `strafe-r`（侧移） |
+| 7 | rootSpeed ≥ 0.3 H/s | contact-move | `walk` |
+| 8 | turnTotal ≥ 270° | action | `spin`（自转/旋转攻击） |
+| 9 | turnNet ≥ 45° ∧ rootSpeed < 0.3 | contact-move | `turn` |
+| 10 | peakE ≥ 2.0 ∧ dur ≤ 0.8s ∧ peakJoint ∈ {Hand, LowerArm} | action | `strike-punch` |
+| 11 | peakE ≥ 2.0 ∧ dur ≤ 0.8s ∧ peakJoint ∈ {Foot, LowerLeg, Toe} | action | `strike-kick` |
+| 12 | hipsLow | action | `crouch` |
+| 13 | meanE < 0.05 | idle | `idle` |
+| 14 | 前一段 guess ∈ {strike-punch, strike-kick, jump, spin} ∧ meanE < 0.5×前段 meanE | action | `recover` |
+| 15 | 兜底 | action | `gesture` |
 
 vocab 条目按序匹配（when 只能引用本附录通道/特征值）：`label` 用词条替换该段 guess、
 `suppress` 置 other、`demote` 降级 gesture——**label（idle/contact-move 等）恒由表内行判定**，
@@ -848,7 +852,8 @@ vocab 条目按序匹配（when 只能引用本附录通道/特征值）：`labe
 ### A.9 强度档位
 
 - 段强度 `level = max(levelMean(meanE), levelPeak(peakE))`（两表见 §6.6.2；**取更高级别**，
-  避免高爆发短段被均值稀释）。全片 level 同法用全片 mean/peak。
+  避免高爆发短段被均值稀释）。**全片档只按均值**（`levelMean(meanE)`，CALIB v1 口径——真实攻击
+  资产 4/4 全 extreme 暴露 max 口径在全片尺度无区分度，0.2s 轻击与 2.3s 大招同档；爆发性由分段档体现）。
 - **relativeLevel（相对档位）**：段 meanE 对**本 clip Ê 分布**的分位——`< P50 → rel-low`；
   `P50–P90 → rel-mid`；`≥ P90 → rel-high`。与绝对 level 并列输出：绝对档跨资产可比，
   相对档解决「整体偏慢的资产里找相对爆发」（绝对阈值不动，守拍板 #3）。
@@ -932,6 +937,7 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
 | ROOT_DISP_TH / HEADING_TH / VEL_SEAM_TH | 0.05 / 10° / 0.10 | A.10 |
 | LOOP_GRID / LOOP_MIN_SECONDS / LOOP_PASS | 300 / 0.5s / 1.5 | A.10 |
 | STRIKE_PEAK / STRIKE_DUR | 2.0 / 0.8s | A.8 |
+| STRIKE_DOMINANCE / STRIKE_TURN_NET_MAX | 3 / 120° | A.8 #2/#3 |
 | RUN_SPEED / WALK_SPEED / TURN_TH | 1.2 / 0.3 H/s / 45° | A.8 |
 | SPIN_TH | 270° | A.7/A.8 |
 | 强度档位表 | §6.6.2 五档 | A.9 |

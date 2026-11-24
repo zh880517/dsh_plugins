@@ -96,6 +96,20 @@ describe.skipIf(!chromiumReady)('renderScreenshots × playwright', () => {
       renderScreenshots({ data, fileName: 'cube.fbx', viewInput: {}, frames: [], outDir: workDir }),
     ).rejects.toThrow(/frames/);
   });
+
+  it('帧号超出片段时长拒绝（0.5.1——曾静默出垃圾帧 ok:true）', async () => {
+    await expect(
+      renderScreenshots({
+        data,
+        fileName: 'cube-anim.fbx',
+        viewInput: { viewPreset: 'front', clip: 'Take 001' },
+        frames: [0, 9999],
+        width: 160,
+        height: 120,
+        outDir: workDir,
+      }),
+    ).rejects.toThrow(/超出片段「Take 001」范围/);
+  });
 });
 
 // ———————— B.4 骨骼名标注截图（render boneLabels + skeleton shots 真实出图） ————————

@@ -7,6 +7,8 @@ import {
   SPIN_TH,
   STRIKE_DUR,
   STRIKE_PEAK,
+  STRIKE_DOMINANCE,
+  STRIKE_TURN_NET_MAX,
   SMOOTH_M,
   TURN_TH,
   WALK_SPEED,
@@ -219,6 +221,29 @@ export function describeSegments(
         guess = 'fall';
         basis = `腾空占比 ${percentileBasis(airRatio)}，hips 未显著升高（${percentileBasis(hipsRise)}）`;
       }
+    } else if (
+      // A.8 #2（0.5.1 末端主导前置）：带垫步/转体的挥击曾系统性误报 walk/run——
+      // 末端速度远超根速度、能量达 high 档（meanE ≥ 0.8，§6.6.2）且是短瞬态（dur ≤ STRIKE_DUR，
+      // 不吃收招段）时按 strike 判；高转向段（净转角 ≥ STRIKE_TURN_NET_MAX）豁免走 turn/spin。
+      peakJointSpeed >= STRIKE_DOMINANCE * Math.max(rootSpeed, 0.1) &&
+      meanE >= 0.8 &&
+      dur <= STRIKE_DUR &&
+      turnNet < STRIKE_TURN_NET_MAX &&
+      STRIKE_PUNCH_JOINTS.has(peakJoint.id)
+    ) {
+      label = 'action';
+      guess = 'strike-punch';
+      basis = `末端主导：${peakJoint.id} 峰值 ${percentileBasis(peakJointSpeed)} H/s ≥ ${STRIKE_DOMINANCE}× 根速度（${percentileBasis(rootSpeed)}）`;
+    } else if (
+      peakJointSpeed >= STRIKE_DOMINANCE * Math.max(rootSpeed, 0.1) &&
+      meanE >= 0.8 &&
+      dur <= STRIKE_DUR &&
+      turnNet < STRIKE_TURN_NET_MAX &&
+      STRIKE_KICK_JOINTS.has(peakJoint.id)
+    ) {
+      label = 'action';
+      guess = 'strike-kick';
+      basis = `末端主导：${peakJoint.id} 峰值 ${percentileBasis(peakJointSpeed)} H/s ≥ ${STRIKE_DOMINANCE}× 根速度（${percentileBasis(rootSpeed)}）`;
     } else if (rootSpeed >= RUN_SPEED) {
       label = 'contact-move';
       guess = 'run';

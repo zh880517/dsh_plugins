@@ -547,7 +547,9 @@ export function buildSummary(input: SummaryInput): MotionSummary {
     features: segment.features,
   }));
 
-  const clipLevel = intensityLevel(meanE, maxE);
+  // A.9（CALIB v1 口径）：全片档只按均值——真实攻击资产 4/4 全 extreme 暴露 max(mean,peak)
+  // 在全片尺度无区分度（0.2s 轻击与 2.3s 大招同档）；爆发性由分段档（仍取 max）体现。
+  const clipLevel = intensityLevel(meanE, meanE);
   const facts: string[] = segments.map((segment) => {
     const startFrame = channels.frames[segment.start] ?? segment.start;
     const endFrame = channels.frames[segment.end] ?? segment.end;

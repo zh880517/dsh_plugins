@@ -56,6 +56,24 @@ describe.skipIf(!existsSync(cliFile))('kinemesh CLI（构建产物）', () => {
     expect(parsed.step).toContain('命令');
   });
 
+  it('未知选项：stderr 三段式（0.5.1——曾静默忽略导致输出落错目录）', () => {
+    const { status, stderr } = runCli(['skeleton', glbPath, '--outt', workDir]);
+    expect(status).toBe(1);
+    const parsed = JSON.parse(stderr) as { ok: boolean; what: string; guidance: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.what).toContain('--outt');
+    expect(parsed.guidance).toContain('--help');
+  });
+
+  it('--out / --out-dir 互为别名：skeleton --out-dir 等效 --out（不再被吞）', () => {
+    const outDir = path.join(workDir, 'alias-out');
+    const { status, stdout } = runCli(['skeleton', glbPath, '--shots', 'none', '--out-dir', outDir]);
+    expect(status).toBe(0);
+    const parsed = JSON.parse(stdout) as { ok: boolean; dir: string };
+    expect(parsed.ok).toBe(true);
+    expect(path.resolve(parsed.dir)).toBe(path.resolve(outDir));
+  });
+
   it('info 缺文件参数：stderr 指引 + 非零退出码', () => {
     const { status, stderr } = runCli(['info']);
     expect(status).not.toBe(0);

@@ -11,6 +11,8 @@ import {
   buildBackpedalClip,
   buildHumanoidRig,
   buildJumpClip,
+  buildLinearWalkClip,
+  buildLungeStrikeClip,
   buildPunchClip,
   buildRigScene,
   buildStrafeClip,
@@ -226,5 +228,24 @@ describe('总审修复 #2 · describe 的 smooth 半窗与 segment/report 同式
     expect(segment.features.meanE).toBeCloseTo(rawSum / frames, 9);
     // 对照：出拳是快瞬态，m=2 平滑显著改变段均值——旧代码在此断言必红
     expect(segment.features.meanE).not.toBeCloseTo(smoothedSum / frames, 3);
+  });
+});
+
+describe('0.5.1 · 末端主导 strike 前置判据（A.8 #2，真实攻击资产交验回归）', () => {
+  const result = run(buildLungeStrikeClip(buildHumanoidRig()));
+
+  it('垫步+快挥（手速 ≈14× 根速度、meanE ≥ 0.8）：guess 判 strike-punch，不再误报 walk', () => {
+    const guesses = result.summary.segments.map((segment) => segment.guess);
+    expect(guesses).toContain('strike-punch');
+    expect(guesses).not.toContain('walk');
+    const strike = result.summary.segments.find((segment) => segment.guess === 'strike-punch')!;
+    expect(strike.features.peakJoint).toBe('R.Hand');
+    expect(strike.features.peakJointSpeed).toBeGreaterThanOrEqual(3 * strike.features.rootSpeed);
+    expect(strike.features.basis).toContain('末端主导');
+  });
+
+  it('纯匀速走（无末端主导，1× 根速度）不受新判据影响，仍是 walk', () => {
+    const walk = run(buildLinearWalkClip(buildHumanoidRig(), { speed: 0.5, duration: 2 }));
+    expect(walk.summary.segments.every((segment) => segment.guess !== 'strike-punch')).toBe(true);
   });
 });

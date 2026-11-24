@@ -48,6 +48,8 @@ import {
   STRIKE_DUR,
   STRIKE_PEAK,
   SPIN_TH,
+  STRIKE_DOMINANCE,
+  STRIKE_TURN_NET_MAX,
   TRAJECTORY_MAX_BYTES,
   TRAJECTORY_MAX_DOTS,
   TURN_TH,
@@ -116,6 +118,67 @@ const SNAPSHOTS: Record<string, ConstantsExpectations> = {
       verdict: 'return-only', // 位置漂移 2H 不归位
     },
   },
+  // CALIB v1（2026-11-24，真实资产 1005_tacy attack_00/01/02/04 交验）：
+  // 常数表与 v0 相同（阈值未动）；口径变化 = 全片档只按均值 + A.8 末端主导前置判据。
+  // punch 全片档按均值复核后仍为 extreme（fixture 全程高能量）。
+  '1': {
+    constants: {
+      SAMPLE_FPS_DEFAULT: 15,
+      SAMPLE_FPS_MIN: 1,
+      SAMPLE_FPS_MAX: 60,
+      SAMPLE_COUNT_MAX: 24000,
+      SMOOTH_M: 2,
+      MOVE_SMOOTH_M: 1,
+      CONTACT_HEIGHT: 0.05,
+      CONTACT_VEL: 0.3,
+      DEBOUNCE_FRAMES: 2,
+      SEG_DELTA: 0.08,
+      SEG_MIN_SECONDS: 0.4,
+      SEG_MAX_COUNT: 24,
+      POSE_RMS_TH: 0.03,
+      POSE_MAX_TH: 0.08,
+      ROOT_DISP_TH: 0.05,
+      HEADING_TH: 10,
+      VEL_SEAM_TH: 0.1,
+      LOOP_GRID: 300,
+      LOOP_MIN_SECONDS: 0.5,
+      LOOP_PASS: 1.5,
+      STRIKE_PEAK: 2.0,
+      STRIKE_DUR: 0.8,
+      STRIKE_DOMINANCE: 3,
+      STRIKE_TURN_NET_MAX: 120,
+      RUN_SPEED: 1.2,
+      WALK_SPEED: 0.3,
+      TURN_TH: 45,
+      SPIN_TH: 270,
+      KEYFRAME_MAX: 8,
+      KEYFRAME_DEDUP: 0.3,
+      KEYFRAME_SEGMENT_TOP: 6,
+      EVENTS_MAX: 32,
+      DIRECTION_STABLE_FRAMES: 3,
+      HIPS_LOW_OFFSET: 0.05,
+      TRAJECTORY_MAX_DOTS: 600,
+      TRAJECTORY_MAX_BYTES: 32768,
+    },
+    jump: {
+      verdict: 'loop-perfect',
+      guesses: ['gesture', 'jump', 'fall', 'idle'],
+      airTime: 0.9333,
+      airborneFrames: 14,
+      maxRootYGain: 0.3852,
+    },
+    punch: {
+      guesses: ['gesture', 'strike-punch', 'recover'],
+      strikePeakE: 4.4939,
+      level: 'extreme',
+    },
+    walk: {
+      mainDir: 'forward',
+      energyMean: 1.0,
+      rootTotalDisp: 2,
+      verdict: 'return-only',
+    },
+  },
 };
 
 interface ConstantsExpectations {
@@ -139,7 +202,7 @@ describe('A.16 校准快照 · 流程闸门', () => {
       `CALIB_VERSION「${CALIB_VERSION}」没有期望表。按 A.16：在 constants.ts 头注释记录「资产/现象/调整原因」，` +
         '核对新值后在 motion-calib.test.ts 的 SNAPSHOTS 增加该版本期望表，再 bump CALIB_VERSION。',
     ).toBeDefined();
-    expect(CALIB_VERSION).toBe('0'); // 当前唯一已校准版本；bump 后改这里并在 SNAPSHOTS 加新表
+    expect(CALIB_VERSION).toBe('1'); // 当前唯一已校准版本；bump 后改这里并在 SNAPSHOTS 加新表
   });
 });
 
@@ -169,6 +232,8 @@ describe('A.16 校准快照 · A.15 常数总表', () => {
       LOOP_PASS,
       STRIKE_PEAK,
       STRIKE_DUR,
+      STRIKE_DOMINANCE,
+      STRIKE_TURN_NET_MAX,
       RUN_SPEED,
       WALK_SPEED,
       TURN_TH,

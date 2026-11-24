@@ -1,8 +1,16 @@
 // M6 动作分析常数总表（design.md 附录 A.15）：所有阈值的单一来源，随输出回显、可审计。
 // 校准调整必须只改这里，并跑 A.16 快照测试；调整原因按「资产 / 现象 / 决定」记进头注释。
+//
+// CALIB_VERSION 0 → 1（2026-11-24，真实资产交验）：
+// - 资产：1005_tacy attack_00/01/02/04（Max Biped，真实英雄攻击四份）。
+// - 现象：全片档 4/4 全 extreme（max(mean,peak) 口径无区分度，0.2s 轻击与 2.3s 大招同档）；
+//   带垫步/转体的挥击段被移动类规则抢先命中（3/4 首段 guess=walk）。
+// - 决定：全片档改为只按均值（intensityLevel(meanE, meanE)，爆发由分段档体现）；段档保持
+//   max(mean, peak) 不变；A.8 新增「末端主导 strike」前置判据（STRIKE_DOMINANCE×根速度，
+//   高转向段豁免），阈值列于本表。
 
 /** 校准版本号：随 summary 回显，任何输出可追溯到哪一版校准（A.16） */
-export const CALIB_VERSION = '0';
+export const CALIB_VERSION = '1';
 
 /** 采样率缺省与边界（§6.7：1–60）；单 clip 一次分析的采样点数上限（A.14） */
 export const SAMPLE_FPS_DEFAULT = 15;
@@ -48,6 +56,10 @@ export const LOOP_VERDICT_NOTES: Record<LoopVerdict, string> = {
 /** 分段决策表（A.8）：打击峰值/时长、跑/走分界、转身净角、自转累计角 */
 export const STRIKE_PEAK = 2.0;
 export const STRIKE_DUR = 0.8;
+/** 末端主导 strike 前置判据（A.8 #2/#3，0.5.1）：peakJointSpeed ≥ 该倍数 × max(rootSpeed, 0.1) */
+export const STRIKE_DOMINANCE = 3;
+/** 末端主导 strike 的高转向豁免（A.8 #2/#3）：净转角 ≥ 此值的段仍按 turn/spin 判（旋转类动作） */
+export const STRIKE_TURN_NET_MAX = 120;
 export const RUN_SPEED = 1.2;
 export const WALK_SPEED = 0.3;
 export const TURN_TH = 45;
