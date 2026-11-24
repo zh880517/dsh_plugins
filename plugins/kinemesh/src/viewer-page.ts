@@ -41,6 +41,10 @@ interface Bridge {
   modeSuggestion(): ReturnType<ViewerHandle['modeSuggestion']>;
   /** 表面 + 骨架叠加（0.7.2 面板 UI 的同一套状态；截图桥接一般直接走 applyView 的 mode） */
   setDisplay(display: Parameters<ViewerHandle['setDisplay']>[0]): void;
+  /** 当前帧身体包围盒（0.8.0，截图逐帧取景用） */
+  subjectBounds(): ReturnType<ViewerHandle['subjectBounds']>;
+  /** 对准当前帧身体包围盒（0.8.0） */
+  fitCameraToSubject(): ReturnType<ViewerHandle['fitCameraToSubject']>;
   ready(): Promise<void>;
 }
 
@@ -134,6 +138,12 @@ const bridge: Bridge = {
   },
   setDisplay(display: Parameters<ViewerHandle['setDisplay']>[0]): void {
     getViewer().setDisplay(display);
+  },
+  subjectBounds(): ReturnType<ViewerHandle['subjectBounds']> {
+    return getViewer().subjectBounds();
+  },
+  fitCameraToSubject(): ReturnType<ViewerHandle['fitCameraToSubject']> {
+    return getViewer().fitCameraToSubject();
   },
   ready(): Promise<void> {
     return getViewer().ready();

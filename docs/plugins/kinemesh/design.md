@@ -126,6 +126,26 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
   `core/viewstate.ts` 校验并给自愈文案。
 - **依赖**：playwright 钉在根 devDependencies（0.1.x），chromium 由 `npx playwright install chromium`
   安装；DSH 插件出口在宿主没有 playwright 时给出安装指引（M3 工具层降级）。
+- **构建必须把 playwright 外置（0.8.0，真实事故）**：会话 session-cd962a54 里 DSH 插件的
+  `kinemesh_render` 直接失败——`Cannot find module ...\plugins\kinemesh\playwright-BLPky7o0.js`。
+  原因：宿主半 `await import('playwright')` 被 rollup 内联成**懒加载 chunk**，而构建只拷出单文件
+  index.js，chunk 文件不存在。修法：`buildHost` 的 `rollupOptions.external` 加 `playwright`，
+  保持运行时真动态 import（Node 从插件目录向上解析，仓库/安装环境的 node_modules 都能命中）；
+  另加 `assertNoLostChunks()` 守卫，产物里再出现 `import("./xxx.js")` 这类懒 chunk 引用直接构建失败。
+- **截图默认自动化（0.8.0，同一会话暴露的两个问题）**：
+  - **未指定 mode 时按模型自动选**（与预览面板同一套 `auto-mode.ts` 规则）：无 mesh → skeleton；
+    贴图解不出来 → solid；有可用贴图 → default。此前缺省写死 `default`，真实资产
+    `1012_tahlia attack_01` 的 4 张贴图全部解不出 → 截图整具**纯黑剪影**，AI 只能改走 CLI。
+    显式传 mode 则以调用方为准；结果 warnings 会写「未指定 mode：按模型自动选 solid（…）」。
+  - **只给视角预设时逐帧自动取景**：root motion 动作（冲刺/突进/跳跃位移）用**载入时的静止包围盒**
+    算机位会跑出画面——同一资产第 36 帧角色冲到镜头前，截图只剩腰和半截手臂（「截图默认截取不到」）。
+    实现：`core/viewer/scene-bounds.ts` 按**当前帧蒙皮结果**算包围盒（`SkinnedMesh.computeBoundingBox`
+    含蒙皮变形 + `matrixWorld`），`viewer.fitCameraToSubject()` 用**精确透视取景**（包围盒 8 角投影
+    逐角反推距离，再留 8% 余量）对准当前帧；显式传 `view` 则尊重调用方的固定构图。
+    身体漂移超过自身半径 15% 时在 warnings 里提示「该片段带位移」。真实验证：同一资产 6 帧
+    触边像素 0、模型像素 46k–60k 稳定（修前第 36 帧只剩半截）。
+  - 回归：`tests/kinemesh/scene-bounds.test.ts`（当前帧包围盒 / 父级变换 / 隐藏对象跳过）、
+    `screenshot.int.test.ts` 新增「省略 mode 自动选 + 只给预设逐帧取景、显式 view 不跟」用例。
 - **测试**：`tests/kinemesh/screenshot.int.test.ts` 用合成 FBX 走真实 chromium 渲染
   （两帧内容不同、尺寸正确、orbit8 八张、空 frames 报错）；chromium 缺席时整组跳过。
 

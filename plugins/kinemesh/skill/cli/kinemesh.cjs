@@ -30553,13 +30553,20 @@ async function renderScreenshots(request) {
 	try {
 		const loadOutcome = await loadModelIntoPage(session.page, request.data, request.fileName);
 		if (!loadOutcome.ok) throw new KinemeshError(`模型载入失败：${loadOutcome.error}`, "先把文件交给 kinemesh_info 确认能解析，再渲染。");
-		const resolution = resolveView(request.viewInput, {
+		const viewInput = { ...request.viewInput };
+		if (viewInput.mode === void 0 || viewInput.mode === null) {
+			const suggestion = await session.page.evaluate(() => window.__kinemeshViewer.modeSuggestion());
+			viewInput.mode = suggestion.mode;
+			session.warnings.push(`未指定 mode：按模型自动选 ${suggestion.mode}（${suggestion.reason === "no-mesh" ? "没有 mesh，骨架模式" : suggestion.reason === "no-texture" ? "没有可解码的贴图，素模" : "有可用贴图，贴图模式"}）。`);
+		}
+		const resolution = resolveView(viewInput, {
 			center: loadOutcome.bounds.center,
 			radius: loadOutcome.bounds.radius,
 			clips: loadOutcome.clips
 		});
 		session.warnings.push(...resolution.warnings);
 		const baseView = resolution.view;
+		const autoFrame = viewInput.view === void 0 || viewInput.view === null;
 		if (baseView.clip !== null && Number.isFinite(loadOutcome.durationSeconds) && loadOutcome.durationSeconds > 0) {
 			const maxFrame = Math.round(loadOutcome.durationSeconds * 30);
 			const over = frames.filter((frame) => frame > maxFrame);
@@ -30569,11 +30576,21 @@ async function renderScreenshots(request) {
 		const azimuths = resolution.orbit8 ? orbit8Azimuths() : [baseView.camera.azimuth];
 		const baseName = sanitizeBaseName(request.fileName);
 		let index = 0;
+		let firstSubject = null;
+		let maxDrift = 0;
 		for (const azimuth of azimuths) {
 			const view = withAzimuth(baseView, azimuth);
 			await applyView(session.page, view);
 			for (const frame of frames) {
 				if (view.clip !== null) await session.page.evaluate((target) => window.__kinemeshViewer.seekFrame(target), frame);
+				if (autoFrame) {
+					const subject = await session.page.evaluate(() => window.__kinemeshViewer.fitCameraToSubject());
+					if (subject !== null) {
+						if (firstSubject === null) firstSubject = subject;
+						const drift = Math.hypot(subject.center[0] - firstSubject.center[0], subject.center[1] - firstSubject.center[1], subject.center[2] - firstSubject.center[2]);
+						maxDrift = Math.max(maxDrift, drift / Math.max(firstSubject.radius, 1e-6));
+					}
+				}
 				const shot = await session.page.screenshot({ type: "png" });
 				const name = `${String(index + 1).padStart(2, "0")}-${baseName}-${view.clip ?? "static"}-f${frame}-az${Math.round(azimuth)}${view.mode === "default" ? "" : `-${view.mode}`}.png`;
 				const file = node_path.default.join(workDir, name);
@@ -30582,6 +30599,7 @@ async function renderScreenshots(request) {
 				index += 1;
 			}
 		}
+		if (autoFrame && maxDrift > .15) session.warnings.push(`该片段带位移（身体在画面里最多移动了自身半径的 ${Math.round(maxDrift * 100)}%）：默认视角已按每帧身体包围盒自动取景，帧间构图会略有变化；要固定构图请显式传 view（camera.target / distance）。`);
 	} finally {
 		await session.close();
 	}
@@ -33877,6 +33895,8 @@ var USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       --azimuth <deg> --elevation <deg> --distance <n> --target x,y,z --fov <deg>
                                自定义球坐标视角（与 --view-preset 二选一）
       --mode <name>            default / solid / wireframe / skeleton / bones-overlay
+                               （省略 = 按模型自动选：无 mesh 骨架 / 贴图解不出来素模 / 有贴图 default；
+                                 只给视角预设时逐帧按身体包围盒自动取景，带位移的动作不会跑出画面）
       --bone-labels <batch>    骨骼名文字标注（B.4，与 --mode skeleton|bones-overlay 联用）：
                                auto（缺省第 1 批）/ all（全部骨骼名，允许重叠，调试）/ 批次号（1 起，
                                stride 分批防叠；骨架识别单批读图用）

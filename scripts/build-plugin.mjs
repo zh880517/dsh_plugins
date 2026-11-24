@@ -27,7 +27,14 @@ const sharedAlias = [
   { find: '@shared', replacement: sharedSrc },
 ];
 
-/** Host 半：ESM，node: 内建外置 */
+/** Host 半：ESM，node: 内建外置；**playwright 也必须外置**。
+ *
+ * 教训（0.8.0）：宿主半里 `await import('playwright')` 若被内联，rollup 会把它拆成懒加载 chunk
+ * （如 `./playwright-XXXX.js`），而构建只拷出 index.js 单文件 → 运行时报
+ * `Cannot find module ...\playwright-BLPky7o0.js`，DSH 插件里的 kinemesh_render 直接不可用
+ * （真实会话 session-cd962a54 就是这样掉到 CLI 的）。外置后保持运行时真动态 import，
+ * 由 Node 从插件所在位置向上解析（仓库 node_modules / 安装环境自带），缺了才走友好报错。
+ * 下面的 assertNoLostChunks 会兜住以后再有别的包被内联成懒 chunk。 */
 async function buildHost(plugin, work) {
   await build({
     configFile: false,
@@ -40,9 +47,23 @@ async function buildHost(plugin, work) {
       emptyOutDir: true,
       minify: false,
       target: 'node22',
-      rollupOptions: { external: [/^node:/] },
+      rollupOptions: { external: [/^node:/, 'playwright'] },
     },
   });
+  await assertNoLostChunks(path.join(work, 'host', 'index.js'), plugin.id);
+}
+
+/** 产物里若出现 `import("./xxx.js")` / `from"./xxx.js"` 这类懒 chunk 引用，说明有依赖被拆到了
+ *  不存在的文件里（构建只拷 index.js）——直接报错，别等运行时报 Cannot find module。 */
+async function assertNoLostChunks(file, pluginId) {
+  const body = await readFile(file, 'utf8');
+  const lost = [...body.matchAll(/(?:import\(|from\s*)"\.\/([A-Za-z0-9._-]+\.js)"/g)].map((match) => match[1]);
+  if (lost.length > 0) {
+    throw new Error(
+      `[${pluginId}] index.js 里出现懒加载 chunk 引用（${[...new Set(lost)].join(', ')}），但构建只输出了单文件 index.js。` +
+        ' 把对应依赖加进 buildHost 的 rollupOptions.external（参考 playwright）。',
+    );
+  }
 }
 
 /** Client 半：CJS，React 走宿主模块表 */

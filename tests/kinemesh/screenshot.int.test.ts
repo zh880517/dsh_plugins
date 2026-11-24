@@ -58,9 +58,55 @@ describe.skipIf(!chromiumReady)('renderScreenshots × playwright', () => {
     }
     // 两个帧的姿势不同（位移曲线），截图内容必须不一样
     expect(payloads[0].equals(payloads[1])).toBe(false);
-    expect(result.images[0]).toMatch(/f0-az0\.png$/);
-    expect(result.images[1]).toMatch(/f30-az0\.png$/);
+    // 0.8.0：未传 mode 时按模型自动选（这个 cube 无贴图 → solid），文件名带 -solid 后缀
+    expect(result.images[0]).toMatch(/f0-az0(?:-[a-z-]+)?\.png$/);
+    expect(result.images[1]).toMatch(/f30-az0(?:-[a-z-]+)?\.png$/);
+    expect(result.warnings.some((warning) => warning.includes('未指定 mode'))).toBe(true);
   }, 60_000);
+
+  it('0.8.0 自动模式与逐帧取景：省略 mode 时按模型选、只给预设时跟身体包围盒', async () => {
+    const auto = await renderScreenshots({
+      data,
+      fileName: 'cube-anim.fbx',
+      viewInput: { viewPreset: 'front', clip: 'Take 001' },
+      frames: [0, 30],
+      width: 320,
+      height: 240,
+      outDir: workDir,
+    });
+    expect(auto.warnings.some((warning) => warning.includes('未指定 mode'))).toBe(true);
+    // 这个 cube 的动画是位移动画 → 逐帧取景会提示根位移
+    expect(auto.warnings.some((warning) => warning.includes('带位移'))).toBe(true);
+
+    // 显式 view = 调用方指定固定构图 → 不做逐帧取景、也不提示位移
+    const fixed = await renderScreenshots({
+      data,
+      fileName: 'cube-anim.fbx',
+      viewInput: {
+        view: { camera: { azimuth: 30, elevation: 10, distance: 6, target: [0, 1, 0], fov: 40 } },
+        mode: 'solid',
+        clip: 'Take 001',
+      },
+      frames: [0, 30],
+      width: 320,
+      height: 240,
+      outDir: workDir,
+    });
+    expect(fixed.warnings.some((warning) => warning.includes('带位移'))).toBe(false);
+    expect(fixed.warnings.some((warning) => warning.includes('未指定 mode'))).toBe(false);
+
+    // 显式 mode 且只给预设：取景仍然逐帧跟，但不该再报「未指定 mode」
+    const explicitMode = await renderScreenshots({
+      data,
+      fileName: 'cube-anim.fbx',
+      viewInput: { viewPreset: 'front', mode: 'skeleton', clip: 'Take 001' },
+      frames: [0],
+      width: 320,
+      height: 240,
+      outDir: workDir,
+    });
+    expect(explicitMode.warnings.some((warning) => warning.includes('未指定 mode'))).toBe(false);
+  }, 120_000);
 
   it('orbit8 一次出 8 个方位', async () => {
     const result = await renderScreenshots({
@@ -73,8 +119,8 @@ describe.skipIf(!chromiumReady)('renderScreenshots × playwright', () => {
       outDir: workDir,
     });
     expect(result.images).toHaveLength(8);
-    expect(result.images[0]).toMatch(/az0\.png$/);
-    expect(result.images[7]).toMatch(/az315\.png$/);
+    expect(result.images[0]).toMatch(/az0(?:-[a-z-]+)?\.png$/);
+    expect(result.images[7]).toMatch(/az315(?:-[a-z-]+)?\.png$/);
   }, 120_000);
 
   it('静态模型不指定 clip 也能出图', async () => {
@@ -88,7 +134,7 @@ describe.skipIf(!chromiumReady)('renderScreenshots × playwright', () => {
       outDir: workDir,
     });
     expect(result.images).toHaveLength(1);
-    expect(result.images[0]).toMatch(/static-f0-az45\.png$/);
+    expect(result.images[0]).toMatch(/static-f0-az45(?:-[a-z-]+)?\.png$/);
   }, 60_000);
 
   it('frames 为空给指引', async () => {

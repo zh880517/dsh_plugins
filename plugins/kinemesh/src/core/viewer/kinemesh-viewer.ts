@@ -23,6 +23,7 @@ import { suggestViewMode, collectSceneModeFacts, type ModeSuggestion } from './a
 import { computeClipPlanes } from './clip-planes.js';
 import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
+import { currentPoseBounds, currentPoseBoundsInfo } from './scene-bounds.js';
 import { attachSkeletonHelpers, createSkeletonHelpers, detachSkeletonHelpers } from './skeleton-helpers.js';
 import type { CanonicalScene } from '../types.js';
 
@@ -30,6 +31,8 @@ import type { CanonicalScene } from '../types.js';
 const LABEL_BASE_HEIGHT_PX = 720;
 const LABEL_FONT_PX = 14;
 const LABEL_OFFSET_PX = 6;
+/** 逐帧取景的留白系数（0.8.0）：精确透视取景后再放大 8%，避免边缘像素贴边 */
+const SUBJECT_FIT_MARGIN = 1.08;
 
 export interface ViewerFrameInfo {
   clip: string | null;
@@ -68,6 +71,16 @@ export interface ViewerHandle {
    * 有可用贴图 → default。reason 给面板一句人话（`no-mesh` / `no-texture` / `textured`）。
    */
   modeSuggestion(): ModeSuggestion;
+  /**
+   * 当前帧的「实际身体包围盒」（0.8.0，含蒙皮/位移）：root motion 动作截图取景用——
+   * 载入时的包围盒是静止姿态，位移动作会跑出画面（近则只剩半截、远则只剩地面）。
+   */
+  subjectBounds(): { center: [number, number, number]; radius: number } | null;
+  /**
+   * 把相机对准当前帧身体包围盒（0.8.0）：只改 target 与距离（保持方位角/仰角/fov），
+   * 用精确透视取景（包围盒 8 角投影反推距离）。返回取景所用的包围盒（无可见网格时 null）。
+   */
+  fitCameraToSubject(): { center: [number, number, number]; radius: number } | null;
   /**
    * B.4 骨骼名标注：给这些骨骼名建文字精灵（画在关节世界位置旁，随动画逐帧跟随）；
    * null / 空数组 = 清除。返回实际建标签数（名字未命中骨架的不计）。
@@ -552,6 +565,55 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       // 客户端会在贴图复查后再问一次（0.7.1）
       if (model === null) return { mode: 'solid', reason: 'no-texture' };
       return suggestViewMode(model);
+    },
+
+    subjectBounds() {
+      if (model === null) return null;
+      return currentPoseBoundsInfo(model);
+    },
+
+    fitCameraToSubject() {
+      if (model === null) return null;
+      const box = currentPoseBounds(model);
+      if (box === null) return null;
+      const center = box.getCenter(new THREE.Vector3());
+      const cameraData = cameraFromPosition(
+        [camera.position.x, camera.position.y, camera.position.z],
+        [controls.target.x, controls.target.y, controls.target.z],
+        camera.fov,
+      );
+      // 精确透视取景：把包围盒 8 个角投到「相机朝向坐标系」，逐角算「该角刚好进画」所需距离，
+      // 取最大值。比「包围球半径 × 2.2」这类经验值可靠——大姿态（举拳、前倾、伸腿）不会切边。
+      const forward = new THREE.Vector3().subVectors(center, camera.position).normalize();
+      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+      const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+      const tanHalfFov = Math.tan((camera.fov * Math.PI) / 360);
+      const aspect = camera.aspect > 0 ? camera.aspect : 16 / 9;
+      const corner = new THREE.Vector3();
+      let distance = 0;
+      for (const x of [box.min.x, box.max.x]) {
+        for (const y of [box.min.y, box.max.y]) {
+          for (const z of [box.min.z, box.max.z]) {
+            corner.set(x, y, z).sub(center);
+            const depth = corner.dot(forward);
+            const needVertical = depth + Math.abs(corner.dot(up)) / tanHalfFov;
+            const needHorizontal = depth + Math.abs(corner.dot(right)) / (tanHalfFov * aspect);
+            distance = Math.max(distance, needVertical, needHorizontal);
+          }
+        }
+      }
+      distance = Math.max(distance * SUBJECT_FIT_MARGIN, (box.getSize(new THREE.Vector3()).length() / 2) * 1.05);
+      const position = cameraPosition({ ...cameraData, distance, target: [center.x, center.y, center.z] });
+      camera.position.set(position[0], position[1], position[2]);
+      controls.target.set(center.x, center.y, center.z);
+      controls.update();
+      updateClipPlanes();
+      renderer.render(scene, camera);
+      const size = box.getSize(new THREE.Vector3());
+      return {
+        center: [center.x, center.y, center.z],
+        radius: Math.max(size.length() / 2, 0.001),
+      };
     },
 
     setBoneLabels(bones) {

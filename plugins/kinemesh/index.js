@@ -33499,13 +33499,20 @@ async function renderScreenshots(request) {
 	try {
 		const loadOutcome = await loadModelIntoPage(session.page, request.data, request.fileName);
 		if (!loadOutcome.ok) throw new KinemeshError(`模型载入失败：${loadOutcome.error}`, "先把文件交给 kinemesh_info 确认能解析，再渲染。");
-		const resolution = resolveView(request.viewInput, {
+		const viewInput = { ...request.viewInput };
+		if (viewInput.mode === void 0 || viewInput.mode === null) {
+			const suggestion = await session.page.evaluate(() => window.__kinemeshViewer.modeSuggestion());
+			viewInput.mode = suggestion.mode;
+			session.warnings.push(`未指定 mode：按模型自动选 ${suggestion.mode}（${suggestion.reason === "no-mesh" ? "没有 mesh，骨架模式" : suggestion.reason === "no-texture" ? "没有可解码的贴图，素模" : "有可用贴图，贴图模式"}）。`);
+		}
+		const resolution = resolveView(viewInput, {
 			center: loadOutcome.bounds.center,
 			radius: loadOutcome.bounds.radius,
 			clips: loadOutcome.clips
 		});
 		session.warnings.push(...resolution.warnings);
 		const baseView = resolution.view;
+		const autoFrame = viewInput.view === void 0 || viewInput.view === null;
 		if (baseView.clip !== null && Number.isFinite(loadOutcome.durationSeconds) && loadOutcome.durationSeconds > 0) {
 			const maxFrame = Math.round(loadOutcome.durationSeconds * 30);
 			const over = frames.filter((frame) => frame > maxFrame);
@@ -33515,11 +33522,21 @@ async function renderScreenshots(request) {
 		const azimuths = resolution.orbit8 ? orbit8Azimuths() : [baseView.camera.azimuth];
 		const baseName = sanitizeBaseName(request.fileName);
 		let index = 0;
+		let firstSubject = null;
+		let maxDrift = 0;
 		for (const azimuth of azimuths) {
 			const view = withAzimuth(baseView, azimuth);
 			await applyView(session.page, view);
 			for (const frame of frames) {
 				if (view.clip !== null) await session.page.evaluate((target) => window.__kinemeshViewer.seekFrame(target), frame);
+				if (autoFrame) {
+					const subject = await session.page.evaluate(() => window.__kinemeshViewer.fitCameraToSubject());
+					if (subject !== null) {
+						if (firstSubject === null) firstSubject = subject;
+						const drift = Math.hypot(subject.center[0] - firstSubject.center[0], subject.center[1] - firstSubject.center[1], subject.center[2] - firstSubject.center[2]);
+						maxDrift = Math.max(maxDrift, drift / Math.max(firstSubject.radius, 1e-6));
+					}
+				}
 				const shot = await session.page.screenshot({ type: "png" });
 				const name = `${String(index + 1).padStart(2, "0")}-${baseName}-${view.clip ?? "static"}-f${frame}-az${Math.round(azimuth)}${view.mode === "default" ? "" : `-${view.mode}`}.png`;
 				const file = path.join(workDir, name);
@@ -33528,6 +33545,7 @@ async function renderScreenshots(request) {
 				index += 1;
 			}
 		}
+		if (autoFrame && maxDrift > .15) session.warnings.push(`该片段带位移（身体在画面里最多移动了自身半径的 ${Math.round(maxDrift * 100)}%）：默认视角已按每帧身体包围盒自动取景，帧间构图会略有变化；要固定构图请显式传 view（camera.target / distance）。`);
 	} finally {
 		await session.close();
 	}
@@ -33693,7 +33711,7 @@ function composePage(viewerJs, width, height) {
 }
 async function loadChromium() {
 	try {
-		return (await import("./playwright-BLPky7o0.js")).chromium;
+		return (await import("playwright")).chromium;
 	} catch (error) {
 		throw new KinemeshError(`本机没有 playwright（${reasonOf(error)}）。`, "渲染截图需要 playwright：npm install playwright && npx playwright install chromium；DSH 插件出口在缺少它时只提供 kinemesh_info，截图走 CLI/Skill/MCP 出口。");
 	}
@@ -34439,7 +34457,7 @@ function infoTool(record) {
 function renderTool(record) {
 	return {
 		name: "kinemesh_render",
-		description: "按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需；游戏资产贴图缺失时画面偏黑，可用 mode:\"solid\" 素模看清几何与动作）。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。",
+		description: "按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay，**省略 mode 时按模型自动选**（无 mesh→skeleton；贴图解不出来→solid 素模；有可用贴图→default——贴图缺失的资产用 default 会渲成黑剪影）。**只给 viewPreset 时逐帧按当前帧身体包围盒自动取景**：带 root motion 的动作（冲刺/突进）不会跑出画面；显式传 view（camera.target / distance）则按你给的固定构图。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。",
 		parameters: {
 			type: "object",
 			properties: {
@@ -34467,7 +34485,7 @@ function renderTool(record) {
 				},
 				mode: {
 					type: "string",
-					description: "default / solid / wireframe / skeleton / bones-overlay，缺省 default"
+					description: "default / solid / wireframe / skeleton / bones-overlay；**省略 = 按模型自动选**（无 mesh→skeleton；贴图解不出来→solid；有可用贴图→default）"
 				},
 				boneLabels: {
 					anyOf: [{

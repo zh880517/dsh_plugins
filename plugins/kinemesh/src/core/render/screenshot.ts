@@ -84,13 +84,37 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
       throw new KinemeshError(`模型载入失败：${loadOutcome.error}`, '先把文件交给 kinemesh_info 确认能解析，再渲染。');
     }
 
-    const resolution = resolveView(request.viewInput, {
+    // 0.8.0：未显式给 mode 时按模型自动选（与预览面板同一套规则）——
+    // 贴图解不出来的资产用 default 会渲成黑剪影（真实资产 1012_tahlia 实测整具纯黑），
+    // 无 mesh 的资产用任何网格模式都是空图。显式传 mode 则以调用方为准。
+    const viewInput = { ...request.viewInput };
+    if (viewInput.mode === undefined || viewInput.mode === null) {
+      const suggestion = await session.page.evaluate(
+        () => (window as unknown as BridgeHost).__kinemeshViewer.modeSuggestion(),
+      );
+      viewInput.mode = suggestion.mode;
+      session.warnings.push(
+        `未指定 mode：按模型自动选 ${suggestion.mode}（${
+          suggestion.reason === 'no-mesh'
+            ? '没有 mesh，骨架模式'
+            : suggestion.reason === 'no-texture'
+              ? '没有可解码的贴图，素模'
+              : '有可用贴图，贴图模式'
+        }）。`,
+      );
+    }
+
+    const resolution = resolveView(viewInput, {
       center: loadOutcome.bounds.center,
       radius: loadOutcome.bounds.radius,
       clips: loadOutcome.clips,
     });
     session.warnings.push(...resolution.warnings);
     const baseView = resolution.view;
+    // 0.8.0：调用方没给显式 view 时，逐帧按「当前帧身体包围盒」重新取景。
+    // root motion 动作（冲刺/突进）用静止包围盒算机位会跑出画面；显式 view 是调用方
+    // 指定的构图，尊重不动。
+    const autoFrame = viewInput.view === undefined || viewInput.view === null;
     // 0.5.1 交验发现：超出片段时长的帧号曾静默出垃圾帧（ok:true）——载入后按真实时长拒绝
     if (baseView.clip !== null && Number.isFinite(loadOutcome.durationSeconds) && loadOutcome.durationSeconds > 0) {
       const maxFrame = Math.round(loadOutcome.durationSeconds * RENDER_FPS);
@@ -107,12 +131,30 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
     const baseName = sanitizeBaseName(request.fileName);
 
     let index = 0;
+    // 逐帧取景时记录「身体包围盒最大漂移」，只在真的带位移时提示（原地动作不该刷这条）
+    let firstSubject: { center: [number, number, number]; radius: number } | null = null;
+    let maxDrift = 0;
     for (const azimuth of azimuths) {
       const view = withAzimuth(baseView, azimuth);
       await applyView(session.page, view);
       for (const frame of frames) {
         if (view.clip !== null) {
           await session.page.evaluate((target) => (window as unknown as BridgeHost).__kinemeshViewer.seekFrame(target), frame);
+        }
+        // 逐帧取景：seek 之后身体姿势/位置才确定，此时量当前帧包围盒再对准
+        if (autoFrame) {
+          const subject = await session.page.evaluate(() =>
+            (window as unknown as BridgeHost).__kinemeshViewer.fitCameraToSubject(),
+          );
+          if (subject !== null) {
+            if (firstSubject === null) firstSubject = subject;
+            const drift = Math.hypot(
+              subject.center[0] - firstSubject.center[0],
+              subject.center[1] - firstSubject.center[1],
+              subject.center[2] - firstSubject.center[2],
+            );
+            maxDrift = Math.max(maxDrift, drift / Math.max(firstSubject.radius, 1e-6));
+          }
         }
         const shot = await session.page.screenshot({ type: 'png' });
         const name = `${String(index + 1).padStart(2, '0')}-${baseName}-${view.clip ?? 'static'}-f${frame}-az${Math.round(azimuth)}${view.mode === 'default' ? '' : `-${view.mode}`}.png`;
@@ -121,6 +163,12 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
         images.push(file);
         index += 1;
       }
+    }
+    // 位移超过自身半径的 15% 才提示（原地摆动的动作不打扰）
+    if (autoFrame && maxDrift > 0.15) {
+      session.warnings.push(
+        `该片段带位移（身体在画面里最多移动了自身半径的 ${Math.round(maxDrift * 100)}%）：默认视角已按每帧身体包围盒自动取景，帧间构图会略有变化；要固定构图请显式传 view（camera.target / distance）。`,
+      );
     }
   } finally {
     await session.close();
@@ -192,6 +240,10 @@ interface BridgeHost {
     seekFrame(frame: number): Promise<{ frame: number }>;
     frameInfo(): unknown;
     setBoneLabels(spec: number | 'auto' | 'all' | string[] | null): { shown: number; batches: number; batch: number | 'all' | null };
+    /** 0.8.0：模型自动选模式建议（未指定 mode 时用） */
+    modeSuggestion(): { mode: string; reason: 'no-mesh' | 'no-texture' | 'textured' };
+    /** 0.8.0：把相机对准当前帧身体包围盒（root motion 取景），返回取景包围盒 */
+    fitCameraToSubject(): { center: [number, number, number]; radius: number } | null;
   };
 }
 

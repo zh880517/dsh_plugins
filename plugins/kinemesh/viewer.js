@@ -47093,6 +47093,57 @@ void main() {
 		return true;
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/scene-bounds.ts
+	/**
+	* 当前姿态下的可见网格包围盒（世界坐标）。
+	* · 蒙皮网格：走 `computeBoundingBox()`（含蒙皮变形），再乘 matrixWorld；
+	* · 普通网格：geometry.boundingBox 乘 matrixWorld；
+	* · 隐藏对象（辅助对象过滤等）跳过：用 `traverseVisible`。
+	* 没有任何可见网格时返回 null。
+	*/
+	function currentPoseBounds(root) {
+		const box = new Box3();
+		let found = false;
+		root.updateMatrixWorld(true);
+		root.traverseVisible((child) => {
+			const mesh = child;
+			if (mesh.isMesh !== true) return;
+			const local = new Box3();
+			if (mesh.isSkinnedMesh === true && typeof mesh.computeBoundingBox === "function") {
+				mesh.computeBoundingBox();
+				const skinned = mesh;
+				if (skinned.boundingBox === null || skinned.boundingBox.isEmpty()) return;
+				local.copy(skinned.boundingBox);
+			} else {
+				if (mesh.geometry.boundingBox === null) mesh.geometry.computeBoundingBox();
+				const geometryBox = mesh.geometry.boundingBox;
+				if (geometryBox === null || geometryBox.isEmpty()) return;
+				local.copy(geometryBox);
+			}
+			box.union(local.applyMatrix4(mesh.matrixWorld));
+			found = true;
+		});
+		return found ? box : null;
+	}
+	/** 包围盒 → { center, radius }（radius = 空间对角线一半，与 viewer 的既有口径一致） */
+	function boundsOfBox(box) {
+		if (box === null || box.isEmpty()) return null;
+		const center = box.getCenter(new Vector3());
+		const size = box.getSize(new Vector3());
+		return {
+			center: [
+				center.x,
+				center.y,
+				center.z
+			],
+			radius: Math.max(size.length() / 2, .001)
+		};
+	}
+	/** 当前姿态包围盒（一步到位版） */
+	function currentPoseBoundsInfo(root) {
+		return boundsOfBox(currentPoseBounds(root));
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/skeleton-helpers.ts
 	/** 为刚载入的模型建骨架线（先隐藏，由 applyMode 按模式显示） */
 	function createSkeletonHelpers(root) {
@@ -47118,6 +47169,8 @@ void main() {
 	/** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
 	var LABEL_BASE_HEIGHT_PX = 720;
 	var LABEL_OFFSET_PX = 6;
+	/** 逐帧取景的留白系数（0.8.0）：精确透视取景后再放大 8%，避免边缘像素贴边 */
+	var SUBJECT_FIT_MARGIN = 1.08;
 	function mountViewer(container, options = {}) {
 		const width = options.width ?? (container.clientWidth || 1280);
 		const height = options.height ?? (container.clientHeight || 720);
@@ -47509,6 +47562,63 @@ void main() {
 				};
 				return suggestViewMode(model);
 			},
+			subjectBounds() {
+				if (model === null) return null;
+				return currentPoseBoundsInfo(model);
+			},
+			fitCameraToSubject() {
+				if (model === null) return null;
+				const box = currentPoseBounds(model);
+				if (box === null) return null;
+				const center = box.getCenter(new Vector3());
+				const cameraData = cameraFromPosition([
+					camera.position.x,
+					camera.position.y,
+					camera.position.z
+				], [
+					controls.target.x,
+					controls.target.y,
+					controls.target.z
+				], camera.fov);
+				const forward = new Vector3().subVectors(center, camera.position).normalize();
+				const right = new Vector3().crossVectors(forward, new Vector3(0, 1, 0)).normalize();
+				const up = new Vector3().crossVectors(right, forward).normalize();
+				const tanHalfFov = Math.tan(camera.fov * Math.PI / 360);
+				const aspect = camera.aspect > 0 ? camera.aspect : 16 / 9;
+				const corner = new Vector3();
+				let distance = 0;
+				for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+					corner.set(x, y, z).sub(center);
+					const depth = corner.dot(forward);
+					const needVertical = depth + Math.abs(corner.dot(up)) / tanHalfFov;
+					const needHorizontal = depth + Math.abs(corner.dot(right)) / (tanHalfFov * aspect);
+					distance = Math.max(distance, needVertical, needHorizontal);
+				}
+				distance = Math.max(distance * SUBJECT_FIT_MARGIN, box.getSize(new Vector3()).length() / 2 * 1.05);
+				const position = cameraPosition({
+					...cameraData,
+					distance,
+					target: [
+						center.x,
+						center.y,
+						center.z
+					]
+				});
+				camera.position.set(position[0], position[1], position[2]);
+				controls.target.set(center.x, center.y, center.z);
+				controls.update();
+				updateClipPlanes();
+				renderer.render(scene, camera);
+				const size = box.getSize(new Vector3());
+				return {
+					center: [
+						center.x,
+						center.y,
+						center.z
+					],
+					radius: Math.max(size.length() / 2, .001)
+				};
+			},
 			setBoneLabels(bones) {
 				clearBoneLabels();
 				if (model === null || bones === null || bones.length === 0) return 0;
@@ -47751,6 +47861,12 @@ void main() {
 		},
 		setDisplay(display) {
 			getViewer().setDisplay(display);
+		},
+		subjectBounds() {
+			return getViewer().subjectBounds();
+		},
+		fitCameraToSubject() {
+			return getViewer().fitCameraToSubject();
 		},
 		ready() {
 			return getViewer().ready();
