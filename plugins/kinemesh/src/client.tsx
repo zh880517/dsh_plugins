@@ -554,7 +554,8 @@ function PreviewPane(props: {
   const [loadedPath, setLoadedPath] = React.useState('');
   const [clip, setClip] = React.useState('');
   const [frame, setFrame] = React.useState(0);
-  const [mode, setMode] = React.useState<ViewMode>('default');
+  // 默认 solid 素模：游戏资产常无可用贴图，素模是常规 3D 工具的默认显示方式，也最能看清动作
+  const [mode, setMode] = React.useState<ViewMode>('solid');
   const [playing, setPlaying] = React.useState(false);
   const [viewText, setViewText] = React.useState('—');
   const [state, setState] = React.useState<LoadState>({ phase: 'empty', error: null, clips: [], maxFrame: 0 });

@@ -13,6 +13,7 @@ import {
   type ViewState,
   type ViewMode,
 } from '../viewstate.js';
+import { collectAuxiliaryObjects } from './auxiliary.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
 import type { CanonicalScene } from '../types.js';
 
@@ -73,7 +74,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(options.background ?? 0x23262b);
+  scene.background = new THREE.Color(options.background ?? 0x32373f);
 
   const camera = new THREE.PerspectiveCamera(40, width / height, 0.001, 1_000_000);
   camera.position.set(2, 2, 2);
@@ -84,23 +85,37 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   // ———————— 预览光照（0.6.4）———————
   // 原配置（hemi 1.1 + 单方向光 1.6）在深色舞台上看 Unity/Max 导出资产几乎是黑剪影。
   // 改为「环境光 + 半球光 + 主光 + 两侧补光」的四向布光：正面/侧面都有光，避免背光面全黑。
-  const ambient = new THREE.AmbientLight(0xffffff, 2.2);
-  const hemi = new THREE.HemisphereLight(0xf2f6ff, 0x2a2f38, 2.4);
-  const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
+  const ambient = new THREE.AmbientLight(0xffffff, 2.6);
+  const hemi = new THREE.HemisphereLight(0xf4f7ff, 0x323842, 2.4);
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.7);
   keyLight.position.set(4, 8, 6);
-  const fillLight = new THREE.DirectionalLight(0xdce6ff, 1.2);
+  const fillLight = new THREE.DirectionalLight(0xe4ecff, 1.0);
   fillLight.position.set(-6, 3, -4);
-  const rimLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  const rimLight = new THREE.DirectionalLight(0xffffff, 0.7);
   rimLight.position.set(0, -4, -6);
   scene.add(ambient, hemi, keyLight, fillLight, rimLight);
 
-  let grid = new THREE.GridHelper(10, 10, 0x555a63, 0x3a3e45);
+  let grid = new THREE.GridHelper(10, 20, 0x565d68, 0x454b54);
+  // 常规 3D 工具的三轴观感：X 轴偏红、Z 轴偏蓝（Maya/Blender/UE 习惯）
+  const axisLength = 5;
+  const axisX = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-axisLength, 0, 0), new THREE.Vector3(axisLength, 0, 0)]),
+    new THREE.LineBasicMaterial({ color: 0xb4554f }),
+  );
+  const axisZ = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, -axisLength), new THREE.Vector3(0, 0, axisLength)]),
+    new THREE.LineBasicMaterial({ color: 0x4f74b4 }),
+  );
+  grid.add(axisX, axisZ);
   scene.add(grid);
 
-  /** solid 素模模式共享材质（0.6.5）：中性灰 + 受光照，保证任何资产都能看清轮廓 */
-  const solidMaterial = new THREE.MeshLambertMaterial({ color: 0xcfd6e0 });
+  /** solid 素模模式共享材质：中性灰 + 受光照，常规 3D 工具的 solid shading。
+   *  DoubleSide：游戏资产常为单面，头发/裙摆从背面看会破洞。 */
+  const solidMaterial = new THREE.MeshLambertMaterial({ color: 0xd2d6db, side: THREE.DoubleSide });
   /** 贴图异步复查定时器（换模型/卸载时清理） */
   let textureCheckTimer: number | null = null;
+  /** FBX 自带辅助对象（Dummy/locator/线框 gizmo 等），载入时隐藏（常规 3D 工具同样不显示） */
+  let suppressedAux: THREE.Object3D[] = [];
 
   let model: THREE.Object3D | null = null;
   let modelRawClips: THREE.AnimationClip[] = [];
@@ -164,6 +179,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     actions = new Map();
     activeAction = null;
     skeletons = [];
+    suppressedAux = [];
   }
 
   function applyMode(): void {
@@ -244,6 +260,11 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         });
         renderer.render(scene, camera);
       }, 1200);
+      // 辅助对象过滤：Unity/Max 导出的 FBX 常带 Dummy、IK 目标、locator、线框 gizmo，
+      // 预览里会变成虚线/尖刺/红绿轴等杂线（常规 3D 工具默认不显示）。只隐藏、不删除；
+      // 骨骼（Bone）永不触碰——蒙皮依赖骨骼层级。
+      suppressedAux = collectAuxiliaryObjects(model);
+      for (const aux of suppressedAux) aux.visible = false;
       scene.add(model);
       // B.4 标注的目标索引：名字 → 对象（重名取首个命中；换模型即作废重建）
       namedObjects = new Map<string, THREE.Object3D>();

@@ -31671,8 +31671,8 @@ function clamp(value, low, high) {
 function parseMode(input) {
 	if (input === void 0 || input === null) return "default";
 	const value = String(input);
-	if (value === "default" || value === "wireframe" || value === "skeleton" || value === "bones-overlay") return value;
-	throw new KinemeshError(`未知渲染模式「${value}」。`, "可选值：default / wireframe / skeleton / bones-overlay。");
+	if (value === "default" || value === "solid" || value === "wireframe" || value === "skeleton" || value === "bones-overlay") return value;
+	throw new KinemeshError(`未知渲染模式「${value}」。`, "可选值：default / solid / wireframe / skeleton / bones-overlay。");
 }
 function parseClip(input, clips) {
 	if (input === void 0 || input === null || input === "") return null;
@@ -34439,7 +34439,7 @@ function infoTool(record) {
 function renderTool(record) {
 	return {
 		name: "kinemesh_render",
-		description: "按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需）。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。",
+		description: "按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay（骨骼可视化是动作分析刚需；游戏资产贴图缺失时画面偏黑，可用 mode:\"solid\" 素模看清几何与动作）。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。",
 		parameters: {
 			type: "object",
 			properties: {

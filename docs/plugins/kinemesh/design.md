@@ -577,6 +577,17 @@ kinemesh_analyze(path, {
   `-bg-layer-1..3` / `-label-primary|secondary|tertiary` / `-label-on-color` / `-border-l1` /
   `-brand-primary` / `-bg-mask-*`）；不使用不存在的 token 名（旧代码 `label-on-brand` 不存在，
   深色主题下主按钮回退白字叠亮底 → 视觉空白）。3D 舞台背景不再硬编码 `#23262b`。
+- **默认素模显示（0.6.6，用户拍板）**：预览默认走 `solid` 素模——常规 3D 工具（Maya/Blender/Unity）
+  的标准显示方式，本项目的游戏资产普遍没有可用贴图，素模最利于看清姿态与动作。配套：
+  - 素模材质：中性灰 `#d2d6db` Lambert + `DoubleSide`（游戏资产多为单面，头发/裙摆背面会破洞）；
+  - 光照柔化：环境光 2.6 / 半球光 2.4 / 主光 1.7 / 侧补 1.0 / 轮廓 0.7（示例图那种柔和过渡，不是硬光）；
+  - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）；
+  - **辅助对象过滤**：Unity/Max 导出的 FBX 常带 Dummy、locator、IK 目标、线框 gizmo、相机/灯光辅助物，
+    常规 3D 工具默认不显示；载入时按「对象类型（Line/Points/Sprite/Camera/Light）+ 命名（dummy|helper|
+    locator|marker|gizmo|collider|probe|reference|placeholder）」隐藏，**骨骼与网格永不触碰**
+    （`core/viewer/auxiliary.ts`，纯函数可测）；
+  - 下拉仍可切 `default` 看贴图，`wireframe/skeleton/bones-overlay` 不变；截图管线缺省模式保持
+    `default`（AI 链路不变），需要素模时显式传 `mode:"solid"`。
 
 #### 6.10.3 动画时间轴 + 强度曲线（M6e 核心）
 

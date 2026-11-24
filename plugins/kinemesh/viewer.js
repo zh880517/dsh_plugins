@@ -46892,6 +46892,34 @@ void main() {
 		return Math.min(high, Math.max(low, value));
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/auxiliary.ts
+	/** 这些 three 对象类型在 3D 软件里都属于「辅助显示」 */
+	var AUX_OBJECT_TYPES = /* @__PURE__ */ new Set([
+		"Line",
+		"LineSegments",
+		"LineLoop",
+		"Points",
+		"Sprite",
+		"Camera",
+		"Light"
+	]);
+	/** 名字里带这些词的通常是 Dummy / locator / IK 目标 / 碰撞体 / 参考物（按词边界匹配，避免误伤 helmet 等） */
+	var AUX_NAME_PATTERN = /(?:^|[^a-z])(dummy|helper|locator|marker|gizmo|collider|probe|reference|placeholder)(?:$|[^a-z])/i;
+	/** 判断单个对象是否为辅助对象（骨骼一律 false） */
+	function isAuxiliaryObject(object) {
+		if (object.isBone === true) return false;
+		if (AUX_OBJECT_TYPES.has(object.type)) return true;
+		return object.name !== "" && AUX_NAME_PATTERN.test(object.name);
+	}
+	/** 收集整棵树里的辅助对象（保持遍历顺序；调用方负责隐藏） */
+	function collectAuxiliaryObjects(root) {
+		const found = [];
+		root.traverse((child) => {
+			if (child !== root && isAuxiliaryObject(child)) found.push(child);
+		});
+		return found;
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/material.ts
 	/** 兜底中性灰：亮到能在深色舞台上看清轮廓，又不至于过曝 */
 	var PREVIEW_FALLBACK_COLOR = 12173516;
@@ -46955,26 +46983,36 @@ void main() {
 		renderer.domElement.style.display = "block";
 		container.appendChild(renderer.domElement);
 		const scene = new Scene();
-		scene.background = new Color(options.background ?? 2303531);
+		scene.background = new Color(options.background ?? 3290943);
 		const camera = new PerspectiveCamera(40, width / height, .001, 1e6);
 		camera.position.set(2, 2, 2);
 		const controls = new OrbitControls(camera, renderer.domElement);
 		controls.enableDamping = false;
-		const ambient = new AmbientLight(16777215, 2.2);
-		const hemi = new HemisphereLight(15922943, 2764600, 2.4);
-		const keyLight = new DirectionalLight(16777215, 2.4);
+		const ambient = new AmbientLight(16777215, 2.6);
+		const hemi = new HemisphereLight(16054271, 3291202, 2.4);
+		const keyLight = new DirectionalLight(16777215, 1.7);
 		keyLight.position.set(4, 8, 6);
-		const fillLight = new DirectionalLight(14477055, 1.2);
+		const fillLight = new DirectionalLight(15002879, 1);
 		fillLight.position.set(-6, 3, -4);
-		const rimLight = new DirectionalLight(16777215, .9);
+		const rimLight = new DirectionalLight(16777215, .7);
 		rimLight.position.set(0, -4, -6);
 		scene.add(ambient, hemi, keyLight, fillLight, rimLight);
-		let grid = new GridHelper(10, 10, 5593699, 3817029);
+		let grid = new GridHelper(10, 20, 5660008, 4541268);
+		const axisLength = 5;
+		const axisX = new Line(new BufferGeometry().setFromPoints([new Vector3(-5, 0, 0), new Vector3(axisLength, 0, 0)]), new LineBasicMaterial({ color: 11818319 }));
+		const axisZ = new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, -5), new Vector3(0, 0, axisLength)]), new LineBasicMaterial({ color: 5207220 }));
+		grid.add(axisX, axisZ);
 		scene.add(grid);
-		/** solid 素模模式共享材质（0.6.5）：中性灰 + 受光照，保证任何资产都能看清轮廓 */
-		const solidMaterial = new MeshLambertMaterial({ color: 13620960 });
+		/** solid 素模模式共享材质：中性灰 + 受光照，常规 3D 工具的 solid shading。
+		*  DoubleSide：游戏资产常为单面，头发/裙摆从背面看会破洞。 */
+		const solidMaterial = new MeshLambertMaterial({
+			color: 13817563,
+			side: 2
+		});
 		/** 贴图异步复查定时器（换模型/卸载时清理） */
 		let textureCheckTimer = null;
+		/** FBX 自带辅助对象（Dummy/locator/线框 gizmo 等），载入时隐藏（常规 3D 工具同样不显示） */
+		let suppressedAux = [];
 		let model = null;
 		let modelRawClips = [];
 		let mixer = null;
@@ -47038,6 +47076,7 @@ void main() {
 			actions = /* @__PURE__ */ new Map();
 			activeAction = null;
 			skeletons = [];
+			suppressedAux = [];
 		}
 		function applyMode() {
 			if (model === null) return;
@@ -47095,6 +47134,8 @@ void main() {
 					});
 					renderer.render(scene, camera);
 				}, 1200);
+				suppressedAux = collectAuxiliaryObjects(model);
+				for (const aux of suppressedAux) aux.visible = false;
 				scene.add(model);
 				namedObjects = /* @__PURE__ */ new Map();
 				model.traverse((child) => {

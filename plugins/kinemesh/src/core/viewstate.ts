@@ -203,8 +203,10 @@ function clamp(value: number, low: number, high: number): number {
 function parseMode(input: unknown): ViewMode {
   if (input === undefined || input === null) return 'default';
   const value = String(input);
-  if (value === 'default' || value === 'wireframe' || value === 'skeleton' || value === 'bones-overlay') return value;
-  throw new KinemeshError(`未知渲染模式「${value}」。`, '可选值：default / wireframe / skeleton / bones-overlay。');
+  if (value === 'default' || value === 'solid' || value === 'wireframe' || value === 'skeleton' || value === 'bones-overlay') {
+    return value;
+  }
+  throw new KinemeshError(`未知渲染模式「${value}」。`, '可选值：default / solid / wireframe / skeleton / bones-overlay。');
 }
 
 function parseClip(input: unknown, clips: string[]): string | null {

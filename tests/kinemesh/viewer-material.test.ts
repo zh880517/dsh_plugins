@@ -1,3 +1,4 @@
+import { collectAuxiliaryObjects } from '../../plugins/kinemesh/src/core/viewer/auxiliary.js';
 // 预览材质兜底（0.6.4）单测：真实 Unity/Max 导出资产在预览里呈纯黑剪影的两种成因。
 // 纯函数模块（core/viewer/material.ts），不依赖 WebGL，Node 直测。
 import { describe, expect, it } from 'vitest';
@@ -85,5 +86,54 @@ describe('预览材质兜底：纯黑材质（贴图缺失/解码失败）', () 
     const material = new THREE.MeshStandardMaterial({ color: 0x0a0a0a });
     expect(normalizePreviewMaterial(material)).toBe(true);
     expect(material.color.getHex()).toBe(PREVIEW_FALLBACK_COLOR);
+  });
+});
+
+describe('辅助对象过滤（0.6.6：常规 3D 工具不显示 Dummy/locator 杂线）', () => {
+  it('线/点/精灵类型被收集；普通网格不被收集', () => {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+    mesh.name = 'body';
+    const line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial());
+    const points = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial());
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial());
+    root.add(mesh, line, points, sprite);
+    const found = collectAuxiliaryObjects(root);
+    expect(found).toContain(line);
+    expect(found).toContain(points);
+    expect(found).toContain(sprite);
+    expect(found).not.toContain(mesh);
+  });
+
+  it('命名含 dummy/locator/helper/collider 的对象被收集（大小写不敏感）', () => {
+    const root = new THREE.Group();
+    const objects = ['Dummy_Root', 'locator_hand', 'IK_Helper', 'COL_Head_Collider', 'Sphere001'].map((name) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+      mesh.name = name;
+      return mesh;
+    });
+    root.add(...objects);
+    expect(collectAuxiliaryObjects(root).map((item) => item.name)).toEqual([
+      'Dummy_Root',
+      'locator_hand',
+      'IK_Helper',
+      'COL_Head_Collider',
+    ]);
+  });
+
+  it('骨骼永不进入名单（蒙皮依赖骨骼层级）', () => {
+    const root = new THREE.Group();
+    const bone = new THREE.Bone();
+    bone.name = 'Dummy_Bone';
+    root.add(bone);
+    expect(collectAuxiliaryObjects(root)).toEqual([]);
+  });
+
+  it('名字只是包含子串（helmet）不误伤', () => {
+    const root = new THREE.Group();
+    const helmet = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+    helmet.name = 'helmet';
+    root.add(helmet);
+    expect(collectAuxiliaryObjects(root)).toEqual([]);
   });
 });
