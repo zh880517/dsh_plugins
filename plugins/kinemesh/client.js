@@ -40546,6 +40546,112 @@ function applyRootMotionLock(entries, lock) {
 }
 //#endregion
 //#region
+/**
+* @param labelHeight 标签高度（相对轴长 1 的比例，最终随 worldLength 一起缩放）
+*/
+function createRootAxes(labelHeight = .3) {
+	const group = new Group();
+	group.renderOrder = 997;
+	const axes = [
+		{
+			to: [
+				1,
+				0,
+				0
+			],
+			color: AXIS_COLORS.x,
+			text: "X",
+			textColor: AXIS_LABEL_COLORS.x
+		},
+		{
+			to: [
+				0,
+				1,
+				0
+			],
+			color: AXIS_COLORS.y,
+			text: "Y",
+			textColor: AXIS_LABEL_COLORS.y
+		},
+		{
+			to: [
+				0,
+				0,
+				1
+			],
+			color: AXIS_COLORS.z,
+			text: "Z",
+			textColor: AXIS_LABEL_COLORS.z
+		}
+	];
+	for (const axis of axes) {
+		const line = new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, 0), new Vector3(...axis.to)]), new LineBasicMaterial({
+			color: axis.color,
+			depthTest: false,
+			transparent: true
+		}));
+		line.renderOrder = 997;
+		group.add(line);
+		const label = makeLabelSprite(axis.text, axis.textColor, labelHeight);
+		if (label !== null) {
+			label.position.set(axis.to[0] * 1.12, axis.to[1] * 1.12, axis.to[2] * 1.12);
+			group.add(label);
+		}
+	}
+	group.visible = false;
+	const scratchPosition = new Vector3();
+	const scratchQuaternion = new Quaternion();
+	return {
+		group,
+		update(node, worldLength) {
+			if (node === null) {
+				group.visible = false;
+				return;
+			}
+			node.getWorldPosition(scratchPosition);
+			node.getWorldQuaternion(scratchQuaternion);
+			group.position.copy(scratchPosition);
+			group.quaternion.copy(scratchQuaternion);
+			group.scale.setScalar(Math.max(worldLength, 1e-4));
+			group.visible = true;
+		}
+	};
+}
+/** 轴端字母精灵（深色描边 + 主题外的高对比配色，压过模型与网格） */
+function makeLabelSprite(text, color, labelHeight) {
+	if (typeof document === "undefined") return null;
+	const px = 64;
+	const canvas = document.createElement("canvas");
+	const probe = canvas.getContext("2d");
+	if (probe === null) return null;
+	const font = `700 46px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif`;
+	probe.font = font;
+	const textWidth = Math.ceil(probe.measureText(text).width);
+	canvas.width = Math.max(textWidth + 14, px);
+	canvas.height = px;
+	const ctx = canvas.getContext("2d");
+	if (ctx === null) return null;
+	ctx.font = font;
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.lineWidth = 6;
+	ctx.strokeStyle = "rgba(14, 16, 20, 0.9)";
+	ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 2);
+	ctx.fillStyle = color;
+	ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+	const texture = new CanvasTexture(canvas);
+	texture.colorSpace = SRGBColorSpace;
+	const sprite = new Sprite(new SpriteMaterial({
+		map: texture,
+		transparent: true,
+		depthTest: false
+	}));
+	sprite.scale.set(labelHeight * canvas.width / canvas.height, labelHeight, 1);
+	sprite.renderOrder = 998;
+	return sprite;
+}
+//#endregion
+//#region
 /** 为刚载入的模型建骨架线（先隐藏，由 applyMode 按模式显示） */
 function createSkeletonHelpers(root) {
 	const helper = new SkeletonHelper(root);
@@ -40632,6 +40738,20 @@ function mountViewer(container, options = {}) {
 	const axisGizmo = createAxisGuides(1, .5);
 	axisScene.add(...axisGizmo.lines, ...axisGizmo.labels);
 	const axisCamera = new OrthographicCamera(-1.6, 1.6, 1.6, -1.6, .01, 20);
+	const rootAxes = options.rootAxes === true ? createRootAxes(.45) : null;
+	/** 根节点轴开关（面板勾选框控制；创建与否由 mount 选项决定） */
+	let rootAxesEnabled = options.rootAxes === true;
+	if (rootAxes !== null) scene.add(rootAxes.group);
+	function updateRootAxes() {
+		if (rootAxes === null) return;
+		if (!rootAxesEnabled) {
+			rootAxes.group.visible = false;
+			return;
+		}
+		const node = rootPose[0]?.node ?? model;
+		const worldLength = Math.max(bounds.radius * .3, 1e-4);
+		rootAxes.update(node, worldLength);
+	}
 	/** 主场景渲染 + 左下角轴指示器（所有立即出帧路径都走这里，保证截图/预览一致） */
 	function renderFrame() {
 		renderer.autoClear = true;
@@ -40716,6 +40836,7 @@ function mountViewer(container, options = {}) {
 				mixer.setTime(frame / 30);
 				applyRootMotionLock(rootPose, rootMotionLock);
 			}
+			updateRootAxes();
 			controls.update();
 			positionBoneLabels();
 			renderFrame();
@@ -40861,6 +40982,7 @@ function mountViewer(container, options = {}) {
 			playing = false;
 			applyMode();
 			updateClipPlanes();
+			updateRootAxes();
 		},
 		applyView(view) {
 			const position = cameraPosition(view.camera);
@@ -40893,6 +41015,7 @@ function mountViewer(container, options = {}) {
 				}
 			}
 			applyRootMotionLock(rootPose, rootMotionLock);
+			updateRootAxes();
 			renderFrame();
 		},
 		getViewState() {
@@ -40946,10 +41069,19 @@ function mountViewer(container, options = {}) {
 				rotation: lock.rotation === true
 			};
 			applyRootMotionLock(rootPose, rootMotionLock);
+			updateRootAxes();
 			renderFrame();
 		},
 		rootMotionAvailable() {
 			return rootPose.length > 0;
+		},
+		setRootAxesVisible(visible) {
+			rootAxesEnabled = visible === true;
+			updateRootAxes();
+			renderFrame();
+		},
+		rootAxesAvailable() {
+			return rootAxes !== null;
 		},
 		seekFrame(requested) {
 			if (mixer === null) {
@@ -40976,6 +41108,7 @@ function mountViewer(container, options = {}) {
 			if (action.paused) action.paused = false;
 			mixer.setTime(frame / 30);
 			applyRootMotionLock(rootPose, rootMotionLock);
+			updateRootAxes();
 			renderFrame();
 			ensureRenderLoop();
 			return new Promise((resolve) => {
@@ -48217,6 +48350,8 @@ var ZH_TEXTS = {
 	"root.translationTitle": "锁定根位移：角色留在原地播放（冲刺/突进等带位移的动作不再跑出画面）",
 	"root.rotation": "锁定旋转",
 	"root.rotationTitle": "锁定根朝向：转身类动作不再改变角色朝向（与锁定位移可分别开启）",
+	"rootAxes.label": "根节点轴",
+	"rootAxes.title": "在角色根节点处显示 XYZ 参考轴（X 红 / Y 绿 / Z 蓝）：看根节点在哪、朝向如何",
 	"pane.load": "加载",
 	"pane.loading": "加载中…",
 	"pane.staticClip": "（静态）",
@@ -48273,6 +48408,8 @@ var EN_TEXTS = {
 	"root.translationTitle": "Lock root translation: play in place (dashes no longer leave the frame)",
 	"root.rotation": "lock turn",
 	"root.rotationTitle": "Lock root rotation: turning actions keep the initial facing (independent of move lock)",
+	"rootAxes.label": "root axes",
+	"rootAxes.title": "Show XYZ axes at the character root node (X red / Y green / Z blue)",
 	"pane.load": "Load",
 	"pane.loading": "Loading…",
 	"pane.staticClip": "(static)",
@@ -48768,6 +48905,8 @@ function PreviewPane(props) {
 	});
 	/** 当前模型是否有可锁的 root motion（纯静态/无动画时禁用这两个开关） */
 	const [rootAvailable, setRootAvailable] = react.useState(false);
+	/** 角色根节点 XYZ 参考轴开关（0.9.1）：默认开，勾选框可关 */
+	const [rootAxesOn, setRootAxesOn] = react.useState(true);
 	const [viewText, setViewText] = react.useState("—");
 	const [state, setState] = react.useState({
 		phase: "empty",
@@ -48804,7 +48943,7 @@ function PreviewPane(props) {
 	}, [surface, bonesOn]);
 	react.useEffect(() => {
 		if (hostRef.current === null) return void 0;
-		const viewer = mountViewer(hostRef.current);
+		const viewer = mountViewer(hostRef.current, { rootAxes: true });
 		viewerRef.current = viewer;
 		return () => {
 			if (autoModeTimerRef.current !== null) {
@@ -48951,6 +49090,9 @@ function PreviewPane(props) {
 			setRootAvailable(available);
 			setRootLock(rememberedRootLock);
 			viewer.setRootMotionLock(rememberedRootLock);
+			const rememberedRootAxes = memory !== null && memory.path === target && memory.rootAxes !== void 0 ? memory.rootAxes : rootAxesOn;
+			setRootAxesOn(rememberedRootAxes);
+			viewer.setRootAxesVisible(rememberedRootAxes);
 			if (rememberedClip !== "" && startFrame > 0) viewer.seekFrame(startFrame);
 			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
 			props.onLoaded?.(target);
@@ -48980,7 +49122,8 @@ function PreviewPane(props) {
 			frame,
 			surface,
 			bones: bonesOn,
-			rootLock
+			rootLock,
+			rootAxes: rootAxesOn
 		});
 	}, [
 		props.persistKey,
@@ -48989,7 +49132,8 @@ function PreviewPane(props) {
 		frame,
 		surface,
 		bonesOn,
-		rootLock
+		rootLock,
+		rootAxesOn
 	]);
 	const restoredRef = react.useRef(false);
 	react.useEffect(() => {
@@ -49122,6 +49266,11 @@ function PreviewPane(props) {
 		setSpeed(rate);
 		viewerRef.current?.setPlaybackRate(rate);
 	};
+	/** 角色根节点 XYZ 参考轴开关（0.9.1） */
+	const toggleRootAxes = (next) => {
+		setRootAxesOn(next);
+		viewerRef.current?.setRootAxesVisible(next);
+	};
 	/** root motion 开关（0.9.0）：锁定位移 / 旋转，让带位移的动作原地播放 */
 	const changeRootLock = (patch) => {
 		const next = {
@@ -49228,7 +49377,14 @@ function PreviewPane(props) {
 		checked: rootLock.rotation,
 		disabled: !rootAvailable || clip === "",
 		onChange: (event) => changeRootLock({ rotation: event.target.checked })
-	}), translate("root.rotation"))), state.error !== null && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-banner" }, state.error), sent !== null && /* @__PURE__ */ react.createElement("div", {
+	}), translate("root.rotation")), /* @__PURE__ */ react.createElement("label", {
+		className: "kinemesh-check",
+		title: translate("rootAxes.title")
+	}, /* @__PURE__ */ react.createElement("input", {
+		type: "checkbox",
+		checked: rootAxesOn,
+		onChange: (event) => toggleRootAxes(event.target.checked)
+	}), translate("rootAxes.label"))), state.error !== null && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-banner" }, state.error), sent !== null && /* @__PURE__ */ react.createElement("div", {
 		className: "kinemesh-banner",
 		"data-kind": "ok"
 	}, sent), /* @__PURE__ */ react.createElement("div", {

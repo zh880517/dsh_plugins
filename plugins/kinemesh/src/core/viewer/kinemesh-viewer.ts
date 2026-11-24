@@ -33,6 +33,7 @@ import {
   type RootMotionLock,
   type RootPoseEntry,
 } from './root-motion.js';
+import { createRootAxes } from './root-axes.js';
 import { attachSkeletonHelpers, createSkeletonHelpers, detachSkeletonHelpers } from './skeleton-helpers.js';
 import type { CanonicalScene } from '../types.js';
 
@@ -75,6 +76,10 @@ export interface ViewerHandle {
   setRootMotionLock(lock: RootMotionLock): void;
   /** 当前模型是否有可锁的 root motion 载体（无动画/纯静态时 false，面板据此禁用开关） */
   rootMotionAvailable(): boolean;
+  /** 角色根节点 XYZ 参考轴的显示开关（0.9.1；预览面板勾选「根节点轴」用） */
+  setRootAxesVisible(visible: boolean): void;
+  /** 当前是否支持根节点参考轴（mount 时未开启 rootAxes 则为 false） */
+  rootAxesAvailable(): boolean;
   /** 跳帧：渲染完一帧后才 resolve（截图管线靠它保证确定性） */
   seekFrame(frame: number): Promise<void>;
   frameInfo(): ViewerFrameInfo | null;
@@ -112,6 +117,8 @@ export interface MountOptions {
   width?: number;
   height?: number;
   background?: number;
+  /** 在角色根节点处画 XYZ 参考轴（0.9.1，预览默认开启；截图管线不开，避免杂线干扰读图） */
+  rootAxes?: boolean;
 }
 
 export function mountViewer(container: HTMLElement, options: MountOptions = {}): ViewerHandle {
@@ -188,6 +195,23 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   const axisGizmo = createAxisGuides(1, 0.5);
   axisScene.add(...axisGizmo.lines, ...axisGizmo.labels);
   const axisCamera = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.01, 20);
+
+  // 0.9.1：角色根节点的 XYZ 参考轴（跟着根节点走；预览里默认开，截图管线不开）
+  const rootAxes = options.rootAxes === true ? createRootAxes(0.45) : null;
+  /** 根节点轴开关（面板勾选框控制；创建与否由 mount 选项决定） */
+  let rootAxesEnabled = options.rootAxes === true;
+  if (rootAxes !== null) scene.add(rootAxes.group);
+  function updateRootAxes(): void {
+    if (rootAxes === null) return;
+    if (!rootAxesEnabled) {
+      rootAxes.group.visible = false;
+      return;
+    }
+    const node = rootPose[0]?.node ?? model;
+    // 轴长 = 包围球半径的 30%（约为角色身高的 1/6），够醒目又不挡模型
+    const worldLength = Math.max(bounds.radius * 0.3, 1e-4);
+    rootAxes.update(node, worldLength);
+  }
 
   /** 主场景渲染 + 左下角轴指示器（所有立即出帧路径都走这里，保证截图/预览一致） */
   function renderFrame(): void {
@@ -272,6 +296,8 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         mixer.setTime(frame / RENDER_FPS);
         applyRootMotionLock(rootPose, rootMotionLock);
       }
+      // 根节点参考轴每帧跟随（根节点可能被动画/root motion 锁改动）
+      updateRootAxes();
       controls.update();
       positionBoneLabels();
       renderFrame();
@@ -470,6 +496,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       playing = false;
       applyMode();
       updateClipPlanes();
+      updateRootAxes();
     },
 
     applyView(view) {
@@ -507,6 +534,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       }
       // 0.9.0：root motion 开关是「观看方式」，每次应用视角后都重新套一遍并立即出帧
       applyRootMotionLock(rootPose, rootMotionLock);
+      updateRootAxes();
       renderFrame();
     },
 
@@ -561,11 +589,22 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     setRootMotionLock(lock) {
       rootMotionLock = { translation: lock.translation === true, rotation: lock.rotation === true };
       applyRootMotionLock(rootPose, rootMotionLock);
+      updateRootAxes();
       renderFrame();
     },
 
     rootMotionAvailable() {
       return rootPose.length > 0;
+    },
+
+    setRootAxesVisible(visible) {
+      rootAxesEnabled = visible === true;
+      updateRootAxes();
+      renderFrame();
+    },
+
+    rootAxesAvailable() {
+      return rootAxes !== null;
     },
 
     seekFrame(requested) {
@@ -596,6 +635,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       if (action.paused) action.paused = false;
       mixer.setTime(frame / RENDER_FPS);
       applyRootMotionLock(rootPose, rootMotionLock);
+      updateRootAxes();
       // 立即出帧：跳转必须马上可见，不能等渲染循环（循环若停过就永远等不到）
       renderFrame();
       ensureRenderLoop();

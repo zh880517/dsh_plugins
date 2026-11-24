@@ -652,6 +652,16 @@ kinemesh_analyze(path, {
       选择随面板记忆（`PaneMemory.rootLock`）恢复；
     - 实测（真实资产 + 固定机位逐帧量模型像素质心）：不锁时质心 X 漂移 502px（角色跑出画面），
       锁定位移后降至 20px（余量为姿势变化），锁定旋转对「root 无旋转轨道」的资产无副作用。
+  - **角色根节点 XYZ 参考轴 + 开关（0.9.1，用户拍板）**：在**角色根节点**的世界位置画一小段
+    X 红 / Y 绿 / Z 蓝三轴（轴端带字母），用来直视「根节点在哪、朝向如何」——和 0.8.1 左下角
+    HUD 指示器的分工是：HUD 表示**全局**朝向（固定屏幕角落），根节点轴表示**角色根节点**的位置/朝向
+    （跟着根节点走；开 root motion 时能直接看到位移，开启「锁定位移」后就定在原地）。
+    实现 `core/viewer/root-axes.ts`（纯对象操作 + 单测）：单位长度的三轴线 + 字母 Sprite 组成 group，
+    `update(node, worldLength)` 取节点 `getWorldPosition/getWorldQuaternion` 跟随、`scale = worldLength`；
+    轴长 = 包围球半径 × 0.3（约身高的 1/6），线 `depthTest:false` 保证根节点在模型体内（骨盆/脚下）
+    时也看得见。工具栏加勾选框「根节点轴」（默认开，可关；`viewer.setRootAxesVisible`，
+    mount 选项 `rootAxes` 决定是否创建——**截图管线不创建**，避免杂线干扰 AI 读图）。
+    选择随面板记忆（`PaneMemory.rootAxes`）恢复；无模型时自动隐藏。
   - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）。**所有渲染模式都显示**
     （0.6.10：`default / solid / wireframe / skeleton / bones-overlay` 一视同仁——线框与骨架
     模式下同样需要地面/轴向参照；地面不参与包围盒，显示与否不影响机位适配）；

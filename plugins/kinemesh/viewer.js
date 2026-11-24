@@ -47315,6 +47315,112 @@ void main() {
 		return true;
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/root-axes.ts
+	/**
+	* @param labelHeight 标签高度（相对轴长 1 的比例，最终随 worldLength 一起缩放）
+	*/
+	function createRootAxes(labelHeight = .3) {
+		const group = new Group();
+		group.renderOrder = 997;
+		const axes = [
+			{
+				to: [
+					1,
+					0,
+					0
+				],
+				color: AXIS_COLORS.x,
+				text: "X",
+				textColor: AXIS_LABEL_COLORS.x
+			},
+			{
+				to: [
+					0,
+					1,
+					0
+				],
+				color: AXIS_COLORS.y,
+				text: "Y",
+				textColor: AXIS_LABEL_COLORS.y
+			},
+			{
+				to: [
+					0,
+					0,
+					1
+				],
+				color: AXIS_COLORS.z,
+				text: "Z",
+				textColor: AXIS_LABEL_COLORS.z
+			}
+		];
+		for (const axis of axes) {
+			const line = new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, 0), new Vector3(...axis.to)]), new LineBasicMaterial({
+				color: axis.color,
+				depthTest: false,
+				transparent: true
+			}));
+			line.renderOrder = 997;
+			group.add(line);
+			const label = makeLabelSprite(axis.text, axis.textColor, labelHeight);
+			if (label !== null) {
+				label.position.set(axis.to[0] * 1.12, axis.to[1] * 1.12, axis.to[2] * 1.12);
+				group.add(label);
+			}
+		}
+		group.visible = false;
+		const scratchPosition = new Vector3();
+		const scratchQuaternion = new Quaternion();
+		return {
+			group,
+			update(node, worldLength) {
+				if (node === null) {
+					group.visible = false;
+					return;
+				}
+				node.getWorldPosition(scratchPosition);
+				node.getWorldQuaternion(scratchQuaternion);
+				group.position.copy(scratchPosition);
+				group.quaternion.copy(scratchQuaternion);
+				group.scale.setScalar(Math.max(worldLength, 1e-4));
+				group.visible = true;
+			}
+		};
+	}
+	/** 轴端字母精灵（深色描边 + 主题外的高对比配色，压过模型与网格） */
+	function makeLabelSprite(text, color, labelHeight) {
+		if (typeof document === "undefined") return null;
+		const px = 64;
+		const canvas = document.createElement("canvas");
+		const probe = canvas.getContext("2d");
+		if (probe === null) return null;
+		const font = `700 46px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif`;
+		probe.font = font;
+		const textWidth = Math.ceil(probe.measureText(text).width);
+		canvas.width = Math.max(textWidth + 14, px);
+		canvas.height = px;
+		const ctx = canvas.getContext("2d");
+		if (ctx === null) return null;
+		ctx.font = font;
+		ctx.textAlign = "center";
+		ctx.textBaseline = "middle";
+		ctx.lineWidth = 6;
+		ctx.strokeStyle = "rgba(14, 16, 20, 0.9)";
+		ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 2);
+		ctx.fillStyle = color;
+		ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+		const texture = new CanvasTexture(canvas);
+		texture.colorSpace = SRGBColorSpace;
+		const sprite = new Sprite(new SpriteMaterial({
+			map: texture,
+			transparent: true,
+			depthTest: false
+		}));
+		sprite.scale.set(labelHeight * canvas.width / canvas.height, labelHeight, 1);
+		sprite.renderOrder = 998;
+		return sprite;
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/skeleton-helpers.ts
 	/** 为刚载入的模型建骨架线（先隐藏，由 applyMode 按模式显示） */
 	function createSkeletonHelpers(root) {
@@ -47402,6 +47508,20 @@ void main() {
 		const axisGizmo = createAxisGuides(1, .5);
 		axisScene.add(...axisGizmo.lines, ...axisGizmo.labels);
 		const axisCamera = new OrthographicCamera(-1.6, 1.6, 1.6, -1.6, .01, 20);
+		const rootAxes = options.rootAxes === true ? createRootAxes(.45) : null;
+		/** 根节点轴开关（面板勾选框控制；创建与否由 mount 选项决定） */
+		let rootAxesEnabled = options.rootAxes === true;
+		if (rootAxes !== null) scene.add(rootAxes.group);
+		function updateRootAxes() {
+			if (rootAxes === null) return;
+			if (!rootAxesEnabled) {
+				rootAxes.group.visible = false;
+				return;
+			}
+			const node = rootPose[0]?.node ?? model;
+			const worldLength = Math.max(bounds.radius * .3, 1e-4);
+			rootAxes.update(node, worldLength);
+		}
 		/** 主场景渲染 + 左下角轴指示器（所有立即出帧路径都走这里，保证截图/预览一致） */
 		function renderFrame() {
 			renderer.autoClear = true;
@@ -47486,6 +47606,7 @@ void main() {
 					mixer.setTime(frame / 30);
 					applyRootMotionLock(rootPose, rootMotionLock);
 				}
+				updateRootAxes();
 				controls.update();
 				positionBoneLabels();
 				renderFrame();
@@ -47631,6 +47752,7 @@ void main() {
 				playing = false;
 				applyMode();
 				updateClipPlanes();
+				updateRootAxes();
 			},
 			applyView(view) {
 				const position = cameraPosition(view.camera);
@@ -47663,6 +47785,7 @@ void main() {
 					}
 				}
 				applyRootMotionLock(rootPose, rootMotionLock);
+				updateRootAxes();
 				renderFrame();
 			},
 			getViewState() {
@@ -47716,10 +47839,19 @@ void main() {
 					rotation: lock.rotation === true
 				};
 				applyRootMotionLock(rootPose, rootMotionLock);
+				updateRootAxes();
 				renderFrame();
 			},
 			rootMotionAvailable() {
 				return rootPose.length > 0;
+			},
+			setRootAxesVisible(visible) {
+				rootAxesEnabled = visible === true;
+				updateRootAxes();
+				renderFrame();
+			},
+			rootAxesAvailable() {
+				return rootAxes !== null;
 			},
 			seekFrame(requested) {
 				if (mixer === null) {
@@ -47746,6 +47878,7 @@ void main() {
 				if (action.paused) action.paused = false;
 				mixer.setTime(frame / 30);
 				applyRootMotionLock(rootPose, rootMotionLock);
+				updateRootAxes();
 				renderFrame();
 				ensureRenderLoop();
 				return new Promise((resolve) => {

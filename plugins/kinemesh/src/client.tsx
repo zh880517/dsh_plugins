@@ -35,6 +35,8 @@ export interface PaneMemory {
   bones: boolean;
   /** root motion 开关（0.9.0）：锁定位移 / 锁定旋转，让带位移的动作原地播放 */
   rootLock?: { translation: boolean; rotation: boolean };
+  /** 角色根节点 XYZ 参考轴开关（0.9.1） */
+  rootAxes?: boolean;
 }
 
 /** 面板的表面选项（不含 `none`：「不画网格」只出现在无 mesh 模型身上，由骨架叠加自然覆盖） */
@@ -155,6 +157,8 @@ const ZH_TEXTS: Record<string, string> = {
   'root.translationTitle': '锁定根位移：角色留在原地播放（冲刺/突进等带位移的动作不再跑出画面）',
   'root.rotation': '锁定旋转',
   'root.rotationTitle': '锁定根朝向：转身类动作不再改变角色朝向（与锁定位移可分别开启）',
+  'rootAxes.label': '根节点轴',
+  'rootAxes.title': '在角色根节点处显示 XYZ 参考轴（X 红 / Y 绿 / Z 蓝）：看根节点在哪、朝向如何',
   'pane.load': '加载',
   'pane.loading': '加载中…',
   'pane.staticClip': '（静态）',
@@ -211,6 +215,8 @@ const EN_TEXTS: Record<string, string> = {
   'root.translationTitle': 'Lock root translation: play in place (dashes no longer leave the frame)',
   'root.rotation': 'lock turn',
   'root.rotationTitle': 'Lock root rotation: turning actions keep the initial facing (independent of move lock)',
+  'rootAxes.label': 'root axes',
+  'rootAxes.title': 'Show XYZ axes at the character root node (X red / Y green / Z blue)',
   'pane.load': 'Load',
   'pane.loading': 'Loading…',
   'pane.staticClip': '(static)',
@@ -820,6 +826,8 @@ function PreviewPane(props: {
   });
   /** 当前模型是否有可锁的 root motion（纯静态/无动画时禁用这两个开关） */
   const [rootAvailable, setRootAvailable] = React.useState(false);
+  /** 角色根节点 XYZ 参考轴开关（0.9.1）：默认开，勾选框可关 */
+  const [rootAxesOn, setRootAxesOn] = React.useState(true);
   const [viewText, setViewText] = React.useState('—');
   const [state, setState] = React.useState<LoadState>({ phase: 'empty', error: null, clips: [], maxFrame: 0 });
   const [analysis, setAnalysis] = React.useState<{ loading: boolean; data: AnalysisPayload | null }>({
@@ -848,7 +856,8 @@ function PreviewPane(props: {
   React.useEffect(() => {
     if (hostRef.current === null) return undefined;
     // 0.6.0：不传固定宽高 → viewer 跟随容器尺寸（独立页全宽/页签/浮层自适应，ResizeObserver 生效）
-    const viewer = mountViewer(hostRef.current);
+    // 0.9.1：预览开启「角色根节点 XYZ 参考轴」（截图管线不开，避免杂线干扰读图）
+    const viewer = mountViewer(hostRef.current, { rootAxes: true });
     viewerRef.current = viewer;
     return () => {
       if (autoModeTimerRef.current !== null) {
@@ -991,6 +1000,11 @@ function PreviewPane(props: {
       setRootAvailable(available);
       setRootLock(rememberedRootLock);
       viewer.setRootMotionLock(rememberedRootLock);
+      // 0.9.1：根节点参考轴开关（同路径记忆优先，否则默认开）
+      const rememberedRootAxes =
+        memory !== null && memory.path === target && memory.rootAxes !== undefined ? memory.rootAxes : rootAxesOn;
+      setRootAxesOn(rememberedRootAxes);
+      viewer.setRootAxesVisible(rememberedRootAxes);
       if (rememberedClip !== '' && startFrame > 0) viewer.seekFrame(startFrame);
       if (props.sessionId !== '') previewSession.markUsed(props.sessionId);
       props.onLoaded?.(target);
@@ -1005,8 +1019,8 @@ function PreviewPane(props: {
   // 状态记忆（0.6.0：切到别的侧边栏面板/页签再回来，已加载模型与进度不丢；进程内内存，重启清空）
   React.useEffect(() => {
     if (props.persistKey === undefined || loadedPath === '') return;
-    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, surface, bones: bonesOn, rootLock });
-  }, [props.persistKey, loadedPath, clip, frame, surface, bonesOn, rootLock]);
+    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, surface, bones: bonesOn, rootLock, rootAxes: rootAxesOn });
+  }, [props.persistKey, loadedPath, clip, frame, surface, bonesOn, rootLock, rootAxesOn]);
 
   // 首次挂载恢复上次的模型（必须在 load 定义之后）
   const restoredRef = React.useRef(false);
@@ -1146,6 +1160,12 @@ function PreviewPane(props: {
     viewerRef.current?.setPlaybackRate(rate);
   };
 
+  /** 角色根节点 XYZ 参考轴开关（0.9.1） */
+  const toggleRootAxes = (next: boolean): void => {
+    setRootAxesOn(next);
+    viewerRef.current?.setRootAxesVisible(next);
+  };
+
   /** root motion 开关（0.9.0）：锁定位移 / 旋转，让带位移的动作原地播放 */
   const changeRootLock = (patch: { translation?: boolean; rotation?: boolean }): void => {
     const next = {
@@ -1268,6 +1288,11 @@ function PreviewPane(props: {
             onChange={(event) => changeRootLock({ rotation: event.target.checked })}
           />
           {translate('root.rotation')}
+        </label>
+        {/* 0.9.1：角色根节点 XYZ 参考轴开关 */}
+        <label className="kinemesh-check" title={translate('rootAxes.title')}>
+          <input type="checkbox" checked={rootAxesOn} onChange={(event) => toggleRootAxes(event.target.checked)} />
+          {translate('rootAxes.label')}
         </label>
       </div>
       {state.error !== null && <div className="kinemesh-banner">{state.error}</div>}
