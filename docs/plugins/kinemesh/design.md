@@ -828,7 +828,7 @@ viewer 的 setTime 走同一求值链路）。
 | # | 条件 | label | guess |
 |---|---|---|---|
 | 1 | airRatio > 0.5 | airborne | 段内 hips 最高 − 段首 ≥ 0.05H（hipsRise）→ `jump`；否则 `fall`（落回原高的跳跃仍判 jump） |
-| 2 | peakJointSpeed ≥ 3×max(rootSpeed, 0.1) ∧ meanE ≥ 0.8 ∧ dur ≤ 0.8s ∧ turnNet < 120° ∧ peakJoint ∈ {Hand, LowerArm} | action | `strike-punch`（末端主导） |
+| 2 | peakJointSpeed ≥ 3×max(rootSpeed, 0.1) ∧ meanE ≥ 0.8 ∧ dur ≤ 0.8s ∧ turnNet < 200° ∧ peakJoint ∈ {Hand, LowerArm} | action | `strike-punch`（末端主导） |
 | 3 | 同 #2 但 peakJoint ∈ {Foot, LowerLeg, Toe} | action | `strike-kick`（末端主导） |
 | 4 | rootSpeed ≥ 1.2 H/s | contact-move | `run` |
 | 5 | rootSpeed ≥ 0.3 ∧ bodyDir = back | contact-move | `backpedal`（倒退走） |
@@ -937,7 +937,7 @@ renderRecipe = 帧列表 × [front, side] × 模式 skeleton（digest 同时给 
 | ROOT_DISP_TH / HEADING_TH / VEL_SEAM_TH | 0.05 / 10° / 0.10 | A.10 |
 | LOOP_GRID / LOOP_MIN_SECONDS / LOOP_PASS | 300 / 0.5s / 1.5 | A.10 |
 | STRIKE_PEAK / STRIKE_DUR | 2.0 / 0.8s | A.8 |
-| STRIKE_DOMINANCE / STRIKE_TURN_NET_MAX | 3 / 120° | A.8 #2/#3 |
+| STRIKE_DOMINANCE / STRIKE_TURN_NET_MAX | 3 / 200° | A.8 #2/#3 |
 | RUN_SPEED / WALK_SPEED / TURN_TH | 1.2 / 0.3 H/s / 45° | A.8 |
 | SPIN_TH | 270° | A.7/A.8 |
 | 强度档位表 | §6.6.2 五档 | A.9 |

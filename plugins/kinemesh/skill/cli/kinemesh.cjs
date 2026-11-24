@@ -31641,11 +31641,11 @@ function describeSegments(channels, sample, ranges, options = {}) {
 				guess = "fall";
 				basis = `腾空占比 ${percentileBasis(airRatio)}，hips 未显著升高（${percentileBasis(hipsRise)}）`;
 			}
-		} else if (peakJointSpeed >= 3 * Math.max(rootSpeed, .1) && meanE >= .8 && dur <= .8 && turnNet < 120 && STRIKE_PUNCH_JOINTS.has(peakJoint.id)) {
+		} else if (peakJointSpeed >= 3 * Math.max(rootSpeed, .1) && meanE >= .8 && dur <= .8 && turnNet < 200 && STRIKE_PUNCH_JOINTS.has(peakJoint.id)) {
 			label = "action";
 			guess = "strike-punch";
 			basis = `末端主导：${peakJoint.id} 峰值 ${percentileBasis(peakJointSpeed)} H/s ≥ 3× 根速度（${percentileBasis(rootSpeed)}）`;
-		} else if (peakJointSpeed >= 3 * Math.max(rootSpeed, .1) && meanE >= .8 && dur <= .8 && turnNet < 120 && STRIKE_KICK_JOINTS.has(peakJoint.id)) {
+		} else if (peakJointSpeed >= 3 * Math.max(rootSpeed, .1) && meanE >= .8 && dur <= .8 && turnNet < 200 && STRIKE_KICK_JOINTS.has(peakJoint.id)) {
 			label = "action";
 			guess = "strike-kick";
 			basis = `末端主导：${peakJoint.id} 峰值 ${percentileBasis(peakJointSpeed)} H/s ≥ 3× 根速度（${percentileBasis(rootSpeed)}）`;

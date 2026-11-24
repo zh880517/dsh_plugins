@@ -58,8 +58,9 @@ export const STRIKE_PEAK = 2.0;
 export const STRIKE_DUR = 0.8;
 /** 末端主导 strike 前置判据（A.8 #2/#3，0.5.1）：peakJointSpeed ≥ 该倍数 × max(rootSpeed, 0.1) */
 export const STRIKE_DOMINANCE = 3;
-/** 末端主导 strike 的高转向豁免（A.8 #2/#3）：净转角 ≥ 此值的段仍按 turn/spin 判（旋转类动作） */
-export const STRIKE_TURN_NET_MAX = 120;
+/** 末端主导 strike 的高转向豁免（A.8 #2/#3）：净转角 ≥ 此值的段仍按 turn/spin 判（旋转类动作）。
+ *  200° = 真实资产校准（attack 系列 118–160° 命中 strike；turnTotal ≥ 270° 的旋转类走 spin） */
+export const STRIKE_TURN_NET_MAX = 200;
 export const RUN_SPEED = 1.2;
 export const WALK_SPEED = 0.3;
 export const TURN_TH = 45;

@@ -146,7 +146,7 @@ const SNAPSHOTS: Record<string, ConstantsExpectations> = {
       STRIKE_PEAK: 2.0,
       STRIKE_DUR: 0.8,
       STRIKE_DOMINANCE: 3,
-      STRIKE_TURN_NET_MAX: 120,
+      STRIKE_TURN_NET_MAX: 200,
       RUN_SPEED: 1.2,
       WALK_SPEED: 0.3,
       TURN_TH: 45,
