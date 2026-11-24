@@ -350,13 +350,52 @@ function SessionCapture({ sessionId, store }: { sessionId: string; store: typeof
   return null;
 }
 
-// ———————— 强度曲线时间轴（§6.10.3）：曲线 + 播放头 + 分段色带 + 循环高亮 ————————
+// ———————— 强度曲线时间轴（§6.10.3）：曲线 + 播放头 + 分段色带 + 循环高亮 + 帧号刻度 ————————
 
 const TIMELINE_VB_W = 600;
-const TIMELINE_VB_H = 44;
+const TIMELINE_VB_H = 48;
 const TIMELINE_CURVE_H = 28;
 const TIMELINE_BAND_TOP = 32;
 const TIMELINE_BAND_H = 9;
+/** 刻度线所在区间（色带下方），刻度文字用 HTML 层（SVG 横向拉伸会把文字压扁） */
+const TIMELINE_TICK_TOP = 42;
+const TIMELINE_TICK_BOTTOM = 47;
+
+/** 刻度步长候选（帧）：1/2/5/10/15/30 秒级常用档，往后按 30fps 的整秒/多秒延伸 */
+const TICK_STEPS = [1, 2, 5, 10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1800] as const;
+
+/** 标签数上限（含首尾）：超过会让短动作的刻度挤成一团 */
+const TICK_MAX_LABELS = 9;
+
+/**
+ * 自适应刻度步长（0.6.3）：帧数很少时（如 16 帧）用 1/2 帧步长，长动作自动放大步长，
+ * 保证标签数 ≤ TICK_MAX_LABELS。maxFrame ≤ 0 返回 1。
+ */
+export function computeTickStep(maxFrame: number): number {
+  const span = Math.max(0, Math.floor(maxFrame));
+  for (const step of TICK_STEPS) {
+    if (Math.floor(span / step) + 1 <= TICK_MAX_LABELS) return step;
+  }
+  return TICK_STEPS[TICK_STEPS.length - 1]!;
+}
+
+/**
+ * 刻度帧号列表（0.6.3）：0 起按步长递增，末帧补上；与上一步距离过近时用末帧替换，避免标签重叠。
+ * 结果恒升序、去重。
+ */
+export function frameTicks(maxFrame: number, step?: number): number[] {
+  const span = Math.max(0, Math.floor(maxFrame));
+  const size = step ?? computeTickStep(span);
+  const ticks: number[] = [];
+  for (let frame = 0; frame <= span; frame += size) ticks.push(frame);
+  const last = ticks[ticks.length - 1] ?? 0;
+  if (last !== span) {
+    // 末帧与上一个刻度过近（< 0.6 步长）就让末帧顶掉它，保证「总帧数」标签可见且不重叠
+    if (span - last < size * 0.6 && ticks.length > 1) ticks[ticks.length - 1] = span;
+    else ticks.push(span);
+  }
+  return ticks;
+}
 
 function MotionTimeline(props: {
   frames: number[];
@@ -374,6 +413,7 @@ function MotionTimeline(props: {
     .map(([x, y]) => `${x},${y}`)
     .join(' ');
   const playheadX = (frameToPercent(props.frame, props.maxFrame) / 100) * TIMELINE_VB_W;
+  const ticks = frameTicks(props.maxFrame);
   const seekFromEvent = (event: React.PointerEvent<SVGSVGElement>): void => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
@@ -410,7 +450,7 @@ function MotionTimeline(props: {
                 100) *
                 TIMELINE_VB_W,
             )}
-            height={TIMELINE_VB_H}
+            height={TIMELINE_TICK_TOP}
             fill="rgba(230,190,90,0.22)"
             stroke="rgba(230,190,90,0.55)"
             strokeDasharray="4 3"
@@ -420,7 +460,6 @@ function MotionTimeline(props: {
           </rect>
         )}
         <polyline points={points} fill="none" stroke="var(--dsw-alias-brand-primary, #4c8bf5)" strokeWidth="1.5" />
-        <line x1={playheadX} y1={0} x2={playheadX} y2={TIMELINE_VB_H} stroke="var(--dsw-alias-label-primary, #e8e8e8)" strokeWidth="1.2" opacity="0.85" />
         {props.segments.map((segment, index) => {
           const start = frameToPercent(segment.frameStart ?? 0, props.maxFrame);
           const end = frameToPercent(segment.frameEnd ?? segment.frameStart ?? 0, props.maxFrame);
@@ -442,7 +481,42 @@ function MotionTimeline(props: {
             </rect>
           );
         })}
+        {ticks.map((tick) => {
+          const x = (frameToPercent(tick, props.maxFrame) / 100) * TIMELINE_VB_W;
+          return (
+            <line
+              key={`tick-${tick}`}
+              x1={x}
+              y1={TIMELINE_TICK_TOP}
+              x2={x}
+              y2={TIMELINE_TICK_BOTTOM}
+              stroke="var(--dsw-alias-border-l2, #565b63)"
+              strokeWidth="1"
+            />
+          );
+        })}
+        <line x1={playheadX} y1={0} x2={playheadX} y2={TIMELINE_TICK_TOP} stroke="var(--dsw-alias-label-primary, #e8e8e8)" strokeWidth="1.2" opacity="0.85" />
       </svg>
+      {/* 刻度帧号：HTML 层（不变形）；首尾标签向内对齐避免溢出 */}
+      <div className="kinemesh-ticks" aria-hidden="true">
+        {ticks.map((tick, index) => {
+          const percent = frameToPercent(tick, props.maxFrame);
+          const first = index === 0;
+          const last = index === ticks.length - 1;
+          return (
+            <span
+              key={`label-${tick}`}
+              className="kinemesh-tick"
+              style={{
+                left: `${percent}%`,
+                transform: `translateX(${first ? '0' : last ? '-100%' : '-50%'})`,
+              }}
+            >
+              {tick}
+            </span>
+          );
+        })}
+      </div>
       <span className="kinemesh-timelinehint">{translate('timeline.hint')}</span>
     </div>
   );

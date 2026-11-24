@@ -3,8 +3,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearPaneMemories,
+  computeTickStep,
   energyPoints,
   formatDigestHeadline,
+  frameTicks,
   frameToPercent,
   hostPathOfFile,
   isModelFileName,
@@ -16,6 +18,43 @@ import {
   shouldShowPreviewTab,
   writePaneMemory,
 } from '../../plugins/kinemesh/src/client.js';
+
+describe('时间轴帧号刻度（0.6.3：短动作帧数少，需要刻度才好定位）', () => {
+  it('短动作（16 帧）用 2 帧步长：0/2/4/.../16，标签数 9 不挤', () => {
+    const step = computeTickStep(16);
+    expect(step).toBe(2);
+    const ticks = frameTicks(16);
+    expect(ticks).toEqual([0, 2, 4, 6, 8, 10, 12, 14, 16]);
+    expect(ticks.length).toBeLessThanOrEqual(9);
+  });
+
+  it('极短动作（6 帧）用 1 帧步长：每个帧号都标出来', () => {
+    expect(computeTickStep(6)).toBe(1);
+    expect(frameTicks(6)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it('长动作自动放大步长，标签数恒 ≤ 9（2s/10s/60s）', () => {
+    for (const maxFrame of [42, 60, 300, 1800]) {
+      const ticks = frameTicks(maxFrame);
+      expect(ticks.length).toBeLessThanOrEqual(9);
+      expect(ticks[0]).toBe(0);
+      expect(ticks[ticks.length - 1]).toBe(maxFrame); // 末帧（总帧数）必须可见
+    }
+  });
+
+  it('末帧与上一步过近时用末帧替换，避免标签重叠；结果升序无重复', () => {
+    const ticks = frameTicks(17, 2);
+    expect(ticks[ticks.length - 1]).toBe(17);
+    expect(new Set(ticks).size).toBe(ticks.length);
+    for (let i = 1; i < ticks.length; i += 1) expect(ticks[i]!).toBeGreaterThan(ticks[i - 1]!);
+  });
+
+  it('边界：maxFrame 0 返回单刻度 [0]；负数按 0 处理', () => {
+    expect(frameTicks(0)).toEqual([0]);
+    expect(frameTicks(-5)).toEqual([0]);
+    expect(computeTickStep(0)).toBe(1);
+  });
+});
 
 describe('预览状态记忆（0.6.0：切面板/页签回来数据不丢）', () => {
   it('写入后可读回同样内容；不同 persistKey 互不影响', () => {

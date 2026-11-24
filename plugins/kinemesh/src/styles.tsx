@@ -93,11 +93,14 @@ export const css = `
 .kinemesh-sidefoot .kinemesh-input{min-width:0;flex:1}
 .kinemesh-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto}
 
-/* ———— 强度曲线时间轴（§6.10.3）：进度条上方的曲线 + 分段色带 + 循环高亮 ———— */
+/* ———— 强度曲线时间轴（§6.10.3）：进度条上方的曲线 + 分段色带 + 循环高亮 + 帧号刻度 ———— */
 .kinemesh-timeline{margin:4px 14px 0}
-.kinemesh-timeline svg{display:block;width:100%;height:44px;cursor:crosshair;border-radius:8px;
+.kinemesh-timeline svg{display:block;width:100%;height:52px;cursor:crosshair;border-radius:8px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);touch-action:none}
-.kinemesh-timeline .kinemesh-timelinehint{display:block;margin-top:2px;font-size:10.5px;
+.kinemesh-ticks{position:relative;height:14px;margin-top:2px}
+.kinemesh-tick{position:absolute;top:0;font-size:10px;line-height:14px;white-space:nowrap;
+  color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.kinemesh-timeline .kinemesh-timelinehint{display:block;margin-top:1px;font-size:10.5px;
   color:var(--dsw-alias-label-secondary)}
 `;
 
