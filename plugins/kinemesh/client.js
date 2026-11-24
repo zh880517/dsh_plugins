@@ -40494,6 +40494,58 @@ function currentPoseBoundsInfo(root) {
 }
 //#endregion
 //#region
+var ROOT_MOTION_UNLOCKED = {
+	translation: false,
+	rotation: false
+};
+/**
+* 找 root motion 载体：动画轨道里被驱动的「最上层节点」。
+* 判据：候选节点 = 轨道命中的节点；若某个候选的祖先也是候选，祖先才是根——
+* 只保留没有候选祖先的那些（通常是唯一的骨架根 / 场景根节点）。
+*/
+function findRootMotionNodes(root, clips) {
+	const candidates = /* @__PURE__ */ new Set();
+	for (const clip of clips) for (const track of clip.tracks) {
+		const parsed = PropertyBinding.parseTrackName(track.name);
+		if (typeof parsed.nodeName !== "string" || parsed.nodeName === "") continue;
+		const node = PropertyBinding.findNode(root, parsed.nodeName);
+		if (node !== null && node !== void 0) candidates.add(node);
+	}
+	if (candidates.size === 0) return [];
+	const roots = [];
+	for (const candidate of candidates) {
+		let hasAnimatedAncestor = false;
+		let parent = candidate.parent;
+		while (parent !== null && parent !== void 0) {
+			if (candidates.has(parent)) {
+				hasAnimatedAncestor = true;
+				break;
+			}
+			parent = parent.parent;
+		}
+		if (!hasAnimatedAncestor) roots.push(candidate);
+	}
+	return roots;
+}
+/** 记录参考姿态（只在载入后调用一次；之后每帧按开关还原） */
+function captureRootPose(nodes) {
+	return nodes.map((node) => ({
+		node,
+		position: node.position.clone(),
+		quaternion: node.quaternion.clone()
+	}));
+}
+/** 按开关把根节点的位移/朝向写回参考值（子节点动画不受影响） */
+function applyRootMotionLock(entries, lock) {
+	if (!lock.translation && !lock.rotation) return false;
+	for (const entry of entries) {
+		if (lock.translation) entry.node.position.copy(entry.position);
+		if (lock.rotation) entry.node.quaternion.copy(entry.quaternion);
+	}
+	return true;
+}
+//#endregion
+//#region
 /** 为刚载入的模型建骨架线（先隐藏，由 applyMode 按模式显示） */
 function createSkeletonHelpers(root) {
 	const helper = new SkeletonHelper(root);
@@ -40638,6 +40690,10 @@ function mountViewer(container, options = {}) {
 	let playing = false;
 	/** 播放速度倍率（0.7.4）：只有播放推进受它影响，seek 与截图永远按真实帧号 */
 	let playbackRate = 1;
+	/** root motion 开关（0.9.0）：锁定位移 / 锁定旋转，让带位移的动作原地播放 */
+	let rootMotionLock = { ...ROOT_MOTION_UNLOCKED };
+	/** root motion 载体 + 载入静止姿态的参考值（每帧按开关写回） */
+	let rootPose = [];
 	let surface = "default";
 	let bonesVisible = false;
 	/** 当前模型是否有网格（无网格时模式口径一律按 skeleton，AI 侧不会误判） */
@@ -40658,6 +40714,7 @@ function mountViewer(container, options = {}) {
 				const duration = activeAction.getClip().duration;
 				if (playing) frame = (frame + delta * 30 * playbackRate) % Math.max(duration * 30, 1 / 30);
 				mixer.setTime(frame / 30);
+				applyRootMotionLock(rootPose, rootMotionLock);
 			}
 			controls.update();
 			positionBoneLabels();
@@ -40781,6 +40838,7 @@ function mountViewer(container, options = {}) {
 				const action = mixer.clipAction(clip);
 				actions.set(clip.name || `clip_${actions.size}`, action);
 			}
+			rootPose = captureRootPose(findRootMotionNodes(model, clips));
 			skeletons = createSkeletonHelpers(model);
 			attachSkeletonHelpers(scene, skeletons);
 			const box = new Box3().setFromObject(model, true);
@@ -40834,6 +40892,8 @@ function mountViewer(container, options = {}) {
 					if (mixer !== null) mixer.setTime(frame / 30);
 				}
 			}
+			applyRootMotionLock(rootPose, rootMotionLock);
+			renderFrame();
 		},
 		getViewState() {
 			const target = controls.target;
@@ -40880,6 +40940,17 @@ function mountViewer(container, options = {}) {
 		setPlaybackRate(rate) {
 			playbackRate = clampPlaybackRate(rate);
 		},
+		setRootMotionLock(lock) {
+			rootMotionLock = {
+				translation: lock.translation === true,
+				rotation: lock.rotation === true
+			};
+			applyRootMotionLock(rootPose, rootMotionLock);
+			renderFrame();
+		},
+		rootMotionAvailable() {
+			return rootPose.length > 0;
+		},
 		seekFrame(requested) {
 			if (mixer === null) {
 				frame = Math.max(0, requested);
@@ -40904,6 +40975,7 @@ function mountViewer(container, options = {}) {
 			playing = false;
 			if (action.paused) action.paused = false;
 			mixer.setTime(frame / 30);
+			applyRootMotionLock(rootPose, rootMotionLock);
 			renderFrame();
 			ensureRenderLoop();
 			return new Promise((resolve) => {
@@ -48141,6 +48213,10 @@ var ZH_TEXTS = {
 	"display.surfaceTitle": "表面显示方式（互斥）：素模 / 贴图 / 线框",
 	"display.bones": "叠加骨架",
 	"display.bonesTitle": "在表面上叠加骨骼线（可与素模 / 贴图 / 线框任意组合）",
+	"root.translation": "锁定位移",
+	"root.translationTitle": "锁定根位移：角色留在原地播放（冲刺/突进等带位移的动作不再跑出画面）",
+	"root.rotation": "锁定旋转",
+	"root.rotationTitle": "锁定根朝向：转身类动作不再改变角色朝向（与锁定位移可分别开启）",
 	"pane.load": "加载",
 	"pane.loading": "加载中…",
 	"pane.staticClip": "（静态）",
@@ -48193,6 +48269,10 @@ var EN_TEXTS = {
 	"display.surfaceTitle": "Surface display (exclusive): solid / textured / wireframe",
 	"display.bones": "overlay bones",
 	"display.bonesTitle": "Draw bone lines on top (combines with solid / textured / wireframe)",
+	"root.translation": "lock move",
+	"root.translationTitle": "Lock root translation: play in place (dashes no longer leave the frame)",
+	"root.rotation": "lock turn",
+	"root.rotationTitle": "Lock root rotation: turning actions keep the initial facing (independent of move lock)",
 	"pane.load": "Load",
 	"pane.loading": "Loading…",
 	"pane.staticClip": "(static)",
@@ -48681,6 +48761,13 @@ function PreviewPane(props) {
 	const [playing, setPlaying] = react.useState(false);
 	/** 播放速度倍率（0.7.4）：播放条右侧滑块，0.1×～2× */
 	const [speed, setSpeed] = react.useState(1);
+	/** root motion 开关（0.9.0）：锁定位移 / 锁定旋转 —— 让带位移的动作原地播放 */
+	const [rootLock, setRootLock] = react.useState({
+		translation: false,
+		rotation: false
+	});
+	/** 当前模型是否有可锁的 root motion（纯静态/无动画时禁用这两个开关） */
+	const [rootAvailable, setRootAvailable] = react.useState(false);
 	const [viewText, setViewText] = react.useState("—");
 	const [state, setState] = react.useState({
 		phase: "empty",
@@ -48859,6 +48946,11 @@ function PreviewPane(props) {
 			});
 			viewer.setDisplay(nextDisplay);
 			viewer.setPlaybackRate(speed);
+			const rememberedRootLock = memory !== null && memory.path === target && memory.rootLock !== void 0 ? memory.rootLock : rootLock;
+			const available = viewer.rootMotionAvailable();
+			setRootAvailable(available);
+			setRootLock(rememberedRootLock);
+			viewer.setRootMotionLock(rememberedRootLock);
 			if (rememberedClip !== "" && startFrame > 0) viewer.seekFrame(startFrame);
 			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
 			props.onLoaded?.(target);
@@ -48887,7 +48979,8 @@ function PreviewPane(props) {
 			clip,
 			frame,
 			surface,
-			bones: bonesOn
+			bones: bonesOn,
+			rootLock
 		});
 	}, [
 		props.persistKey,
@@ -48895,7 +48988,8 @@ function PreviewPane(props) {
 		clip,
 		frame,
 		surface,
-		bonesOn
+		bonesOn,
+		rootLock
 	]);
 	const restoredRef = react.useRef(false);
 	react.useEffect(() => {
@@ -49028,6 +49122,15 @@ function PreviewPane(props) {
 		setSpeed(rate);
 		viewerRef.current?.setPlaybackRate(rate);
 	};
+	/** root motion 开关（0.9.0）：锁定位移 / 旋转，让带位移的动作原地播放 */
+	const changeRootLock = (patch) => {
+		const next = {
+			translation: patch.translation ?? rootLock.translation,
+			rotation: patch.rotation ?? rootLock.rotation
+		};
+		setRootLock(next);
+		viewerRef.current?.setRootMotionLock(next);
+	};
 	const send = async () => {
 		if (viewerRef.current === null || loadedPath === "" || props.sessionId === "") return;
 		setSending(true);
@@ -49109,7 +49212,23 @@ function PreviewPane(props) {
 		type: "checkbox",
 		checked: bonesOn,
 		onChange: (event) => toggleBones(event.target.checked)
-	}), translate("display.bones"))), state.error !== null && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-banner" }, state.error), sent !== null && /* @__PURE__ */ react.createElement("div", {
+	}), translate("display.bones")), /* @__PURE__ */ react.createElement("label", {
+		className: "kinemesh-check",
+		title: translate("root.translationTitle")
+	}, /* @__PURE__ */ react.createElement("input", {
+		type: "checkbox",
+		checked: rootLock.translation,
+		disabled: !rootAvailable || clip === "",
+		onChange: (event) => changeRootLock({ translation: event.target.checked })
+	}), translate("root.translation")), /* @__PURE__ */ react.createElement("label", {
+		className: "kinemesh-check",
+		title: translate("root.rotationTitle")
+	}, /* @__PURE__ */ react.createElement("input", {
+		type: "checkbox",
+		checked: rootLock.rotation,
+		disabled: !rootAvailable || clip === "",
+		onChange: (event) => changeRootLock({ rotation: event.target.checked })
+	}), translate("root.rotation"))), state.error !== null && /* @__PURE__ */ react.createElement("div", { className: "kinemesh-banner" }, state.error), sent !== null && /* @__PURE__ */ react.createElement("div", {
 		className: "kinemesh-banner",
 		"data-kind": "ok"
 	}, sent), /* @__PURE__ */ react.createElement("div", {

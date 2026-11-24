@@ -639,6 +639,19 @@ kinemesh_analyze(path, {
     `renderFrame()`（主场景 + 轴指示器），避免预览与截图构图不一致。
     退化场景：主相机与注视点重合时（`offset.lengthSq() === 0`）跳过指示器绘制。
     回归：`tests/kinemesh/axes.test.ts`（三轴端点/配色/标签位置/离线无 document 不出标签）。
+  - **root motion 开关（0.9.0，用户拍板）**：预览工具栏加两个独立勾选框「锁定位移」「锁定旋转」，
+    带位移的动作（冲刺/突进/360 转身斩）可以原地播放。实现 `core/viewer/root-motion.ts`（纯对象操作 + 单测）：
+    - 载体判定：动画轨道命中的「最上层被动画节点」（`PropertyBinding.parseTrackName` +
+      `findNode` 解析，剔除有被动画祖先的节点）——通常是 FBX 的顶层 `root` 节点 / Mixamo Hips /
+      glTF 场根；真实资产 1012_tahlia attack_01 里就是 `root`（position/quaternion/scale 三条轨道）；
+    - 参考姿态：载入后记录该节点的 position/quaternion（静止姿态）；每帧 `mixer.setTime()` 之后、
+      渲染之前按开关写回——位移锁只还原 position、旋转锁只还原 quaternion、两个都锁 = 完全原地；
+      **只动根节点，子关节动画不受影响**（否则会退化成 T-pose）；
+    - 接入点：renderLoop / seekFrame / applyView / setRootMotionLock 都会套一遍（拖帧、播放、切视角一致）；
+    - UI：模型无动画或无 root 载体时两个勾选框禁用（`viewer.rootMotionAvailable()`）；
+      选择随面板记忆（`PaneMemory.rootLock`）恢复；
+    - 实测（真实资产 + 固定机位逐帧量模型像素质心）：不锁时质心 X 漂移 502px（角色跑出画面），
+      锁定位移后降至 20px（余量为姿势变化），锁定旋转对「root 无旋转轨道」的资产无副作用。
   - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）。**所有渲染模式都显示**
     （0.6.10：`default / solid / wireframe / skeleton / bones-overlay` 一视同仁——线框与骨架
     模式下同样需要地面/轴向参照；地面不参与包围盒，显示与否不影响机位适配）；

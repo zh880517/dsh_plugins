@@ -25,6 +25,14 @@ import { computeClipPlanes } from './clip-planes.js';
 import { lightRigFor, SOLID_MATERIAL_COLOR, TEXTURED_LIGHT_RIG } from './lighting.js';
 import { isVertexColorAllDark, normalizePreviewMaterial } from './material.js';
 import { currentPoseBounds, currentPoseBoundsInfo } from './scene-bounds.js';
+import {
+  applyRootMotionLock,
+  captureRootPose,
+  findRootMotionNodes,
+  ROOT_MOTION_UNLOCKED,
+  type RootMotionLock,
+  type RootPoseEntry,
+} from './root-motion.js';
 import { attachSkeletonHelpers, createSkeletonHelpers, detachSkeletonHelpers } from './skeleton-helpers.js';
 import type { CanonicalScene } from '../types.js';
 
@@ -60,6 +68,13 @@ export interface ViewerHandle {
   pause(): void;
   /** 播放速度倍率（0.7.4）：1 = 原速；范围 0.05～4，越界自动夹紧 */
   setPlaybackRate(rate: number): void;
+  /**
+   * root motion 开关（0.9.0）：锁定位移 / 锁定旋转，让带位移的动作原地播放。
+   * 只还原「最上层被动画节点」的 position/quaternion，肢体动画不受影响。
+   */
+  setRootMotionLock(lock: RootMotionLock): void;
+  /** 当前模型是否有可锁的 root motion 载体（无动画/纯静态时 false，面板据此禁用开关） */
+  rootMotionAvailable(): boolean;
   /** 跳帧：渲染完一帧后才 resolve（截图管线靠它保证确定性） */
   seekFrame(frame: number): Promise<void>;
   frameInfo(): ViewerFrameInfo | null;
@@ -225,6 +240,10 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   let playing = false;
   /** 播放速度倍率（0.7.4）：只有播放推进受它影响，seek 与截图永远按真实帧号 */
   let playbackRate = 1;
+  /** root motion 开关（0.9.0）：锁定位移 / 锁定旋转，让带位移的动作原地播放 */
+  let rootMotionLock: RootMotionLock = { ...ROOT_MOTION_UNLOCKED };
+  /** root motion 载体 + 载入静止姿态的参考值（每帧按开关写回） */
+  let rootPose: RootPoseEntry[] = [];
   // 0.7.2：表面显示方式（互斥）与骨架叠加开关解耦——面板上素模/贴图/线框三选一，骨架单独勾选
   let surface: SurfaceMode = 'default';
   let bonesVisible = false;
@@ -251,6 +270,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
           frame = (frame + delta * RENDER_FPS * playbackRate) % Math.max(duration * RENDER_FPS, 1 / RENDER_FPS);
         }
         mixer.setTime(frame / RENDER_FPS);
+        applyRootMotionLock(rootPose, rootMotionLock);
       }
       controls.update();
       positionBoneLabels();
@@ -429,6 +449,8 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         const action = mixer.clipAction(clip);
         actions.set(clip.name || `clip_${actions.size}`, action);
       }
+      // 0.9.0：记录 root motion 载体（最上层被动画节点）的载入静止姿态，供「锁定位移/旋转」用
+      rootPose = captureRootPose(findRootMotionNodes(model, clips));
       // 骨架线挂在 scene 上（生命周期见 viewer/skeleton-helpers.ts）：换模型时由 clearModel 摘除
       skeletons = createSkeletonHelpers(model);
       attachSkeletonHelpers(scene, skeletons);
@@ -483,6 +505,9 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
           if (mixer !== null) mixer.setTime(frame / RENDER_FPS);
         }
       }
+      // 0.9.0：root motion 开关是「观看方式」，每次应用视角后都重新套一遍并立即出帧
+      applyRootMotionLock(rootPose, rootMotionLock);
+      renderFrame();
     },
 
     getViewState() {
@@ -533,6 +558,16 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       playbackRate = clampPlaybackRate(rate);
     },
 
+    setRootMotionLock(lock) {
+      rootMotionLock = { translation: lock.translation === true, rotation: lock.rotation === true };
+      applyRootMotionLock(rootPose, rootMotionLock);
+      renderFrame();
+    },
+
+    rootMotionAvailable() {
+      return rootPose.length > 0;
+    },
+
     seekFrame(requested) {
       if (mixer === null) {
         frame = Math.max(0, requested);
@@ -560,6 +595,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       // 0.7.5：paused 的 action 吃不动 mixer.setTime（会永远停在第 0 帧），scrub 前先解开
       if (action.paused) action.paused = false;
       mixer.setTime(frame / RENDER_FPS);
+      applyRootMotionLock(rootPose, rootMotionLock);
       // 立即出帧：跳转必须马上可见，不能等渲染循环（循环若停过就永远等不到）
       renderFrame();
       ensureRenderLoop();

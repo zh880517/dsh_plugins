@@ -47263,6 +47263,58 @@ void main() {
 		return boundsOfBox(currentPoseBounds(root));
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/root-motion.ts
+	var ROOT_MOTION_UNLOCKED = {
+		translation: false,
+		rotation: false
+	};
+	/**
+	* 找 root motion 载体：动画轨道里被驱动的「最上层节点」。
+	* 判据：候选节点 = 轨道命中的节点；若某个候选的祖先也是候选，祖先才是根——
+	* 只保留没有候选祖先的那些（通常是唯一的骨架根 / 场景根节点）。
+	*/
+	function findRootMotionNodes(root, clips) {
+		const candidates = /* @__PURE__ */ new Set();
+		for (const clip of clips) for (const track of clip.tracks) {
+			const parsed = PropertyBinding.parseTrackName(track.name);
+			if (typeof parsed.nodeName !== "string" || parsed.nodeName === "") continue;
+			const node = PropertyBinding.findNode(root, parsed.nodeName);
+			if (node !== null && node !== void 0) candidates.add(node);
+		}
+		if (candidates.size === 0) return [];
+		const roots = [];
+		for (const candidate of candidates) {
+			let hasAnimatedAncestor = false;
+			let parent = candidate.parent;
+			while (parent !== null && parent !== void 0) {
+				if (candidates.has(parent)) {
+					hasAnimatedAncestor = true;
+					break;
+				}
+				parent = parent.parent;
+			}
+			if (!hasAnimatedAncestor) roots.push(candidate);
+		}
+		return roots;
+	}
+	/** 记录参考姿态（只在载入后调用一次；之后每帧按开关还原） */
+	function captureRootPose(nodes) {
+		return nodes.map((node) => ({
+			node,
+			position: node.position.clone(),
+			quaternion: node.quaternion.clone()
+		}));
+	}
+	/** 按开关把根节点的位移/朝向写回参考值（子节点动画不受影响） */
+	function applyRootMotionLock(entries, lock) {
+		if (!lock.translation && !lock.rotation) return false;
+		for (const entry of entries) {
+			if (lock.translation) entry.node.position.copy(entry.position);
+			if (lock.rotation) entry.node.quaternion.copy(entry.quaternion);
+		}
+		return true;
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/skeleton-helpers.ts
 	/** 为刚载入的模型建骨架线（先隐藏，由 applyMode 按模式显示） */
 	function createSkeletonHelpers(root) {
@@ -47408,6 +47460,10 @@ void main() {
 		let playing = false;
 		/** 播放速度倍率（0.7.4）：只有播放推进受它影响，seek 与截图永远按真实帧号 */
 		let playbackRate = 1;
+		/** root motion 开关（0.9.0）：锁定位移 / 锁定旋转，让带位移的动作原地播放 */
+		let rootMotionLock = { ...ROOT_MOTION_UNLOCKED };
+		/** root motion 载体 + 载入静止姿态的参考值（每帧按开关写回） */
+		let rootPose = [];
 		let surface = "default";
 		let bonesVisible = false;
 		/** 当前模型是否有网格（无网格时模式口径一律按 skeleton，AI 侧不会误判） */
@@ -47428,6 +47484,7 @@ void main() {
 					const duration = activeAction.getClip().duration;
 					if (playing) frame = (frame + delta * 30 * playbackRate) % Math.max(duration * 30, 1 / 30);
 					mixer.setTime(frame / 30);
+					applyRootMotionLock(rootPose, rootMotionLock);
 				}
 				controls.update();
 				positionBoneLabels();
@@ -47551,6 +47608,7 @@ void main() {
 					const action = mixer.clipAction(clip);
 					actions.set(clip.name || `clip_${actions.size}`, action);
 				}
+				rootPose = captureRootPose(findRootMotionNodes(model, clips));
 				skeletons = createSkeletonHelpers(model);
 				attachSkeletonHelpers(scene, skeletons);
 				const box = new Box3().setFromObject(model, true);
@@ -47604,6 +47662,8 @@ void main() {
 						if (mixer !== null) mixer.setTime(frame / 30);
 					}
 				}
+				applyRootMotionLock(rootPose, rootMotionLock);
+				renderFrame();
 			},
 			getViewState() {
 				const target = controls.target;
@@ -47650,6 +47710,17 @@ void main() {
 			setPlaybackRate(rate) {
 				playbackRate = clampPlaybackRate(rate);
 			},
+			setRootMotionLock(lock) {
+				rootMotionLock = {
+					translation: lock.translation === true,
+					rotation: lock.rotation === true
+				};
+				applyRootMotionLock(rootPose, rootMotionLock);
+				renderFrame();
+			},
+			rootMotionAvailable() {
+				return rootPose.length > 0;
+			},
 			seekFrame(requested) {
 				if (mixer === null) {
 					frame = Math.max(0, requested);
@@ -47674,6 +47745,7 @@ void main() {
 				playing = false;
 				if (action.paused) action.paused = false;
 				mixer.setTime(frame / 30);
+				applyRootMotionLock(rootPose, rootMotionLock);
 				renderFrame();
 				ensureRenderLoop();
 				return new Promise((resolve) => {

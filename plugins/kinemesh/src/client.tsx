@@ -33,6 +33,8 @@ export interface PaneMemory {
   surface: DisplaySurface;
   /** 是否叠加骨架线 */
   bones: boolean;
+  /** root motion 开关（0.9.0）：锁定位移 / 锁定旋转，让带位移的动作原地播放 */
+  rootLock?: { translation: boolean; rotation: boolean };
 }
 
 /** 面板的表面选项（不含 `none`：「不画网格」只出现在无 mesh 模型身上，由骨架叠加自然覆盖） */
@@ -149,6 +151,10 @@ const ZH_TEXTS: Record<string, string> = {
   'display.surfaceTitle': '表面显示方式（互斥）：素模 / 贴图 / 线框',
   'display.bones': '叠加骨架',
   'display.bonesTitle': '在表面上叠加骨骼线（可与素模 / 贴图 / 线框任意组合）',
+  'root.translation': '锁定位移',
+  'root.translationTitle': '锁定根位移：角色留在原地播放（冲刺/突进等带位移的动作不再跑出画面）',
+  'root.rotation': '锁定旋转',
+  'root.rotationTitle': '锁定根朝向：转身类动作不再改变角色朝向（与锁定位移可分别开启）',
   'pane.load': '加载',
   'pane.loading': '加载中…',
   'pane.staticClip': '（静态）',
@@ -201,6 +207,10 @@ const EN_TEXTS: Record<string, string> = {
   'display.surfaceTitle': 'Surface display (exclusive): solid / textured / wireframe',
   'display.bones': 'overlay bones',
   'display.bonesTitle': 'Draw bone lines on top (combines with solid / textured / wireframe)',
+  'root.translation': 'lock move',
+  'root.translationTitle': 'Lock root translation: play in place (dashes no longer leave the frame)',
+  'root.rotation': 'lock turn',
+  'root.rotationTitle': 'Lock root rotation: turning actions keep the initial facing (independent of move lock)',
   'pane.load': 'Load',
   'pane.loading': 'Loading…',
   'pane.staticClip': '(static)',
@@ -803,6 +813,13 @@ function PreviewPane(props: {
   const [playing, setPlaying] = React.useState(false);
   /** 播放速度倍率（0.7.4）：播放条右侧滑块，0.1×～2× */
   const [speed, setSpeed] = React.useState(1);
+  /** root motion 开关（0.9.0）：锁定位移 / 锁定旋转 —— 让带位移的动作原地播放 */
+  const [rootLock, setRootLock] = React.useState<{ translation: boolean; rotation: boolean }>({
+    translation: false,
+    rotation: false,
+  });
+  /** 当前模型是否有可锁的 root motion（纯静态/无动画时禁用这两个开关） */
+  const [rootAvailable, setRootAvailable] = React.useState(false);
   const [viewText, setViewText] = React.useState('—');
   const [state, setState] = React.useState<LoadState>({ phase: 'empty', error: null, clips: [], maxFrame: 0 });
   const [analysis, setAnalysis] = React.useState<{ loading: boolean; data: AnalysisPayload | null }>({
@@ -967,6 +984,13 @@ function PreviewPane(props: {
       viewer.setDisplay(nextDisplay);
       // 0.7.4：播放速度在载入后继续沿用当前滑块值
       viewer.setPlaybackRate(speed);
+      // 0.9.0：root motion 开关（换模型后重新判定可用性，并沿用同路径记忆里的选择）
+      const rememberedRootLock =
+        memory !== null && memory.path === target && memory.rootLock !== undefined ? memory.rootLock : rootLock;
+      const available = viewer.rootMotionAvailable();
+      setRootAvailable(available);
+      setRootLock(rememberedRootLock);
+      viewer.setRootMotionLock(rememberedRootLock);
       if (rememberedClip !== '' && startFrame > 0) viewer.seekFrame(startFrame);
       if (props.sessionId !== '') previewSession.markUsed(props.sessionId);
       props.onLoaded?.(target);
@@ -981,8 +1005,8 @@ function PreviewPane(props: {
   // 状态记忆（0.6.0：切到别的侧边栏面板/页签再回来，已加载模型与进度不丢；进程内内存，重启清空）
   React.useEffect(() => {
     if (props.persistKey === undefined || loadedPath === '') return;
-    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, surface, bones: bonesOn });
-  }, [props.persistKey, loadedPath, clip, frame, surface, bonesOn]);
+    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, surface, bones: bonesOn, rootLock });
+  }, [props.persistKey, loadedPath, clip, frame, surface, bonesOn, rootLock]);
 
   // 首次挂载恢复上次的模型（必须在 load 定义之后）
   const restoredRef = React.useRef(false);
@@ -1122,6 +1146,16 @@ function PreviewPane(props: {
     viewerRef.current?.setPlaybackRate(rate);
   };
 
+  /** root motion 开关（0.9.0）：锁定位移 / 旋转，让带位移的动作原地播放 */
+  const changeRootLock = (patch: { translation?: boolean; rotation?: boolean }): void => {
+    const next = {
+      translation: patch.translation ?? rootLock.translation,
+      rotation: patch.rotation ?? rootLock.rotation,
+    };
+    setRootLock(next);
+    viewerRef.current?.setRootMotionLock(next);
+  };
+
   const send = async (): Promise<void> => {
     if (viewerRef.current === null || loadedPath === '' || props.sessionId === '') return;
     setSending(true);
@@ -1215,6 +1249,25 @@ function PreviewPane(props: {
         <label className="kinemesh-check" title={translate('display.bonesTitle')}>
           <input type="checkbox" checked={bonesOn} onChange={(event) => toggleBones(event.target.checked)} />
           {translate('display.bones')}
+        </label>
+        {/* 0.9.0：root motion 开关——带位移的动作可以原地播（分开控制位移/旋转） */}
+        <label className="kinemesh-check" title={translate('root.translationTitle')}>
+          <input
+            type="checkbox"
+            checked={rootLock.translation}
+            disabled={!rootAvailable || clip === ''}
+            onChange={(event) => changeRootLock({ translation: event.target.checked })}
+          />
+          {translate('root.translation')}
+        </label>
+        <label className="kinemesh-check" title={translate('root.rotationTitle')}>
+          <input
+            type="checkbox"
+            checked={rootLock.rotation}
+            disabled={!rootAvailable || clip === ''}
+            onChange={(event) => changeRootLock({ rotation: event.target.checked })}
+          />
+          {translate('root.rotation')}
         </label>
       </div>
       {state.error !== null && <div className="kinemesh-banner">{state.error}</div>}
