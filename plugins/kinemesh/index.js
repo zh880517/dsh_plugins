@@ -33724,6 +33724,7 @@ function viewerSearchDir() {
 	}
 }
 async function readViewerBundle() {
+	if (typeof __KINEMESH_VIEWER_INLINE__ === "string" && __KINEMESH_VIEWER_INLINE__ !== "") return __KINEMESH_VIEWER_INLINE__;
 	let dir = viewerSearchDir();
 	for (let depth = 0; dir !== null && depth < 5; depth += 1) try {
 		return await readFile(path.join(dir, "viewer.js"), "utf8");

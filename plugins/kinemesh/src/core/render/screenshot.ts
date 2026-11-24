@@ -353,7 +353,15 @@ function viewerSearchDir(): string | null {
   }
 }
 
+/** 构建期注入的 viewer bundle（0.9.4）：CLI / MCP 产物把 viewer.js 内联成字符串，
+ *  这样 skill 目录被单独拷给第三方 Agent 时 render 仍然可用（不然要靠向上找 viewer.js，必然找不到）。
+ *  宿主（DSH 插件）产物不注入，走下面按文件位置搜索的路径。 */
+declare const __KINEMESH_VIEWER_INLINE__: string | undefined;
+
 async function readViewerBundle(): Promise<string> {
+  if (typeof __KINEMESH_VIEWER_INLINE__ === 'string' && __KINEMESH_VIEWER_INLINE__ !== '') {
+    return __KINEMESH_VIEWER_INLINE__;
+  }
   const base = viewerSearchDir();
   let dir = base;
   for (let depth = 0; dir !== null && depth < 5; depth += 1) {

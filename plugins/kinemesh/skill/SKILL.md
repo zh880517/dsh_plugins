@@ -17,11 +17,17 @@ bundle（three.js 全内联），免 npm install，任何有 shell + Node ≥ 18
 
 ## 前置
 
-`info` / `analyze` 无额外依赖。`render` 需要本机 playwright + chromium（在你的项目目录执行一次）：
+`info` / `analyze` / `skeleton` 无额外依赖。`render` 需要本机 playwright + chromium（在你的项目目录执行一次）：
 
 ```bash
 npm i playwright && npx playwright install chromium
 ```
+
+**自包含说明（0.9.4 起）**：`cli/kinemesh.cjs` 已把 three.js **和渲染用的 viewer 一起内联**，
+整个技能目录只有 `SKILL.md` + `cli/kinemesh.cjs` 两个文件——直接拷到任意工程（或 `~/.claude/skills/`
+这类技能目录）即可用，`render` 也不会再因为找不到 `viewer.js` 失败；唯一的额外前提是上面的
+playwright（装在**你运行 CLI 的工程**里，CLI 按 Node 常规模块解析向上找）。
+用 `node cli/kinemesh.cjs --version` 可以确认手上是哪一版。
 
 ## 命令格式
 
@@ -30,6 +36,7 @@ node <本目录>/cli/kinemesh.cjs info <file>
 node <本目录>/cli/kinemesh.cjs analyze <file> [选项]
 node <本目录>/cli/kinemesh.cjs skeleton <file> [选项]
 node <本目录>/cli/kinemesh.cjs render <file> [选项]
+node <本目录>/cli/kinemesh.cjs --version     # 手上是哪一版
 ```
 
 `info`：输出模型结构信息 JSON——动画片段（名称/时长/通道数/根运动）、骨骼（数量/最大深度/是否人形）、

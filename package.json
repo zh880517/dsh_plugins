@@ -15,7 +15,8 @@
     "typecheck": "node scripts/typecheck.mjs",
     "typecheck:plugin": "node scripts/typecheck.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "pack:skill": "node scripts/pack-skill.mjs"
   },
   "engines": {
     "node": ">=22.12"

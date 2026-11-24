@@ -10,6 +10,14 @@ import { renderScreenshots } from './core/render/screenshot.js';
 import { runAnalyze, runSkeleton, type AnalyzeToolParams, type SkeletonToolParams } from './tools.js';
 import type { ViewMode } from './core/viewstate.js';
 
+/** 构建期注入的插件版本（0.9.4；源码直跑时为 undefined → 'dev'）。自定义环境需要版本号时用它。 */
+declare const __KINEMESH_VERSION__: string | undefined;
+
+/** CLI 版本：`--version` 输出（第三方 Agent 用来确认手上是哪一版） */
+function cliVersion(): string {
+  return typeof __KINEMESH_VERSION__ === 'string' && __KINEMESH_VERSION__ !== '' ? __KINEMESH_VERSION__ : 'dev';
+}
+
 const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
 用法：
@@ -57,6 +65,7 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       --out-dir <dir>          PNG 输出目录（缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/）
 
   kinemesh --help
+  kinemesh --version       打印 CLI 版本（第三方 Agent 用来确认手上是哪一版）
 
 输出契约：成功 → stdout 一行 JSON（ok:true）；失败 → stderr 一行 JSON（ok:false 带
 what/guidance/step 三段式）+ 非零退出码。截图需要 playwright：
@@ -344,6 +353,11 @@ export async function main(argv: string[]): Promise<number> {
   const wantsHelp = flags.help !== undefined || command === '--help' || command === '-h';
   if (wantsHelp) {
     process.stdout.write(USAGE);
+    return 0;
+  }
+  // 0.9.4：--version 让第三方 Agent 能确认手上是哪一版（构建期注入 __KINEMESH_VERSION__）
+  if (flags.version !== undefined || command === '--version' || command === '-v') {
+    process.stdout.write(`kinemesh ${cliVersion()}\n`);
     return 0;
   }
   if (command === '') {

@@ -35,6 +35,26 @@
 自动选模式、root motion 开关、轴参考）与截图取景（自动模式、逐帧取景），以及产物临时目录收口到
 `<cwd>/.kinemeshtmp/`；状态见 [design.md](./design.md) §5 与 §6.10。
 
+## 分发给第三方 Agent（Skill / CLI / MCP）
+
+DSH 之外的 Agent 工具只用 **Skill + MCP** 两种形式（CLI 作为 Skill 的执行器随附）：
+
+| 产物 | 位置 | 说明 |
+|---|---|---|
+| Skill 目录 | `plugins/kinemesh/skill/` | `SKILL.md` + `cli/kinemesh.cjs` **共 2 个文件**，拷贝即用（0.9.4 起 viewer 内联，`render` 也自包含） |
+| MCP server | `plugins/kinemesh/mcp/kinemesh-mcp.js` | stdio，单文件 ESM，与 DSH 工具同名同参 |
+| 打包（推荐分发形式） | `npm run pack:skill` → `dist/kinemesh-<version>.zip` | 一个 zip 含 SKILL.md / CLI / MCP / 包内 README / VERSION |
+
+- 依赖：Node ≥ 18；`info`/`analyze`/`skeleton` 零依赖，`render` 需要目标工程 `npm i playwright &&
+  npx playwright install chromium`；
+- 产物（截图/分析中间文件）缺省写到**当前工作目录**的 `.kinemeshtmp/run-<时间戳>-<pid>/`；
+- 版本核对：`node cli/kinemesh.cjs --version`；
+- MCP 配置示例（任意 MCP 客户端）：
+
+```json
+{ "mcpServers": { "kinemesh": { "command": "node", "args": ["<解压目录>/mcp/kinemesh-mcp.js"] } } }
+```
+
 ## 安装
 
 在 DSH 侧栏 **Plugins → Add plugin** 里粘一条 spec：

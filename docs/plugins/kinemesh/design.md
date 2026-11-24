@@ -178,6 +178,16 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
   three.js 全内联、免 npm install；playwright 保持外部依赖（render 前置，SKILL.md 写明）。
   **用 `.cjs` 而不是 `.js`**：技能目录会被拷进任意工程，宿主 `"type":"module"` 不会把它当 ESM。
   构建脚本给 CLI 关闭了 node: 内建的 browser 桩（`external: [/^node:/]`），否则 `path/fs` 全变空壳。
+- **自包含修正与打包（0.9.4，真实缺陷）**：交付 0.9.3 的 Skill 时实测发现——只拷
+  `SKILL.md + cli/kinemesh.cjs` 时 `render` 直接报「找不到 viewer 产物（viewer.js）」，
+  「技能目录复制即用」只对 `info/analyze/skeleton` 成立。修法：构建期把本次构建出的
+  `viewer.js` 以 `__KINEMESH_VIEWER_INLINE__` 字符串**内联进 CLI 与 MCP 产物**
+  （`readViewerBundle()` 优先用它，宿主 index.js 不注入、仍按文件位置找）；
+  CLI/MCP 体积相应涨到 ~3MB/3.8MB，但换来自包含。
+  另加 `node ... --version`（构建期注入 `__KINEMESH_VERSION__`）供第三方核对版本，
+  以及 `npm run pack:skill` → `dist/kinemesh-<version>.zip`（自带 store-only ZIP 写入器、
+  不引依赖；包内 SKILL.md / cli / mcp / 包内 README / VERSION）。
+  实测：解压后 `cli/kinemesh.cjs analyze` 与 `--version` 正常，`render` 在含 playwright 的工程里可出图。
 - 契约：成功 stdout 一行 JSON（ok:true）；失败 stderr 三段式 JSON + 非零退出码；
   `info <file>` / `render <file> --frames 0,15,30 --view-preset front --mode skeleton --out-dir …`。
 

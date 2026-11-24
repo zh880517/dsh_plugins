@@ -128,15 +128,25 @@ async function buildViewer(plugin, work) {
 }
 
 /** 约定第四产物：src/cli.ts → skill/cli/<id>.cjs（单文件 CJS + shebang；playwright 保持外部依赖）。
- *  用 .cjs 而不是 .js：技能目录会被拷进任意工程，宿主 package.json 的 "type":"module" 不会把它当 ESM。 */
+ *  用 .cjs 而不是 .js：技能目录会被拷进任意工程，宿主 package.json 的 "type":"module" 不会把它当 ESM。
+ *
+ *  0.9.4：**把 viewer.js 内联进 CLI/MCP 产物**（`__KINEMESH_VIEWER_INLINE__`）——原先 render 要按
+ *  文件位置向上找 viewer.js，skill 目录被单独拷给第三方 Agent 时找不到（实测 `找不到 viewer 产物`），
+ *  自包含承诺是假的。内联后 skill 目录 = SKILL.md + cli/<id>.cjs 两个文件，render 也能跑
+ *  （只差用户工程里的 playwright，SKILL.md 已写明怎么装）。 */
 async function buildCli(plugin, work) {
   const entry = path.join(plugin.dir, 'src', 'cli.ts');
   if (!existsSync(entry)) return null;
+  const viewerBundle = await readInlineViewerBundle(work);
   await build({
     configFile: false,
     root: repo,
     logLevel: 'warn',
     resolve: { alias: sharedAlias },
+    define: {
+      __KINEMESH_VERSION__: JSON.stringify(plugin.pkg.version),
+      ...(viewerBundle === null ? {} : { __KINEMESH_VIEWER_INLINE__: JSON.stringify(viewerBundle) }),
+    },
     build: {
       lib: { entry, formats: ['cjs'], fileName: () => 'cli.cjs' },
       outDir: path.join(work, 'cli'),
@@ -154,15 +164,29 @@ async function buildCli(plugin, work) {
   return body.length;
 }
 
+/** 读本次构建出的 viewer.js（buildViewer 已写进 work/viewer 与插件目录）；没有 viewer 入口时 null */
+async function readInlineViewerBundle(work) {
+  try {
+    return await readFile(path.join(work, 'viewer', 'viewer.js'), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 /** 约定第五产物：src/mcp-server.ts → mcp/<id>-mcp.js（单文件 ESM；stdio；playwright 保持外部依赖） */
 async function buildMcp(plugin, work) {
   const entry = path.join(plugin.dir, 'src', 'mcp-server.ts');
   if (!existsSync(entry)) return null;
+  const viewerBundle = await readInlineViewerBundle(work);
   await build({
     configFile: false,
     root: repo,
     logLevel: 'warn',
     resolve: { alias: sharedAlias },
+    define: {
+      __KINEMESH_VERSION__: JSON.stringify(plugin.pkg.version),
+      ...(viewerBundle === null ? {} : { __KINEMESH_VIEWER_INLINE__: JSON.stringify(viewerBundle) }),
+    },
     build: {
       lib: { entry, formats: ['es'], fileName: () => `${plugin.id}-mcp.js` },
       outDir: path.join(work, 'mcp'),
