@@ -40333,11 +40333,25 @@ function mountViewer(container, options = {}) {
 			pauseInternal();
 		},
 		seekFrame(requested) {
-			if (activeAction === null || mixer === null) {
+			if (mixer === null) {
 				frame = Math.max(0, requested);
 				return Promise.resolve();
 			}
-			const duration = activeAction.getClip().duration;
+			let action = activeAction;
+			if (action === null && clipName !== null) {
+				const candidate = actions.get(clipName);
+				if (candidate !== void 0) {
+					for (const other of actions.values()) other.stop();
+					candidate.reset().play();
+					activeAction = candidate;
+					action = candidate;
+				}
+			}
+			if (action === null) {
+				frame = Math.max(0, requested);
+				return Promise.resolve();
+			}
+			const duration = action.getClip().duration;
 			frame = clampFrame(requested, duration);
 			playing = false;
 			mixer.setTime(frame / 30);
@@ -47375,6 +47389,19 @@ function writePaneMemory(key, value) {
 function clearPaneMemories() {
 	paneMemories.clear();
 }
+/**
+* 加载完成后该恢复成哪个 clip / 帧（0.6.2 抽出为纯函数，便于回归测试）：
+* 记忆命中同一路径且 clip 仍存在 → 恢复；否则取第一个 clip + 第 0 帧；帧号夹到 [0, maxFrame]。
+*/
+function resolveRestoreTarget(memory, loadedPath, clips, maxFrame) {
+	const matched = memory !== null && memory.path === loadedPath;
+	const clip = matched && clips.includes(memory.clip) ? memory.clip : clips[0] ?? "";
+	const frame = matched ? memory.frame : 0;
+	return {
+		clip,
+		frame: Math.max(0, Math.min(frame, Math.max(0, maxFrame)))
+	};
+}
 /** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
 var MODEL_FILE_EXTENSIONS = [
 	".fbx",
@@ -47791,13 +47818,18 @@ function PreviewPane(props) {
 				maxFrame
 			});
 			setLoadedPath(target);
-			const memory = props.persistKey === void 0 ? null : readPaneMemory(props.persistKey);
-			const rememberedClip = memory !== null && memory.path === target && bounds.clips.includes(memory.clip) ? memory.clip : bounds.clips[0] ?? "";
-			const rememberedFrame = memory !== null && memory.path === target ? memory.frame : 0;
-			const startFrame = Math.max(0, Math.min(rememberedFrame, maxFrame));
+			const restore = resolveRestoreTarget(props.persistKey === void 0 ? null : readPaneMemory(props.persistKey), target, bounds.clips, maxFrame);
+			const rememberedClip = restore.clip;
+			const startFrame = restore.frame;
 			setClip(rememberedClip);
 			setFrame(startFrame);
-			viewer.applyView(defaultView(bounds.center, bounds.radius));
+			const baseView = defaultView(bounds.center, bounds.radius);
+			viewer.applyView({
+				...baseView,
+				clip: rememberedClip === "" ? null : rememberedClip,
+				frame: startFrame,
+				mode
+			});
 			if (rememberedClip !== "" && startFrame > 0) viewer.seekFrame(startFrame);
 			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
 			props.onLoaded?.(target);
@@ -48265,6 +48297,7 @@ exports.isModelFileName = isModelFileName;
 exports.normalizeEnergySeries = normalizeEnergySeries;
 exports.pickSendDigest = pickSendDigest;
 exports.readPaneMemory = readPaneMemory;
+exports.resolveRestoreTarget = resolveRestoreTarget;
 exports.segmentColor = segmentColor;
 exports.shouldShowPreviewTab = shouldShowPreviewTab;
 exports.writePaneMemory = writePaneMemory;

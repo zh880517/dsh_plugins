@@ -50,6 +50,22 @@ export function clearPaneMemories(): void {
   paneMemories.clear();
 }
 
+/**
+ * 加载完成后该恢复成哪个 clip / 帧（0.6.2 抽出为纯函数，便于回归测试）：
+ * 记忆命中同一路径且 clip 仍存在 → 恢复；否则取第一个 clip + 第 0 帧；帧号夹到 [0, maxFrame]。
+ */
+export function resolveRestoreTarget(
+  memory: PaneMemory | null,
+  loadedPath: string,
+  clips: string[],
+  maxFrame: number,
+): { clip: string; frame: number } {
+  const matched = memory !== null && memory.path === loadedPath;
+  const clip = matched && clips.includes(memory.clip) ? memory.clip : (clips[0] ?? '');
+  const frame = matched ? memory.frame : 0;
+  return { clip, frame: Math.max(0, Math.min(frame, Math.max(0, maxFrame))) };
+}
+
 /** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
 export const MODEL_FILE_EXTENSIONS = ['.fbx', '.glb', '.gltf', '.obj'] as const;
 
@@ -560,13 +576,20 @@ function PreviewPane(props: {
       setLoadedPath(target);
       // 0.6.0 修复：加载动画资产后自动选第一个 clip——旧实现恒置 ''（静态），播放按钮永远 disabled
       const memory = props.persistKey === undefined ? null : readPaneMemory(props.persistKey);
-      const rememberedClip =
-        memory !== null && memory.path === target && bounds.clips.includes(memory.clip) ? memory.clip : (bounds.clips[0] ?? '');
-      const rememberedFrame = memory !== null && memory.path === target ? memory.frame : 0;
-      const startFrame = Math.max(0, Math.min(rememberedFrame, maxFrame));
+      const restore = resolveRestoreTarget(memory, target, bounds.clips, maxFrame);
+      const rememberedClip = restore.clip;
+      const startFrame = restore.frame;
       setClip(rememberedClip);
       setFrame(startFrame);
-      viewer.applyView(defaultView(bounds.center, bounds.radius));
+      // 0.6.2 修复：必须走 applyView(clip) 激活对应 action，否则 activeAction 恒为 null，
+      // 拖时间轴只改内部帧号、不调 mixer.setTime → 画面不动（旧实现只 setClip 不激活）
+      const baseView = defaultView(bounds.center, bounds.radius);
+      viewer.applyView({
+        ...baseView,
+        clip: rememberedClip === '' ? null : rememberedClip,
+        frame: startFrame,
+        mode,
+      });
       if (rememberedClip !== '' && startFrame > 0) viewer.seekFrame(startFrame);
       if (props.sessionId !== '') previewSession.markUsed(props.sessionId);
       props.onLoaded?.(target);

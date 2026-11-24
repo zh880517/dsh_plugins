@@ -11,6 +11,7 @@ import {
   normalizeEnergySeries,
   pickSendDigest,
   readPaneMemory,
+  resolveRestoreTarget,
   segmentColor,
   shouldShowPreviewTab,
   writePaneMemory,
@@ -39,6 +40,31 @@ describe('预览状态记忆（0.6.0：切面板/页签回来数据不丢）', (
     writePaneMemory('k', memory);
     memory.frame = 99;
     expect(readPaneMemory('k')?.frame).toBe(3);
+  });
+});
+
+describe('加载后恢复目标（0.6.2：自动选首个 clip + 恢复记忆进度）', () => {
+  it('无记忆：取第一个 clip、第 0 帧（旧实现恒为静态 = 播放按钮永久 disabled）', () => {
+    expect(resolveRestoreTarget(null, 'E:\\a.fbx', ['Take 001', 'Idle'], 60)).toEqual({ clip: 'Take 001', frame: 0 });
+  });
+
+  it('记忆命中同一路径且 clip 仍存在：恢复 clip 与帧号', () => {
+    const memory = { path: 'E:\\a.fbx', clip: 'Idle', frame: 42, mode: 'default' as const };
+    expect(resolveRestoreTarget(memory, 'E:\\a.fbx', ['Take 001', 'Idle'], 60)).toEqual({ clip: 'Idle', frame: 42 });
+  });
+
+  it('路径不同：不套用记忆（取首个 clip + 0 帧）', () => {
+    const memory = { path: 'E:\\other.fbx', clip: 'Idle', frame: 42, mode: 'default' as const };
+    expect(resolveRestoreTarget(memory, 'E:\\a.fbx', ['Take 001'], 60)).toEqual({ clip: 'Take 001', frame: 0 });
+  });
+
+  it('记忆里的 clip 已不存在：回落首个 clip；帧号按 maxFrame 夹紧', () => {
+    const memory = { path: 'E:\\a.fbx', clip: 'Gone', frame: 999, mode: 'default' as const };
+    expect(resolveRestoreTarget(memory, 'E:\\a.fbx', ['Take 001'], 16)).toEqual({ clip: 'Take 001', frame: 16 });
+  });
+
+  it('静态资产（无 clip）：clip 为空串、帧 0', () => {
+    expect(resolveRestoreTarget(null, 'E:\\static.fbx', [], 0)).toEqual({ clip: '', frame: 0 });
   });
 });
 

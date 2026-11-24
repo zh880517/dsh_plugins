@@ -287,11 +287,27 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     },
 
     seekFrame(requested) {
-      if (activeAction === null || mixer === null) {
+      if (mixer === null) {
         frame = Math.max(0, requested);
         return Promise.resolve();
       }
-      const duration = activeAction.getClip().duration;
+      // 兜底：还没激活 action 但已选过 clip 时（例如只 setClip 未 applyView），先激活再 scrub——
+      // 否则拖时间轴画面不动（0.6.2 修复）
+      let action = activeAction;
+      if (action === null && clipName !== null) {
+        const candidate = actions.get(clipName);
+        if (candidate !== undefined) {
+          for (const other of actions.values()) other.stop();
+          candidate.reset().play();
+          activeAction = candidate;
+          action = candidate;
+        }
+      }
+      if (action === null) {
+        frame = Math.max(0, requested);
+        return Promise.resolve();
+      }
+      const duration = action.getClip().duration;
       frame = clampFrame(requested, duration);
       playing = false;
       mixer.setTime(frame / RENDER_FPS);

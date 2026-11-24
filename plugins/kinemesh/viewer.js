@@ -47109,11 +47109,25 @@ void main() {
 				pauseInternal();
 			},
 			seekFrame(requested) {
-				if (activeAction === null || mixer === null) {
+				if (mixer === null) {
 					frame = Math.max(0, requested);
 					return Promise.resolve();
 				}
-				const duration = activeAction.getClip().duration;
+				let action = activeAction;
+				if (action === null && clipName !== null) {
+					const candidate = actions.get(clipName);
+					if (candidate !== void 0) {
+						for (const other of actions.values()) other.stop();
+						candidate.reset().play();
+						activeAction = candidate;
+						action = candidate;
+					}
+				}
+				if (action === null) {
+					frame = Math.max(0, requested);
+					return Promise.resolve();
+				}
+				const duration = action.getClip().duration;
 				frame = clampFrame(requested, duration);
 				playing = false;
 				mixer.setTime(frame / 30);
