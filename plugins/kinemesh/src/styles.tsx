@@ -57,11 +57,16 @@ export const css = `
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);
   color:var(--dsw-alias-brand-primary);font-size:13px;font-weight:600}
 
-/* ———— 播放条（0.7.0：纯图标按钮，整条在轨道条上方，居中排布） ———— */
-.kinemesh-transport{display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 14px 4px}
+/* ———— 播放条（0.7.0：纯图标按钮，整条在轨道条上方；0.7.4：右侧播放速度滑块） ———— */
+.kinemesh-transport{position:relative;display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 14px 4px}
 .kinemesh-transportbtn{width:30px;height:30px;border-radius:8px}
 .kinemesh-transportbtn[disabled]{opacity:.35;cursor:default}
 .kinemesh-transportbtn[disabled]:hover{background:transparent;color:var(--dsw-alias-label-secondary)}
+.kinemesh-speedgroup{position:absolute;right:14px;display:flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.kinemesh-speed{width:104px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
+.kinemesh-speedvalue{min-width:36px;text-align:right;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-primary)}
 
 .kinemesh-readout{display:flex;align-items:center;gap:8px;padding:4px 14px 8px;font-size:11.5px;
   color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;flex-wrap:wrap}
@@ -114,7 +119,7 @@ export const css = `
 .kinemesh-framelabel{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;
   color:var(--dsw-alias-label-primary);padding:1px 7px;border-radius:6px;
   border:1px solid var(--dsw-alias-border-l1)}
-.kinemesh-timeline svg{display:block;width:100%;height:52px;cursor:crosshair;border-radius:8px;
+.kinemesh-timeline svg{display:block;width:100%;height:60px;cursor:crosshair;border-radius:8px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);touch-action:none}
 .kinemesh-ticks{position:relative;height:14px;margin-top:2px}
 .kinemesh-tick{position:absolute;top:0;font-size:10px;line-height:14px;white-space:nowrap;

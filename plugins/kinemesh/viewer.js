@@ -46875,6 +46875,13 @@ void main() {
 		return surface === "default" ? "bones-overlay" : surface;
 	}
 	var DEFAULT_DISTANCE_FACTOR = 2.2;
+	/** 播放速度倍率范围（0.7.4）：预览面板滑块 0.1～2.0，viewer 侧兜底允许更宽一点 */
+	var PLAYBACK_RATE_MIN = .05;
+	/** 播放速度夹紧：非法值回 1（原速），越界夹到 [MIN, MAX] */
+	function clampPlaybackRate(rate) {
+		if (!Number.isFinite(rate)) return 1;
+		return Math.min(4, Math.max(PLAYBACK_RATE_MIN, rate));
+	}
 	/** 球坐标 → 相机位置（Y 轴向上，azimuth 0 = 从 +Z 看） */
 	function cameraPosition(camera) {
 		const azimuthRad = normalizeDegrees(camera.azimuth) * Math.PI / 180;
@@ -47200,6 +47207,8 @@ void main() {
 		let clipName = null;
 		let frame = 0;
 		let playing = false;
+		/** 播放速度倍率（0.7.4）：只有播放推进受它影响，seek 与截图永远按真实帧号 */
+		let playbackRate = 1;
 		let surface = "default";
 		let bonesVisible = false;
 		/** 当前模型是否有网格（无网格时模式口径一律按 skeleton，AI 侧不会误判） */
@@ -47210,23 +47219,45 @@ void main() {
 		const firstFrame = new Promise((resolve) => {
 			firstFrameResolve = resolve;
 		});
+		/** 渲染循环异常只记一次：不让单次异常掐断整条 rAF 链（three 的 setAnimationLoop 在回调抛错后
+		*  不会排下一帧，循环一死画面就永久静止——「点轨道/播放条跳转不刷新显示」就是这个症状） */
+		let renderErrorLogged = false;
 		const renderLoop = () => {
-			const delta = clock.getDelta();
-			if (mixer !== null && activeAction !== null && (playing || seekResolvers.length > 0)) {
-				const duration = activeAction.getClip().duration;
-				if (playing) frame = (frame + delta * 30) % Math.max(duration * 30, 1 / 30);
-				mixer.setTime(frame / 30);
+			try {
+				const delta = clock.getDelta();
+				if (mixer !== null && activeAction !== null && (playing || seekResolvers.length > 0)) {
+					const duration = activeAction.getClip().duration;
+					if (playing) frame = (frame + delta * 30 * playbackRate) % Math.max(duration * 30, 1 / 30);
+					mixer.setTime(frame / 30);
+				}
+				controls.update();
+				positionBoneLabels();
+				renderer.render(scene, camera);
+				if (firstFrameResolve !== null) {
+					firstFrameResolve();
+					firstFrameResolve = null;
+				}
+				while (seekResolvers.length > 0) seekResolvers.pop()?.();
+			} catch (error) {
+				if (!renderErrorLogged) {
+					renderErrorLogged = true;
+					console.error("[kinemesh] 渲染循环异常（已忽略，循环继续）：", error);
+				}
 			}
-			controls.update();
-			positionBoneLabels();
-			renderer.render(scene, camera);
-			if (firstFrameResolve !== null) {
-				firstFrameResolve();
-				firstFrameResolve = null;
-			}
-			while (seekResolvers.length > 0) seekResolvers.pop()?.();
 		};
+		/** 重新挂上动画循环：任何一次用户交互都顺手确保循环活着（上下文丢失/异常后能自愈） */
+		function ensureRenderLoop() {
+			renderer.setAnimationLoop(renderLoop);
+		}
 		renderer.setAnimationLoop(renderLoop);
+		renderer.domElement.addEventListener("webglcontextlost", (event) => {
+			event.preventDefault();
+			console.warn("[kinemesh] WebGL 上下文丢失，等待恢复");
+		});
+		renderer.domElement.addEventListener("webglcontextrestored", () => {
+			ensureRenderLoop();
+			renderer.render(scene, camera);
+		});
 		function clearModel() {
 			clearBoneLabels();
 			if (model === null) return;
@@ -47400,6 +47431,7 @@ void main() {
 				bonesVisible = next.bones;
 				applyMode();
 				renderer.render(scene, camera);
+				ensureRenderLoop();
 			},
 			play(clip) {
 				const name = clip ?? clipName ?? bounds.clips[0] ?? null;
@@ -47411,9 +47443,13 @@ void main() {
 				activeAction = action;
 				clipName = name;
 				playing = true;
+				ensureRenderLoop();
 			},
 			pause() {
 				pauseInternal();
+			},
+			setPlaybackRate(rate) {
+				playbackRate = clampPlaybackRate(rate);
 			},
 			seekFrame(requested) {
 				if (mixer === null) {
@@ -47438,8 +47474,17 @@ void main() {
 				frame = clampFrame(requested, duration);
 				playing = false;
 				mixer.setTime(frame / 30);
+				renderer.render(scene, camera);
+				ensureRenderLoop();
 				return new Promise((resolve) => {
 					seekResolvers.push(resolve);
+					window.setTimeout(() => {
+						const index = seekResolvers.indexOf(resolve);
+						if (index < 0) return;
+						seekResolvers.splice(index, 1);
+						renderer.render(scene, camera);
+						resolve();
+					}, 250);
 				});
 			},
 			frameInfo() {
@@ -47534,6 +47579,7 @@ void main() {
 			bonesVisible = bonesOfMode(next);
 			applyMode();
 			renderer.render(scene, camera);
+			ensureRenderLoop();
 		}
 		function clearBoneLabels() {
 			for (const entry of labelSprites) {

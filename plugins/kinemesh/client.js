@@ -40105,6 +40105,13 @@ function composeViewMode(surface, bones, hasMesh) {
 	return surface === "default" ? "bones-overlay" : surface;
 }
 var DEFAULT_DISTANCE_FACTOR = 2.2;
+/** 播放速度倍率范围（0.7.4）：预览面板滑块 0.1～2.0，viewer 侧兜底允许更宽一点 */
+var PLAYBACK_RATE_MIN = .05;
+/** 播放速度夹紧：非法值回 1（原速），越界夹到 [MIN, MAX] */
+function clampPlaybackRate(rate) {
+	if (!Number.isFinite(rate)) return 1;
+	return Math.min(4, Math.max(PLAYBACK_RATE_MIN, rate));
+}
 /** 球坐标 → 相机位置（Y 轴向上，azimuth 0 = 从 +Z 看） */
 function cameraPosition(camera) {
 	const azimuthRad = normalizeDegrees(camera.azimuth) * Math.PI / 180;
@@ -40430,6 +40437,8 @@ function mountViewer(container, options = {}) {
 	let clipName = null;
 	let frame = 0;
 	let playing = false;
+	/** 播放速度倍率（0.7.4）：只有播放推进受它影响，seek 与截图永远按真实帧号 */
+	let playbackRate = 1;
 	let surface = "default";
 	let bonesVisible = false;
 	/** 当前模型是否有网格（无网格时模式口径一律按 skeleton，AI 侧不会误判） */
@@ -40440,23 +40449,45 @@ function mountViewer(container, options = {}) {
 	const firstFrame = new Promise((resolve) => {
 		firstFrameResolve = resolve;
 	});
+	/** 渲染循环异常只记一次：不让单次异常掐断整条 rAF 链（three 的 setAnimationLoop 在回调抛错后
+	*  不会排下一帧，循环一死画面就永久静止——「点轨道/播放条跳转不刷新显示」就是这个症状） */
+	let renderErrorLogged = false;
 	const renderLoop = () => {
-		const delta = clock.getDelta();
-		if (mixer !== null && activeAction !== null && (playing || seekResolvers.length > 0)) {
-			const duration = activeAction.getClip().duration;
-			if (playing) frame = (frame + delta * 30) % Math.max(duration * 30, 1 / 30);
-			mixer.setTime(frame / 30);
+		try {
+			const delta = clock.getDelta();
+			if (mixer !== null && activeAction !== null && (playing || seekResolvers.length > 0)) {
+				const duration = activeAction.getClip().duration;
+				if (playing) frame = (frame + delta * 30 * playbackRate) % Math.max(duration * 30, 1 / 30);
+				mixer.setTime(frame / 30);
+			}
+			controls.update();
+			positionBoneLabels();
+			renderer.render(scene, camera);
+			if (firstFrameResolve !== null) {
+				firstFrameResolve();
+				firstFrameResolve = null;
+			}
+			while (seekResolvers.length > 0) seekResolvers.pop()?.();
+		} catch (error) {
+			if (!renderErrorLogged) {
+				renderErrorLogged = true;
+				console.error("[kinemesh] 渲染循环异常（已忽略，循环继续）：", error);
+			}
 		}
-		controls.update();
-		positionBoneLabels();
-		renderer.render(scene, camera);
-		if (firstFrameResolve !== null) {
-			firstFrameResolve();
-			firstFrameResolve = null;
-		}
-		while (seekResolvers.length > 0) seekResolvers.pop()?.();
 	};
+	/** 重新挂上动画循环：任何一次用户交互都顺手确保循环活着（上下文丢失/异常后能自愈） */
+	function ensureRenderLoop() {
+		renderer.setAnimationLoop(renderLoop);
+	}
 	renderer.setAnimationLoop(renderLoop);
+	renderer.domElement.addEventListener("webglcontextlost", (event) => {
+		event.preventDefault();
+		console.warn("[kinemesh] WebGL 上下文丢失，等待恢复");
+	});
+	renderer.domElement.addEventListener("webglcontextrestored", () => {
+		ensureRenderLoop();
+		renderer.render(scene, camera);
+	});
 	function clearModel() {
 		clearBoneLabels();
 		if (model === null) return;
@@ -40630,6 +40661,7 @@ function mountViewer(container, options = {}) {
 			bonesVisible = next.bones;
 			applyMode();
 			renderer.render(scene, camera);
+			ensureRenderLoop();
 		},
 		play(clip) {
 			const name = clip ?? clipName ?? bounds.clips[0] ?? null;
@@ -40641,9 +40673,13 @@ function mountViewer(container, options = {}) {
 			activeAction = action;
 			clipName = name;
 			playing = true;
+			ensureRenderLoop();
 		},
 		pause() {
 			pauseInternal();
+		},
+		setPlaybackRate(rate) {
+			playbackRate = clampPlaybackRate(rate);
 		},
 		seekFrame(requested) {
 			if (mixer === null) {
@@ -40668,8 +40704,17 @@ function mountViewer(container, options = {}) {
 			frame = clampFrame(requested, duration);
 			playing = false;
 			mixer.setTime(frame / 30);
+			renderer.render(scene, camera);
+			ensureRenderLoop();
 			return new Promise((resolve) => {
 				seekResolvers.push(resolve);
+				window.setTimeout(() => {
+					const index = seekResolvers.indexOf(resolve);
+					if (index < 0) return;
+					seekResolvers.splice(index, 1);
+					renderer.render(scene, camera);
+					resolve();
+				}, 250);
 			});
 		},
 		frameInfo() {
@@ -40764,6 +40809,7 @@ function mountViewer(container, options = {}) {
 		bonesVisible = bonesOfMode(next);
 		applyMode();
 		renderer.render(scene, camera);
+		ensureRenderLoop();
 	}
 	function clearBoneLabels() {
 		for (const entry of labelSprites) {
@@ -47640,11 +47686,16 @@ var css = `
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);
   color:var(--dsw-alias-brand-primary);font-size:13px;font-weight:600}
 
-/* ———— 播放条（0.7.0：纯图标按钮，整条在轨道条上方，居中排布） ———— */
-.kinemesh-transport{display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 14px 4px}
+/* ———— 播放条（0.7.0：纯图标按钮，整条在轨道条上方；0.7.4：右侧播放速度滑块） ———— */
+.kinemesh-transport{position:relative;display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 14px 4px}
 .kinemesh-transportbtn{width:30px;height:30px;border-radius:8px}
 .kinemesh-transportbtn[disabled]{opacity:.35;cursor:default}
 .kinemesh-transportbtn[disabled]:hover{background:transparent;color:var(--dsw-alias-label-secondary)}
+.kinemesh-speedgroup{position:absolute;right:14px;display:flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.kinemesh-speed{width:104px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
+.kinemesh-speedvalue{min-width:36px;text-align:right;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-primary)}
 
 .kinemesh-readout{display:flex;align-items:center;gap:8px;padding:4px 14px 8px;font-size:11.5px;
   color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;flex-wrap:wrap}
@@ -47697,7 +47748,7 @@ var css = `
 .kinemesh-framelabel{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;
   color:var(--dsw-alias-label-primary);padding:1px 7px;border-radius:6px;
   border:1px solid var(--dsw-alias-border-l1)}
-.kinemesh-timeline svg{display:block;width:100%;height:52px;cursor:crosshair;border-radius:8px;
+.kinemesh-timeline svg{display:block;width:100%;height:60px;cursor:crosshair;border-radius:8px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);touch-action:none}
 .kinemesh-ticks{position:relative;height:14px;margin-top:2px}
 .kinemesh-tick{position:absolute;top:0;font-size:10px;line-height:14px;white-space:nowrap;
@@ -47809,6 +47860,8 @@ var ZH_TEXTS = {
 	"transport.pause": "暂停",
 	"transport.next": "下一帧",
 	"transport.last": "跳到最后一帧",
+	"transport.speed": "速度",
+	"transport.speedTitle": "播放速度（拖动滑块调节，0.1×～2×）",
 	"mode.autoTitle": "载入时按模型自动选的显示方式（手动切换后由你决定）",
 	"mode.auto.no-mesh": "自动：骨架（模型没有 mesh）",
 	"mode.auto.no-texture": "自动：素模（没有可用贴图）",
@@ -47859,6 +47912,8 @@ var EN_TEXTS = {
 	"transport.pause": "Pause",
 	"transport.next": "Next frame",
 	"transport.last": "Go to last frame",
+	"transport.speed": "speed",
+	"transport.speedTitle": "Playback speed (drag the slider, 0.1×–2×)",
 	"mode.autoTitle": "Display picked automatically from the model (manual switch takes over)",
 	"mode.auto.no-mesh": "auto: skeleton (no mesh)",
 	"mode.auto.no-texture": "auto: solid (no usable texture)",
@@ -48037,13 +48092,16 @@ function SessionCapture({ sessionId, store }) {
 	return null;
 }
 var TIMELINE_VB_W = 600;
-var TIMELINE_VB_H = 48;
+var TIMELINE_VB_H = 56;
 var TIMELINE_CURVE_H = 28;
-var TIMELINE_BAND_TOP = 32;
+var TIMELINE_BAND_TOP = 31;
 var TIMELINE_BAND_H = 9;
 /** 刻度线所在区间（色带下方），刻度文字用 HTML 层（SVG 横向拉伸会把文字压扁） */
 var TIMELINE_TICK_TOP = 42;
-var TIMELINE_TICK_BOTTOM = 47;
+var TIMELINE_TICK_BOTTOM = 56;
+/** 0.7.4：三级刻度——每帧 1/4 高、每 5 帧 1/2 高、标签帧满高 */
+var TICK_MINOR_TOP = 52.5;
+var TICK_MEDIUM_TOP = 49;
 /** 刻度步长候选（帧）：1/2/5/10/15/30 秒级常用档，往后按 30fps 的整秒/多秒延伸 */
 var TICK_STEPS = [
 	1,
@@ -48064,6 +48122,8 @@ var TICK_STEPS = [
 ];
 /** 标签数上限（含首尾）：超过会让短动作的刻度挤成一团 */
 var TICK_MAX_LABELS = 9;
+/** 逐帧细刻度的最小间距（视图单位，600 宽的视图里约 1/300 宽） */
+var TICK_MIN_SPACING = 2;
 /**
 * 自适应刻度步长（0.6.3）：帧数很少时（如 16 帧）用 1/2 帧步长，长动作自动放大步长，
 * 保证标签数 ≤ TICK_MAX_LABELS。maxFrame ≤ 0 返回 1。
@@ -48087,6 +48147,38 @@ function frameTicks(maxFrame, step) {
 		if (span - last < size * .6 && ticks.length > 1) ticks[ticks.length - 1] = span;
 		else ticks.push(span);
 	}
+	return ticks;
+}
+/**
+* 三级刻度清单（0.7.4，用户拍板）：
+* · **每帧**一根细刻度（1/4 高）——逐帧定位要看得见；
+* · 每 5 帧一根中刻度（1/2 高）；
+* · 标签帧（`frameTicks` 自适应步长）为满高长刻度。
+* 极长片段（如 1800 帧）在 600 单位宽的视图里逐帧画会糊成一条边，因此细刻度步长按
+* `TICK_MIN_SPACING` 自适应放大，中刻度随之 ×5（短片段即每帧）。
+*/
+function timelineTicks(maxFrame) {
+	const span = Number.isFinite(maxFrame) ? Math.max(0, Math.floor(maxFrame)) : 0;
+	if (span === 0) return [{
+		frame: 0,
+		level: "major"
+	}];
+	const labels = new Set(frameTicks(span));
+	const spacing = TIMELINE_VB_W / span;
+	const minorStep = Math.max(1, Math.ceil(TICK_MIN_SPACING / spacing));
+	const mediumStep = minorStep * 5;
+	const ticks = [];
+	for (let frame = 0; frame <= span; frame += minorStep) {
+		const level = labels.has(frame) ? "major" : frame % mediumStep === 0 ? "medium" : "minor";
+		ticks.push({
+			frame,
+			level
+		});
+	}
+	if (ticks[ticks.length - 1]?.frame !== span) ticks.push({
+		frame: span,
+		level: "major"
+	});
 	return ticks;
 }
 /** 图标全部手绘 SVG（不引图标库），描边/填充用 currentColor 跟随宿主主题 */
@@ -48144,7 +48236,8 @@ function TransportGlyph({ kind }) {
 		fill: "currentColor"
 	}));
 }
-/** 播放条：回到第一帧 / 前一帧 / 播放暂停 / 下一帧 / 跳到最后一帧（纯图标，标题即无障碍名） */
+/** 播放条：回到第一帧 / 前一帧 / 播放暂停 / 下一帧 / 跳到最后一帧（纯图标，标题即无障碍名）
+*  + 右侧播放速度滑块（0.7.4） */
 function TransportBar(props) {
 	const max = Math.max(props.maxFrame, 0);
 	const atStart = props.frame <= 0;
@@ -48194,7 +48287,19 @@ function TransportBar(props) {
 		"aria-label": button.title,
 		onClick: button.onClick,
 		disabled: button.disabled
-	}, /* @__PURE__ */ react.createElement(TransportGlyph, { kind: button.kind }))));
+	}, /* @__PURE__ */ react.createElement(TransportGlyph, { kind: button.kind }))), /* @__PURE__ */ react.createElement("label", {
+		className: "kinemesh-speedgroup",
+		title: translate("transport.speedTitle")
+	}, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-speedlabel" }, translate("transport.speed")), /* @__PURE__ */ react.createElement("input", {
+		className: "kinemesh-speed",
+		type: "range",
+		min: .1,
+		max: 2,
+		step: .1,
+		value: props.speed,
+		"aria-label": translate("transport.speed"),
+		onChange: (event) => props.onSpeed(Number(event.target.value))
+	}), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-speedvalue" }, `${props.speed.toFixed(1)}×`)));
 }
 function MotionTimeline(props) {
 	const dragging = react.useRef(false);
@@ -48209,7 +48314,7 @@ function MotionTimeline(props) {
 		const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
 		props.onSeek(Math.round(ratio * props.maxFrame));
 	};
-	return /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timeline" }, /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timelinehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-timelinehint" }, hasCurve ? translate("timeline.hint") : translate("timeline.hintNoCurve")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-framelabel" }, `f${props.frame} / f${Math.max(props.maxFrame, 0)}`)), /* @__PURE__ */ react.createElement("svg", {
+	return /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timeline" }, /* @__PURE__ */ react.createElement("div", { className: "kinemesh-timelinehead" }, /* @__PURE__ */ react.createElement("span", { className: "kinemesh-timelinehint" }, hasCurve ? translate("timeline.hint") : translate("timeline.hintNoCurve")), /* @__PURE__ */ react.createElement("span", { className: "kinemesh-framelabel" }, `f${Math.round(props.frame)} / f${Math.max(props.maxFrame, 0)}`)), /* @__PURE__ */ react.createElement("svg", {
 		viewBox: `0 0 ${TIMELINE_VB_W} ${TIMELINE_VB_H}`,
 		preserveAspectRatio: "none",
 		role: "img",
@@ -48256,16 +48361,17 @@ function MotionTimeline(props) {
 			fill: segmentColor(label),
 			opacity: "0.9"
 		}, /* @__PURE__ */ react.createElement("title", null, `#${index + 1} frame ${segment.frameStart ?? "?"}–${segment.frameEnd ?? "?"}：${label} · guess ${guess} · 强度 ${segment.level ?? "?"}`));
-	}), ticks.map((tick) => {
-		const x = frameToPercent(tick, props.maxFrame) / 100 * TIMELINE_VB_W;
+	}), timelineTicks(props.maxFrame).map((tick) => {
+		const x = frameToPercent(tick.frame, props.maxFrame) / 100 * TIMELINE_VB_W;
+		const top = tick.level === "major" ? TIMELINE_TICK_TOP : tick.level === "medium" ? TICK_MEDIUM_TOP : TICK_MINOR_TOP;
 		return /* @__PURE__ */ react.createElement("line", {
-			key: `tick-${tick}`,
+			key: `tick-${tick.frame}`,
 			x1: x,
-			y1: TIMELINE_TICK_TOP,
+			y1: top,
 			x2: x,
 			y2: TIMELINE_TICK_BOTTOM,
-			stroke: "var(--dsw-alias-border-l2, #565b63)",
-			strokeWidth: "1"
+			stroke: tick.level === "minor" ? "var(--dsw-alias-border-l1, #3e434a)" : "var(--dsw-alias-border-l2, #565b63)",
+			strokeWidth: tick.level === "minor" ? .8 : tick.level === "medium" ? 1 : 1.2
 		});
 	}), /* @__PURE__ */ react.createElement("line", {
 		x1: playheadX,
@@ -48304,6 +48410,8 @@ function PreviewPane(props) {
 	/** 自动选模式的理由（null = 用户手动选的，不显示自动提示） */
 	const [autoReason, setAutoReason] = react.useState(null);
 	const [playing, setPlaying] = react.useState(false);
+	/** 播放速度倍率（0.7.4）：播放条右侧滑块，0.1×～2× */
+	const [speed, setSpeed] = react.useState(1);
 	const [viewText, setViewText] = react.useState("—");
 	const [state, setState] = react.useState({
 		phase: "empty",
@@ -48481,6 +48589,7 @@ function PreviewPane(props) {
 				mode: nextDisplay.surface
 			});
 			viewer.setDisplay(nextDisplay);
+			viewer.setPlaybackRate(speed);
 			if (rememberedClip !== "" && startFrame > 0) viewer.seekFrame(startFrame);
 			if (props.sessionId !== "") previewSession.markUsed(props.sessionId);
 			props.onLoaded?.(target);
@@ -48644,6 +48753,12 @@ function PreviewPane(props) {
 		setBonesOn(next);
 		viewerRef.current?.setDisplay(display);
 	};
+	/** 播放速度（0.7.4）：夹紧到 0.1～2×，只影响播放推进，不影响 seek/截图 */
+	const changeSpeed = (next) => {
+		const rate = Math.min(2, Math.max(.1, Number.isFinite(next) ? next : 1));
+		setSpeed(rate);
+		viewerRef.current?.setPlaybackRate(rate);
+	};
 	const send = async () => {
 		if (viewerRef.current === null || loadedPath === "" || props.sessionId === "") return;
 		setSending(true);
@@ -48740,11 +48855,13 @@ function PreviewPane(props) {
 		playing,
 		frame,
 		maxFrame: state.maxFrame,
+		speed,
 		onFirst: () => stepTo(0),
 		onPrev: () => stepTo(stepFrame(frame, -1, state.maxFrame)),
 		onTogglePlay: togglePlay,
 		onNext: () => stepTo(stepFrame(frame, 1, state.maxFrame)),
-		onLast: () => stepTo(state.maxFrame)
+		onLast: () => stepTo(state.maxFrame),
+		onSpeed: changeSpeed
 	}), /* @__PURE__ */ react.createElement(MotionTimeline, {
 		energy: analysis.data?.energy ?? [],
 		segments: analysis.data?.segments ?? [],
@@ -48995,6 +49112,7 @@ exports.resolveRestoreTarget = resolveRestoreTarget;
 exports.segmentColor = segmentColor;
 exports.shouldShowPreviewTab = shouldShowPreviewTab;
 exports.stepFrame = stepFrame;
+exports.timelineTicks = timelineTicks;
 exports.writePaneMemory = writePaneMemory;
     })(module, module.exports, require);
     return module.exports;

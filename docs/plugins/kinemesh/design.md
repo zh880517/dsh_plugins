@@ -625,6 +625,24 @@ kinemesh_analyze(path, {
     唯一定位入口，不能因为缺曲线就消失（此时提示文案切换为 `timeline.hintNoCurve`）；
   - 帧号口径统一走 `clampFrame` / `stepFrame` 纯函数（`tests/kinemesh/client-preview.test.ts` 直测：
     首末帧静止不绕回、非法入参归 0、`duration×fps` 浮点误差不产生半帧）。
+- **轨道三档刻度（0.7.4，用户拍板）**：`timelineTicks(maxFrame)` 纯函数（单测覆盖）产出
+  `minor | medium | major` 三级——**每帧**一根细刻度（1/4 高）、**每 5 帧**中刻度（1/2 高）、
+  标签帧（`frameTicks` 自适应步长，≤9 个）满高长刻度。极长片段（如 1800 帧）逐帧画会糊成一条边，
+  细刻度步长按 `TICK_MIN_SPACING`（视图 2 单位）自适应放大、中刻度随之 ×5；短片段就是逐帧。
+  刻度文字仍在 HTML 层（SVG 横向拉伸会把文字压扁）。
+- **播放速度滑块（0.7.4）**：播放条右侧「速度 [拖动条] 1.0×」，范围 0.1×～2×（viewer 侧
+  `setPlaybackRate` 兜底夹到 0.05～4，`clampPlaybackRate` 纯函数单测）。只影响**播放推进**
+  （`frame += Δt × 30fps × rate`），seek 与截图永远按真实帧号。实测 900ms：1× → 28 帧、
+  2× → 48 帧、0.2× → 4 帧。
+- **帧号显示恒为整数（0.7.4）**：播放时内部帧号是连续小数（平滑推进），轨道头部/读数一律
+  `Math.round` 后再显示——修 0.7.3 之前出现过的 `f9.115996421575549 / f55`。
+- **渲染循环健壮性（0.7.4）**：修「点轨道条/播放条跳转不刷新显示」。three 的
+  `setAnimationLoop` 在回调抛错后**不会排下一帧**，循环一死画面永停、交互区还在动——正是这个症状。
+  ① `renderLoop` 整体 try/catch（异常只记一次，循环继续）；② 每次交互（play / seek / setDisplay /
+  setMode / applyView）都 `ensureRenderLoop()` 重新挂上循环，上下文丢失后也能自愈；
+  ③ `seekFrame` 改「立即 render 一帧 + 250ms 兜底」，不再依赖循环节奏；④ 监听
+  `webglcontextlost` / `webglcontextrestored`（同屏多个预览画布时 Chromium 会回收上下文），
+  恢复后重挂循环并补一帧。
 - **载入自动选渲染模式（0.7.1，用户拍板）**：`core/viewer/auto-mode.ts`（纯判定 + 单测），
   载入后由 `viewer.modeSuggestion()` 给出三档建议：
   - **没有 mesh**（纯骨架 / 只有空物体）→ `skeleton`——网格模式下一片空白，骨架才看得出东西；

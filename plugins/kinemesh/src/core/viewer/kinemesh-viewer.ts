@@ -8,6 +8,7 @@ import {
   bonesOfMode,
   cameraFromPosition,
   cameraPosition,
+  clampPlaybackRate,
   composeViewMode,
   DEFAULT_DISTANCE_FACTOR,
   DEFAULT_FOV,
@@ -53,6 +54,8 @@ export interface ViewerHandle {
   setDisplay(display: { surface: SurfaceMode; bones: boolean }): void;
   play(clipName?: string): void;
   pause(): void;
+  /** 播放速度倍率（0.7.4）：1 = 原速；范围 0.05～4，越界自动夹紧 */
+  setPlaybackRate(rate: number): void;
   /** 跳帧：渲染完一帧后才 resolve（截图管线靠它保证确定性） */
   seekFrame(frame: number): Promise<void>;
   frameInfo(): ViewerFrameInfo | null;
@@ -178,6 +181,8 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   let clipName: string | null = null;
   let frame = 0;
   let playing = false;
+  /** 播放速度倍率（0.7.4）：只有播放推进受它影响，seek 与截图永远按真实帧号 */
+  let playbackRate = 1;
   // 0.7.2：表面显示方式（互斥）与骨架叠加开关解耦——面板上素模/贴图/线框三选一，骨架单独勾选
   let surface: SurfaceMode = 'default';
   let bonesVisible = false;
@@ -192,25 +197,53 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     firstFrameResolve = resolve;
   });
 
+  /** 渲染循环异常只记一次：不让单次异常掐断整条 rAF 链（three 的 setAnimationLoop 在回调抛错后
+   *  不会排下一帧，循环一死画面就永久静止——「点轨道/播放条跳转不刷新显示」就是这个症状） */
+  let renderErrorLogged = false;
   const renderLoop = (): void => {
-    const delta = clock.getDelta();
-    if (mixer !== null && activeAction !== null && (playing || seekResolvers.length > 0)) {
-      const duration = activeAction.getClip().duration;
-      if (playing) {
-        frame = (frame + delta * RENDER_FPS) % Math.max(duration * RENDER_FPS, 1 / RENDER_FPS);
+    try {
+      const delta = clock.getDelta();
+      if (mixer !== null && activeAction !== null && (playing || seekResolvers.length > 0)) {
+        const duration = activeAction.getClip().duration;
+        if (playing) {
+          frame = (frame + delta * RENDER_FPS * playbackRate) % Math.max(duration * RENDER_FPS, 1 / RENDER_FPS);
+        }
+        mixer.setTime(frame / RENDER_FPS);
       }
-      mixer.setTime(frame / RENDER_FPS);
+      controls.update();
+      positionBoneLabels();
+      renderer.render(scene, camera);
+      if (firstFrameResolve !== null) {
+        firstFrameResolve();
+        firstFrameResolve = null;
+      }
+      while (seekResolvers.length > 0) seekResolvers.pop()?.();
+    } catch (error) {
+      if (!renderErrorLogged) {
+        renderErrorLogged = true;
+        console.error('[kinemesh] 渲染循环异常（已忽略，循环继续）：', error);
+      }
     }
-    controls.update();
-    positionBoneLabels();
-    renderer.render(scene, camera);
-    if (firstFrameResolve !== null) {
-      firstFrameResolve();
-      firstFrameResolve = null;
-    }
-    while (seekResolvers.length > 0) seekResolvers.pop()?.();
   };
+  /** 重新挂上动画循环：任何一次用户交互都顺手确保循环活着（上下文丢失/异常后能自愈） */
+  function ensureRenderLoop(): void {
+    renderer.setAnimationLoop(renderLoop);
+  }
   renderer.setAnimationLoop(renderLoop);
+
+  // WebGL 上下文丢失/恢复：DSH 里同时存在多个预览画布时 Chromium 会回收上下文，
+  // 不处理的话画布会永久停在最后一帧（交互区还在动，但 3D 画面不刷新）
+  let contextLost = false;
+  renderer.domElement.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    contextLost = true;
+    console.warn('[kinemesh] WebGL 上下文丢失，等待恢复');
+  });
+  renderer.domElement.addEventListener('webglcontextrestored', () => {
+    contextLost = false;
+    ensureRenderLoop();
+    renderer.render(scene, camera);
+  });
 
   function clearModel(): void {
     clearBoneLabels();
@@ -434,6 +467,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       bonesVisible = next.bones;
       applyMode();
       renderer.render(scene, camera);
+      ensureRenderLoop();
     },
 
     play(clip) {
@@ -446,10 +480,15 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       activeAction = action;
       clipName = name;
       playing = true;
+      ensureRenderLoop();
     },
 
     pause() {
       pauseInternal();
+    },
+
+    setPlaybackRate(rate) {
+      playbackRate = clampPlaybackRate(rate);
     },
 
     seekFrame(requested) {
@@ -477,8 +516,19 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
       frame = clampFrame(requested, duration);
       playing = false;
       mixer.setTime(frame / RENDER_FPS);
+      // 立即出帧：跳转必须马上可见，不能等渲染循环（循环若停过就永远等不到）
+      renderer.render(scene, camera);
+      ensureRenderLoop();
       return new Promise<void>((resolve) => {
         seekResolvers.push(resolve);
+        // 兜底：渲染循环真停了（上下文丢失等）也不能让 seek 挂死——250ms 后自己补一帧并 resolve
+        window.setTimeout(() => {
+          const index = seekResolvers.indexOf(resolve);
+          if (index < 0) return;
+          seekResolvers.splice(index, 1);
+          renderer.render(scene, camera);
+          resolve();
+        }, 250);
       });
     },
 
@@ -583,6 +633,7 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
     applyMode();
     // 立即出一张帧：截图管线在 applyView 后立即截图，不等下一个 rAF
     renderer.render(scene, camera);
+    ensureRenderLoop();
   }
 
   // ———————— B.4 骨骼名文字精灵：canvas 2D 纹理 + three Sprite（无新依赖） ————————

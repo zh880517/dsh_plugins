@@ -88,6 +88,16 @@ export interface SceneFrame {
 export const DEFAULT_DISTANCE_FACTOR = 2.2;
 export const DEFAULT_FOV = 40;
 
+/** 播放速度倍率范围（0.7.4）：预览面板滑块 0.1～2.0，viewer 侧兜底允许更宽一点 */
+export const PLAYBACK_RATE_MIN = 0.05;
+export const PLAYBACK_RATE_MAX = 4;
+
+/** 播放速度夹紧：非法值回 1（原速），越界夹到 [MIN, MAX] */
+export function clampPlaybackRate(rate: number): number {
+  if (!Number.isFinite(rate)) return 1;
+  return Math.min(PLAYBACK_RATE_MAX, Math.max(PLAYBACK_RATE_MIN, rate));
+}
+
 export interface NormalizedViewInput {
   view?: unknown;
   viewPreset?: unknown;

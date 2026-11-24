@@ -20,11 +20,15 @@ import {
   segmentColor,
   shouldShowPreviewTab,
   stepFrame,
+  timelineTicks,
   writePaneMemory,
 } from '../../plugins/kinemesh/src/client.js';
 import {
   bonesOfMode,
+  clampPlaybackRate,
   composeViewMode,
+  PLAYBACK_RATE_MAX,
+  PLAYBACK_RATE_MIN,
   surfaceOfMode,
 } from '../../plugins/kinemesh/src/core/viewstate.js';
 
@@ -286,8 +290,63 @@ describe('发送 digest 挑选（review Important #1：静态态不附错配 dig
   });
 });
 
-describe('显示方式拆分（0.7.2：表面互斥 + 骨架叠加开关）', () => {
-  it('旧 ViewMode → 表面方式：skeleton 不画网格，bones-overlay 用贴图表面', () => {
+describe('三级刻度（0.7.4：每帧 1/4 高、每 5 帧 1/2 高、标签帧满高）', () => {
+  it('短片段（55 帧）逐帧出细刻度，每 5 帧中刻度，标签帧长刻度', () => {
+    const ticks = timelineTicks(55);
+    // 每帧一根
+    expect(ticks.length).toBe(56);
+    expect(ticks.map((tick) => tick.frame)).toEqual(Array.from({ length: 56 }, (_, index) => index));
+    // 每 5 帧中刻度（含 0；0 同时是标签帧 → 长刻度优先）
+    expect(ticks.find((tick) => tick.frame === 5)?.level).toBe('medium');
+    expect(ticks.find((tick) => tick.frame === 15)?.level).toBe('medium');
+    expect(ticks.find((tick) => tick.frame === 10)?.level).toBe('major'); // 标签帧（步长 10）
+    expect(ticks.find((tick) => tick.frame === 55)?.level).toBe('major'); // 末帧
+    expect(ticks.find((tick) => tick.frame === 1)?.level).toBe('minor');
+    expect(ticks.find((tick) => tick.frame === 4)?.level).toBe('minor');
+  });
+
+  it('长片段细刻度自适应放大，不会画成黑边（1800 帧）', () => {
+    const ticks = timelineTicks(1800);
+    expect(ticks.length).toBeLessThan(1800); // 确实抽稀了
+    expect(ticks.length).toBeGreaterThan(100); // 仍足够密
+    const spacing = 600 / ticks.length; // 视图单位
+    expect(spacing).toBeGreaterThanOrEqual(1.9);
+    expect(ticks[0]?.frame).toBe(0);
+    expect(ticks[ticks.length - 1]?.frame).toBe(1800);
+  });
+
+  it('每 5 帧中刻度：0 帧之后第一根中刻度落在 5 的倍数上', () => {
+    const mediums = timelineTicks(100).filter((tick) => tick.level === 'medium');
+    expect(mediums.length).toBeGreaterThan(10);
+    for (const tick of mediums) expect(tick.frame % 5).toBe(0);
+  });
+
+  it('退化输入（0 / 负数 / NaN）：只出一根长刻度', () => {
+    expect(timelineTicks(0)).toEqual([{ frame: 0, level: 'major' }]);
+    expect(timelineTicks(-10)).toEqual([{ frame: 0, level: 'major' }]);
+    expect(timelineTicks(Number.NaN)).toEqual([{ frame: 0, level: 'major' }]);
+  });
+});
+
+describe('播放速度倍率（0.7.4）', () => {
+  it('夹紧到 [0.05, 4]；非法值回原速 1', () => {
+    expect(clampPlaybackRate(1)).toBe(1);
+    expect(clampPlaybackRate(0.1)).toBe(0.1);
+    expect(clampPlaybackRate(2)).toBe(2);
+    expect(clampPlaybackRate(0)).toBe(PLAYBACK_RATE_MIN);
+    expect(clampPlaybackRate(99)).toBe(PLAYBACK_RATE_MAX);
+    expect(clampPlaybackRate(Number.NaN)).toBe(1);
+    expect(clampPlaybackRate(Number.POSITIVE_INFINITY)).toBe(1);
+  });
+
+  it('面板滑块范围 0.1～2× 落在 viewer 允许区间内', () => {
+    for (const rate of [0.1, 0.5, 1, 1.5, 2]) {
+      expect(clampPlaybackRate(rate)).toBe(rate);
+    }
+  });
+});
+
+describe('显示方式拆分（0.7.2：表面互斥 + 骨架叠加开关）', () => {  it('旧 ViewMode → 表面方式：skeleton 不画网格，bones-overlay 用贴图表面', () => {
     expect(surfaceOfMode('default')).toBe('default');
     expect(surfaceOfMode('solid')).toBe('solid');
     expect(surfaceOfMode('wireframe')).toBe('wireframe');

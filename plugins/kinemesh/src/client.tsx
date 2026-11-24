@@ -137,6 +137,8 @@ const ZH_TEXTS: Record<string, string> = {
   'transport.pause': '暂停',
   'transport.next': '下一帧',
   'transport.last': '跳到最后一帧',
+  'transport.speed': '速度',
+  'transport.speedTitle': '播放速度（拖动滑块调节，0.1×～2×）',
   'mode.autoTitle': '载入时按模型自动选的显示方式（手动切换后由你决定）',
   'mode.auto.no-mesh': '自动：骨架（模型没有 mesh）',
   'mode.auto.no-texture': '自动：素模（没有可用贴图）',
@@ -187,6 +189,8 @@ const EN_TEXTS: Record<string, string> = {
   'transport.pause': 'Pause',
   'transport.next': 'Next frame',
   'transport.last': 'Go to last frame',
+  'transport.speed': 'speed',
+  'transport.speedTitle': 'Playback speed (drag the slider, 0.1×–2×)',
   'mode.autoTitle': 'Display picked automatically from the model (manual switch takes over)',
   'mode.auto.no-mesh': 'auto: skeleton (no mesh)',
   'mode.auto.no-texture': 'auto: solid (no usable texture)',
@@ -422,19 +426,25 @@ function SessionCapture({ sessionId, store }: { sessionId: string; store: typeof
 // ———————— 强度曲线时间轴（§6.10.3）：曲线 + 播放头 + 分段色带 + 循环高亮 + 帧号刻度 ————————
 
 const TIMELINE_VB_W = 600;
-const TIMELINE_VB_H = 48;
+const TIMELINE_VB_H = 56;
 const TIMELINE_CURVE_H = 28;
-const TIMELINE_BAND_TOP = 32;
+const TIMELINE_BAND_TOP = 31;
 const TIMELINE_BAND_H = 9;
 /** 刻度线所在区间（色带下方），刻度文字用 HTML 层（SVG 横向拉伸会把文字压扁） */
 const TIMELINE_TICK_TOP = 42;
-const TIMELINE_TICK_BOTTOM = 47;
+const TIMELINE_TICK_BOTTOM = 56;
+/** 0.7.4：三级刻度——每帧 1/4 高、每 5 帧 1/2 高、标签帧满高 */
+const TICK_MINOR_TOP = TIMELINE_TICK_BOTTOM - 3.5;
+const TICK_MEDIUM_TOP = TIMELINE_TICK_BOTTOM - 7;
 
 /** 刻度步长候选（帧）：1/2/5/10/15/30 秒级常用档，往后按 30fps 的整秒/多秒延伸 */
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1800] as const;
 
 /** 标签数上限（含首尾）：超过会让短动作的刻度挤成一团 */
 const TICK_MAX_LABELS = 9;
+
+/** 逐帧细刻度的最小间距（视图单位，600 宽的视图里约 1/300 宽） */
+const TICK_MIN_SPACING = 2;
 
 /**
  * 自适应刻度步长（0.6.3）：帧数很少时（如 16 帧）用 1/2 帧步长，长动作自动放大步长，
@@ -463,6 +473,37 @@ export function frameTicks(maxFrame: number, step?: number): number[] {
     if (span - last < size * 0.6 && ticks.length > 1) ticks[ticks.length - 1] = span;
     else ticks.push(span);
   }
+  return ticks;
+}
+
+export type TimelineTickLevel = 'minor' | 'medium' | 'major';
+
+export interface TimelineTick {
+  frame: number;
+  level: TimelineTickLevel;
+}
+
+/**
+ * 三级刻度清单（0.7.4，用户拍板）：
+ * · **每帧**一根细刻度（1/4 高）——逐帧定位要看得见；
+ * · 每 5 帧一根中刻度（1/2 高）；
+ * · 标签帧（`frameTicks` 自适应步长）为满高长刻度。
+ * 极长片段（如 1800 帧）在 600 单位宽的视图里逐帧画会糊成一条边，因此细刻度步长按
+ * `TICK_MIN_SPACING` 自适应放大，中刻度随之 ×5（短片段即每帧）。
+ */
+export function timelineTicks(maxFrame: number): TimelineTick[] {
+  const span = Number.isFinite(maxFrame) ? Math.max(0, Math.floor(maxFrame)) : 0;
+  if (span === 0) return [{ frame: 0, level: 'major' }];
+  const labels = new Set(frameTicks(span));
+  const spacing = TIMELINE_VB_W / span;
+  const minorStep = Math.max(1, Math.ceil(TICK_MIN_SPACING / spacing));
+  const mediumStep = minorStep * 5;
+  const ticks: TimelineTick[] = [];
+  for (let frame = 0; frame <= span; frame += minorStep) {
+    const level: TimelineTickLevel = labels.has(frame) ? 'major' : frame % mediumStep === 0 ? 'medium' : 'minor';
+    ticks.push({ frame, level });
+  }
+  if (ticks[ticks.length - 1]?.frame !== span) ticks.push({ frame: span, level: 'major' });
   return ticks;
 }
 
@@ -518,18 +559,20 @@ function TransportGlyph({ kind }: { kind: TransportKind }): React.ReactElement {
   );
 }
 
-/** 播放条：回到第一帧 / 前一帧 / 播放暂停 / 下一帧 / 跳到最后一帧（纯图标，标题即无障碍名） */
+/** 播放条：回到第一帧 / 前一帧 / 播放暂停 / 下一帧 / 跳到最后一帧（纯图标，标题即无障碍名）
+ *  + 右侧播放速度滑块（0.7.4） */
 function TransportBar(props: {
   playing: boolean;
   frame: number;
   maxFrame: number;
+  speed: number;
   onFirst: () => void;
   onPrev: () => void;
   onTogglePlay: () => void;
   onNext: () => void;
   onLast: () => void;
-}): React.ReactElement {
-  const max = Math.max(props.maxFrame, 0);
+  onSpeed: (next: number) => void;
+}): React.ReactElement {  const max = Math.max(props.maxFrame, 0);
   const atStart = props.frame <= 0;
   const atEnd = props.frame >= max;
   const buttons: Array<{ kind: TransportKind; title: string; onClick: () => void; disabled: boolean }> = [
@@ -560,6 +603,20 @@ function TransportBar(props: {
           <TransportGlyph kind={button.kind} />
         </button>
       ))}
+      <label className="kinemesh-speedgroup" title={translate('transport.speedTitle')}>
+        <span className="kinemesh-speedlabel">{translate('transport.speed')}</span>
+        <input
+          className="kinemesh-speed"
+          type="range"
+          min={0.1}
+          max={2}
+          step={0.1}
+          value={props.speed}
+          aria-label={translate('transport.speed')}
+          onChange={(event) => props.onSpeed(Number(event.target.value))}
+        />
+        <span className="kinemesh-speedvalue">{`${props.speed.toFixed(1)}×`}</span>
+      </label>
     </div>
   );
 }
@@ -594,7 +651,7 @@ function MotionTimeline(props: {
     <div className="kinemesh-timeline">
       <div className="kinemesh-timelinehead">
         <span className="kinemesh-timelinehint">{hasCurve ? translate('timeline.hint') : translate('timeline.hintNoCurve')}</span>
-        <span className="kinemesh-framelabel">{`f${props.frame} / f${Math.max(props.maxFrame, 0)}`}</span>
+        <span className="kinemesh-framelabel">{`f${Math.round(props.frame)} / f${Math.max(props.maxFrame, 0)}`}</span>
       </div>
       <svg
         viewBox={`0 0 ${TIMELINE_VB_W} ${TIMELINE_VB_H}`}
@@ -658,17 +715,24 @@ function MotionTimeline(props: {
               </rect>
             );
           })}
-        {ticks.map((tick) => {
-          const x = (frameToPercent(tick, props.maxFrame) / 100) * TIMELINE_VB_W;
+        {/* 0.7.4：逐帧细刻度（1/4 高）/ 每 5 帧中刻度（1/2 高）/ 标签帧满高 */}
+        {timelineTicks(props.maxFrame).map((tick) => {
+          const x = (frameToPercent(tick.frame, props.maxFrame) / 100) * TIMELINE_VB_W;
+          const top =
+            tick.level === 'major' ? TIMELINE_TICK_TOP : tick.level === 'medium' ? TICK_MEDIUM_TOP : TICK_MINOR_TOP;
           return (
             <line
-              key={`tick-${tick}`}
+              key={`tick-${tick.frame}`}
               x1={x}
-              y1={TIMELINE_TICK_TOP}
+              y1={top}
               x2={x}
               y2={TIMELINE_TICK_BOTTOM}
-              stroke="var(--dsw-alias-border-l2, #565b63)"
-              strokeWidth="1"
+              stroke={
+                tick.level === 'minor'
+                  ? 'var(--dsw-alias-border-l1, #3e434a)'
+                  : 'var(--dsw-alias-border-l2, #565b63)'
+              }
+              strokeWidth={tick.level === 'minor' ? 0.8 : tick.level === 'medium' ? 1 : 1.2}
             />
           );
         })}
@@ -737,6 +801,8 @@ function PreviewPane(props: {
   /** 自动选模式的理由（null = 用户手动选的，不显示自动提示） */
   const [autoReason, setAutoReason] = React.useState<ModeReason | null>(null);
   const [playing, setPlaying] = React.useState(false);
+  /** 播放速度倍率（0.7.4）：播放条右侧滑块，0.1×～2× */
+  const [speed, setSpeed] = React.useState(1);
   const [viewText, setViewText] = React.useState('—');
   const [state, setState] = React.useState<LoadState>({ phase: 'empty', error: null, clips: [], maxFrame: 0 });
   const [analysis, setAnalysis] = React.useState<{ loading: boolean; data: AnalysisPayload | null }>({
@@ -899,6 +965,8 @@ function PreviewPane(props: {
       });
       // 0.7.2：表面与骨架是两个控件——applyView 先立起表面，再叠加骨架开关
       viewer.setDisplay(nextDisplay);
+      // 0.7.4：播放速度在载入后继续沿用当前滑块值
+      viewer.setPlaybackRate(speed);
       if (rememberedClip !== '' && startFrame > 0) viewer.seekFrame(startFrame);
       if (props.sessionId !== '') previewSession.markUsed(props.sessionId);
       props.onLoaded?.(target);
@@ -1047,6 +1115,13 @@ function PreviewPane(props: {
     viewerRef.current?.setDisplay(display);
   };
 
+  /** 播放速度（0.7.4）：夹紧到 0.1～2×，只影响播放推进，不影响 seek/截图 */
+  const changeSpeed = (next: number): void => {
+    const rate = Math.min(2, Math.max(0.1, Number.isFinite(next) ? next : 1));
+    setSpeed(rate);
+    viewerRef.current?.setPlaybackRate(rate);
+  };
+
   const send = async (): Promise<void> => {
     if (viewerRef.current === null || loadedPath === '' || props.sessionId === '') return;
     setSending(true);
@@ -1175,11 +1250,13 @@ function PreviewPane(props: {
             playing={playing}
             frame={frame}
             maxFrame={state.maxFrame}
+            speed={speed}
             onFirst={() => stepTo(0)}
             onPrev={() => stepTo(stepFrame(frame, -1, state.maxFrame))}
             onTogglePlay={togglePlay}
             onNext={() => stepTo(stepFrame(frame, 1, state.maxFrame))}
             onLast={() => stepTo(state.maxFrame)}
+            onSpeed={changeSpeed}
           />
           <MotionTimeline
             energy={analysis.data?.energy ?? []}
