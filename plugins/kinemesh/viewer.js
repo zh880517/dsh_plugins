@@ -46892,6 +46892,36 @@ void main() {
 		return Math.min(high, Math.max(low, value));
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/viewer/material.ts
+	/** 兜底中性灰：亮到能在深色舞台上看清轮廓，又不至于过曝 */
+	var PREVIEW_FALLBACK_COLOR = 12173516;
+	/** metalness 上限：超过它在无环境贴图时几乎全黑 */
+	var PREVIEW_METALNESS_MAX = .15;
+	/** roughness 下限：避免镜面高光把形状打散 */
+	var PREVIEW_ROUGHNESS_MIN = .6;
+	/**
+	* 归一一个材质用于预览显示。返回是否做了修改（便于测试与排查）。
+	* Phong/Lambert 等没有 metalness 字段的材质会自动跳过第 ① 步。
+	*/
+	function normalizePreviewMaterial(material) {
+		const standard = material;
+		let changed = false;
+		if (typeof standard.metalness === "number" && standard.metalness > .15) {
+			standard.metalness = PREVIEW_METALNESS_MAX;
+			if (typeof standard.roughness === "number") standard.roughness = Math.max(standard.roughness, PREVIEW_ROUGHNESS_MIN);
+			changed = true;
+		}
+		const map = standard.map;
+		const hasUsableMap = map !== void 0 && map !== null && map.image !== void 0 && map.image !== null;
+		const color = standard.color;
+		if (!hasUsableMap && color !== void 0 && color.getHex() < 1052688) {
+			color.setHex(PREVIEW_FALLBACK_COLOR);
+			changed = true;
+		}
+		if (changed) standard.needsUpdate = true;
+		return changed;
+	}
+	//#endregion
 	//#region plugins/kinemesh/src/core/viewer/kinemesh-viewer.ts
 	/** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
 	var LABEL_BASE_HEIGHT_PX = 720;
@@ -46913,10 +46943,15 @@ void main() {
 		camera.position.set(2, 2, 2);
 		const controls = new OrbitControls(camera, renderer.domElement);
 		controls.enableDamping = false;
-		const hemi = new HemisphereLight(16777215, 4473941, 1.1);
-		const dir = new DirectionalLight(16777215, 1.6);
-		dir.position.set(3, 6, 4);
-		scene.add(hemi, dir);
+		const ambient = new AmbientLight(16777215, 1.5);
+		const hemi = new HemisphereLight(15922943, 2764600, 2);
+		const keyLight = new DirectionalLight(16777215, 2.4);
+		keyLight.position.set(4, 8, 6);
+		const fillLight = new DirectionalLight(14477055, 1.2);
+		fillLight.position.set(-6, 3, -4);
+		const rimLight = new DirectionalLight(16777215, .9);
+		rimLight.position.set(0, -4, -6);
+		scene.add(ambient, hemi, keyLight, fillLight, rimLight);
 		let grid = new GridHelper(10, 10, 5593699, 3817029);
 		scene.add(grid);
 		let model = null;
@@ -47006,6 +47041,12 @@ void main() {
 				model.traverse((child) => {
 					const mesh = child;
 					if (mesh.isMesh && mesh.geometry.getAttribute("normal") === void 0) mesh.geometry.computeVertexNormals();
+				});
+				model.traverse((child) => {
+					const mesh = child;
+					if (!mesh.isMesh) return;
+					const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+					for (const material of materials) if (material !== void 0 && material !== null) normalizePreviewMaterial(material);
 				});
 				scene.add(model);
 				namedObjects = /* @__PURE__ */ new Map();

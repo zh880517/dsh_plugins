@@ -13,6 +13,7 @@ import {
   type ViewState,
   type ViewMode,
 } from '../viewstate.js';
+import { normalizePreviewMaterial } from './material.js';
 import type { CanonicalScene } from '../types.js';
 
 /** B.4 标签像素基准：14px 文字（+上下衬底整高 24px）、Y 偏移 −6px，按 720p 画幅换算世界尺寸 */
@@ -80,10 +81,18 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
 
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x444455, 1.1);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.6);
-  dir.position.set(3, 6, 4);
-  scene.add(hemi, dir);
+  // ———————— 预览光照（0.6.4）———————
+  // 原配置（hemi 1.1 + 单方向光 1.6）在深色舞台上看 Unity/Max 导出资产几乎是黑剪影。
+  // 改为「环境光 + 半球光 + 主光 + 两侧补光」的四向布光：正面/侧面都有光，避免背光面全黑。
+  const ambient = new THREE.AmbientLight(0xffffff, 1.5);
+  const hemi = new THREE.HemisphereLight(0xf2f6ff, 0x2a2f38, 2.0);
+  const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
+  keyLight.position.set(4, 8, 6);
+  const fillLight = new THREE.DirectionalLight(0xdce6ff, 1.2);
+  fillLight.position.set(-6, 3, -4);
+  const rimLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  rimLight.position.set(0, -4, -6);
+  scene.add(ambient, hemi, keyLight, fillLight, rimLight);
 
   let grid = new THREE.GridHelper(10, 10, 0x555a63, 0x3a3e45);
   scene.add(grid);
@@ -180,6 +189,17 @@ export function mountViewer(container: HTMLElement, options: MountOptions = {}):
         const mesh = child as THREE.Mesh;
         if (mesh.isMesh && mesh.geometry.getAttribute('normal') === undefined) {
           mesh.geometry.computeVertexNormals();
+        }
+      });
+      // 材质兜底（0.6.4）：FBX/Unity 导出常见两种「加光也黑」——
+      // ① metalness=1 且无环境贴图（物理光照下只反射环境，无环境即纯黑）→ 降 metalness、升 roughness；
+      // ② 贴图没加载成功 → 用中性灰兜底，保住几何轮廓可见。只动渲染用副本，不改源文件。
+      model.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (material !== undefined && material !== null) normalizePreviewMaterial(material);
         }
       });
       scene.add(model);
