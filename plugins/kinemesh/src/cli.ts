@@ -29,7 +29,7 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
       --normalize <name>       height / none（缺省 height，数值单位为身高倍数）
       --bone-map <file>        kinemesh-bones.json 映射文件路径（缺省按 资产同目录 > 工作区 发现；
                                joints=auto 时解析顺序：映射文件 > 字典查表 > Top-15 回退）
-      --out <dir>              中间文件输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
+      --out <dir>              中间文件输出目录（缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/）
       --vocab <file>           kinemesh-vocab.json 词汇表路径（缺省按 资产同目录 > 工作区 > builtin 发现）
 
   kinemesh skeleton <file> [选项]
@@ -38,7 +38,7 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
                                shots:auto/all 真实渲染骨骼名标注截图 labels-<view>-<两位批次>.png
                                （front/side × 每批，进同一输出目录与 digest.shots；需要 playwright）
       --bone-map <file>        kinemesh-bones.json 映射文件路径（缺省按 资产同目录 > 工作区 发现）
-      --out <dir>              输出目录（缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/）
+      --out <dir>              输出目录（缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/）
 
   kinemesh render <file> [选项]
       按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
@@ -54,7 +54,7 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
                                auto（缺省第 1 批）/ all（全部骨骼名，允许重叠，调试）/ 批次号（1 起，
                                stride 分批防叠；骨架识别单批读图用）
       --width <px> --height <px>
-      --out-dir <dir>          PNG 输出目录（缺省系统临时目录 kinemesh-shots/）
+      --out-dir <dir>          PNG 输出目录（缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/）
 
   kinemesh --help
 

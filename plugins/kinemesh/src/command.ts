@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { ensureTempDir, tempRootDir } from './core/temp-dir.js';
 
 /** 命令名（不带斜杠）；DSH 命令名需匹配其 COMMAND_NAME 正则（小写字母开头） */
 export const COMMAND_NAME = 'kinemesh';
@@ -93,9 +94,9 @@ export function selectModelAttachments<T extends { name: string }>(attachments: 
   return attachments.filter((item) => isModelFileName(item.name));
 }
 
-/** 临时落盘目录（与 analyze 的缺省输出同源，Host 重启可清） */
+/** 临时落盘目录（0.9.2：与缺省产物同源，落在 <cwd>/.kinemeshtmp/command-attachments，Host 重启可清） */
 export function attachmentTempDir(): string {
-  return path.join(tmpdir(), 'kinemesh-command-attachments');
+  return ensureTempDir(path.join(tempRootDir(), 'command-attachments'));
 }
 
 /**

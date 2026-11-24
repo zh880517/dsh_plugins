@@ -1,6 +1,7 @@
 // `/kinemesh` 命令（0.6.0 交互重构）：替代原输入框「动析」按钮。
 // 纯逻辑直测：扩展名判定、路径提取、消息组装、附件择优、附件内容落盘、runCommand 全分支
 // （附件 / 仅路径 / 无模型 / Agent 离线 / 非模型附件忽略）。运行时注册在 host.ts 装配。
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
   COMMAND_NAME,
@@ -122,8 +123,11 @@ describe('附件择优与内容落盘', () => {
     expect(looksLikeModelBytes(new Uint8Array(Buffer.from('not a model at all, just text')))).toBe(false);
   });
 
-  it('临时目录落在系统临时区（不污染用户目录）', () => {
-    expect(attachmentTempDir()).toContain('kinemesh-command-attachments');
+  it('临时目录落在 <cwd>/.kinemeshtmp/ 下（0.9.2：不再散落到系统临时目录）', () => {
+    const dir = attachmentTempDir();
+    expect(dir).toContain('.kinemeshtmp');
+    expect(dir).toContain('command-attachments');
+    expect(dir.startsWith(tmpdir())).toBe(false);
   });
 });
 

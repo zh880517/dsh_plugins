@@ -128,14 +128,15 @@ describe('kinemesh_analyze 工具', () => {
     expect(existsSync(path.join(outDir, 'motion-summary.json'))).toBe(true);
   });
 
-  it('缺省 out：目录落在系统临时目录并带自愈 hint', async () => {
+  it('缺省 out：目录落在 <cwd>/.kinemeshtmp/run-* 并带自愈 hint（0.9.2）', async () => {
     const execute = analyzeExecute();
     const result = await execute({ path: animGlb });
     expect(result.ok).toBe(true);
     const dir = String(result.dir);
-    expect(dir.startsWith(tmpdir())).toBe(true);
-    expect(dir).toContain('kinemesh-analysis');
-    expect(result.hint).toBe('输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区');
+    expect(dir).toContain('.kinemeshtmp');
+    expect(path.basename(dir)).toMatch(/^run-\d+-\d+$/);
+    expect(dir.startsWith(tmpdir())).toBe(false);
+    expect(result.hint).toBe('输出在当前工作目录的 .kinemeshtmp/ 下；若读文件被沙箱拦截，用 out 参数重跑指向工作区');
   });
 
   it('detail=summary 只落 summary.json；curvesFor 按骨骼名加曲线文件', async () => {

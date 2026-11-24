@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { KinemeshError, reasonOf } from '../errors.js';
+import { createRunDir, ensureTempDir, runDirName, tempRootDir } from '../temp-dir.js';
 import { orbit8Azimuths, RENDER_FPS, resolveView, type NormalizedViewInput, type ViewState } from '../viewstate.js';
 
 export interface RenderRequest {
@@ -73,7 +74,8 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
   }
   const width = clampInt(request.width ?? 1280, 64, 4096);
   const height = clampInt(request.height ?? 720, 64, 4096);
-  const workDir = path.join(request.outDir ?? path.join(tmpdir(), 'kinemesh-shots'), `run-${Date.now()}-${process.pid}`);
+  // 0.9.2：缺省产物目录改到 <cwd>/.kinemeshtmp/run-<时间戳>-<pid>（不再散落到系统临时目录）
+  const workDir = request.outDir === undefined ? createRunDir() : path.join(request.outDir, runDirName());
   await mkdir(workDir, { recursive: true });
 
   const session = await openShotPage(width, height);
@@ -261,7 +263,8 @@ interface ShotSession {
 
 async function openShotPage(width: number, height: number): Promise<ShotSession> {
   const viewerJs = await readViewerBundle();
-  const pageDir = await mkdtemp(path.join(tmpdir(), 'kinemesh-shot-page-'));
+  // 0.9.2：截图页也是临时产物，落在 <cwd>/.kinemeshtmp/shot-page-*（用完即删）
+  const pageDir = await mkdtemp(path.join(ensureTempDir(tempRootDir()), 'shot-page-'));
   const pageFile = path.join(pageDir, 'viewer.html');
   await writeFile(pageFile, composePage(viewerJs, width, height), 'utf8');
   const chromium = await loadChromium();

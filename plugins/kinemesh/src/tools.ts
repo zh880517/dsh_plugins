@@ -10,6 +10,7 @@ import { analyzeClip, type MotionDigest } from './core/motion/analyze.js';
 import { resolveNormalization } from './core/motion/normalize.js';
 import { loadVocab } from './core/motion/vocab.js';
 import { getCachedScene } from './core/scene-cache.js';
+import { createRunDir } from './core/temp-dir.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots, renderLabelScreenshots } from './core/render/screenshot.js';
 import {
@@ -114,7 +115,7 @@ async function readModelFile(rawPath: string): Promise<LoadedModel> {
 export interface AnalyzeToolParams {
   /** 缺省第一个 clip；'*' 批量分析全部 clips（M6f，§6.7：summary 变 clips[]、文件按 <clip>/ 分桶） */
   clip?: string;
-  /** 中间文件输出目录；缺省 <系统临时目录>/kinemesh-analysis/run-<时间戳>-<pid>/ */
+  /** 中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/ */
   out?: string;
   /** [t0, t1] 秒切片（M6f）：帧号仍按全片口径；t0 < t1 在出口校验，t1 ≤ 时长由 core 校验 */
   range?: [number, number];
@@ -151,7 +152,7 @@ export interface AnalyzeRunResult {
   /** 单 clip：MotionDigest；clip:"*" 批量：BatchDigest（digest.clips[]，中间文件按 <clip>/ 分桶） */
   summaryDigest: MotionDigest | BatchDigest;
   warnings?: string[];
-  /** 仅当输出落在系统临时目录时给出（读不到文件的自愈指引，§6.4） */
+  /** 仅当输出落在缺省目录（cwd/.kinemeshtmp）时给出（读不到文件的自愈指引，§6.4） */
   hint?: string;
 }
 
@@ -215,7 +216,7 @@ export async function runAnalyze(
   const specified = params.out !== undefined && params.out.trim() !== '';
   const dir = specified
     ? path.resolve(expandHome(params.out!.trim()))
-    : path.join(tmpdir(), 'kinemesh-analysis', `run-${Date.now()}-${process.pid}`);
+    : createRunDir();
   const files: AnalyzeRunResult['files'] = [];
   for (const artifact of analysis.files) {
     const target = path.join(dir, artifact.name);
@@ -240,7 +241,7 @@ export async function runAnalyze(
     // 批量时 analysis.digest 运行时就是 BatchDigest envelope（analyze.ts 构造）；静态类型仍是单 clip 口径
     summaryDigest: batch ? (analysis.digest as unknown as BatchDigest) : analysis.digest,
     ...(warnings.length > 0 ? { warnings } : {}),
-    ...(specified ? {} : { hint: '输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
+    ...(specified ? {} : { hint: '输出在当前工作目录的 .kinemeshtmp/ 下；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
   };
 }
 
@@ -271,7 +272,7 @@ function analyzeTool(record?: SessionModelRecorder): AgentTool {
       properties: {
         path: { type: 'string', description: '模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）' },
         clip: { type: 'string', description: '动画片段名或 "*"（批量分析全部 clips，先 kinemesh_info 查）；缺省第一个 clip' },
-        out: { type: 'string', description: '中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/' },
+        out: { type: 'string', description: '中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/' },
         range: {
           type: 'array',
           items: { type: 'number' },
@@ -353,7 +354,7 @@ function analyzeTool(record?: SessionModelRecorder): AgentTool {
 
 /** 三出口同名同参口径（DSH JSON Schema / CLI flag / MCP zod 各自投影，语义以此接口为准） */
 export interface SkeletonToolParams {
-  /** 中间文件输出目录；缺省 <系统临时目录>/kinemesh-analysis/run-<时间戳>-<pid>/ */
+  /** 中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/ */
   out?: string;
   /** 标注截图批次：auto（缺省，CORE15 有缺口才出）/ none（只出 report）/ all（全量） */
   shots?: 'auto' | 'none' | 'all';
@@ -369,7 +370,7 @@ export interface SkeletonRunResult {
   digest: SkeletonDigest;
   /** 渲染过程警告（页面异常等；shots 降级说明在 digest.shotsWarning） */
   warnings?: string[];
-  /** 仅当输出落在系统临时目录时给出（读不到文件的自愈指引，§6.4） */
+  /** 仅当输出落在缺省目录（cwd/.kinemeshtmp）时给出（读不到文件的自愈指引，§6.4） */
   hint?: string;
 }
 
@@ -407,7 +408,7 @@ export async function runSkeleton(
   const specified = params.out !== undefined && params.out.trim() !== '';
   const dir = specified
     ? path.resolve(expandHome(params.out!.trim()))
-    : path.join(tmpdir(), 'kinemesh-analysis', `run-${Date.now()}-${process.pid}`);
+    : createRunDir();
   const content = skeletonReportJson(report);
   const target = path.join(dir, 'skeleton-report.json');
   await mkdir(path.dirname(target), { recursive: true });
@@ -453,7 +454,7 @@ export async function runSkeleton(
     files,
     digest: buildSkeletonDigest(report, shots, shotsWarning),
     ...(warnings.length > 0 ? { warnings } : {}),
-    ...(specified ? {} : { hint: '输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
+    ...(specified ? {} : { hint: '输出在当前工作目录的 .kinemeshtmp/ 下；若读文件被沙箱拦截，用 out 参数重跑指向工作区' }),
   };
 }
 
@@ -479,7 +480,7 @@ function skeletonTool(record?: SessionModelRecorder): AgentTool {
           description: '标注截图批次：auto（缺省，CORE15 有缺口才渲染）/ none（只出 report）/ all（全量批次渲染）',
         },
         boneMap: { type: 'string', description: '骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现' },
-        out: { type: 'string', description: '中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/' },
+        out: { type: 'string', description: '中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/' },
       },
       required: ['path'],
       additionalProperties: false,
@@ -594,7 +595,7 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
         },
         width: { type: 'integer', description: '宽度像素，缺省 1280' },
         height: { type: 'integer', description: '高度像素，缺省 720' },
-        out: { type: 'string', description: 'PNG 输出目录；缺省系统临时目录' },
+        out: { type: 'string', description: 'PNG 输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/' },
       },
       required: ['path', 'frames'],
       additionalProperties: false,

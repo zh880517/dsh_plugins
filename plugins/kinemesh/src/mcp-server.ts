@@ -82,7 +82,7 @@ server.tool(
   {
     path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
     clip: z.string().optional().describe('动画片段名或 "*"（批量分析全部 clips，先 kinemesh_info 查）；缺省第一个 clip'),
-    out: z.string().optional().describe('中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/'),
+    out: z.string().optional().describe('中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/'),
     range: z
       .tuple([z.number(), z.number()])
       .refine(([t0, t1]) => t0 < t1, { message: 'range 需要 t0 < t1（[t0, t1] 秒切片）' })
@@ -139,7 +139,7 @@ server.tool(
     path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
     shots: z.enum(['auto', 'none', 'all']).optional().describe('标注截图批次：auto（缺省，CORE15 有缺口才出）/ none（只出 report）/ all（强制全量批次）'),
     boneMap: z.string().optional().describe('骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现'),
-    out: z.string().optional().describe('中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/'),
+    out: z.string().optional().describe('中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/'),
   },
   async ({ path: rawPath, shots, boneMap, out }) => {
     try {
@@ -180,7 +180,7 @@ server.tool(
       .describe('骨骼名文字标注（B.4，与 mode:skeleton / bones-overlay 联用）："auto"（第 1 批）| 批次号（1 起，stride 分批防叠）| "all"（全部骨骼名都画，允许重叠，调试用）'),
     width: z.number().int().optional().describe('宽度像素，缺省 1280'),
     height: z.number().int().optional().describe('高度像素，缺省 720'),
-    out: z.string().optional().describe('PNG 输出目录；缺省系统临时目录'),
+    out: z.string().optional().describe('PNG 输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/'),
   },
   async ({ path: rawPath, clip, frames, view, viewPreset, mode, boneLabels, width, height, out }) => {
     if (frames === undefined || frames.length === 0) {

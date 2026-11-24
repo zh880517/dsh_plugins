@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { mkdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 /**
 * @license
@@ -33214,6 +33215,43 @@ function round(value) {
 }
 //#endregion
 //#region
+/** 目录名（相对 cwd）：`.kinemeshtmp` */
+var TEMP_DIR_NAME = ".kinemeshtmp";
+/** 环境变量：覆盖临时根目录（绝对路径；测试把产物导向自己的临时目录） */
+var TEMP_DIR_ENV = "KINEMESH_TMP_DIR";
+/** 本次 run 的子目录名：`run-<时间戳>-<pid>`（同类 run 相互隔离，避免互相覆盖） */
+function runDirName(now = Date.now(), pid = process.pid) {
+	return `run-${now}-${pid}`;
+}
+/**
+* 临时根目录（不创建）：优先 KINEMESH_TMP_DIR，其次 `<cwd>/.kinemeshtmp`。
+* 注意这里只做路径拼接，不保证可写——写之前用 ensureTempDir。
+*/
+function tempRootDir() {
+	const override = process.env[TEMP_DIR_ENV];
+	if (typeof override === "string" && override.trim() !== "") return path.resolve(override.trim());
+	return path.join(process.cwd(), TEMP_DIR_NAME);
+}
+/** 建目录（递归）；cwd 不可写时退回系统临时目录下的 `.kinemeshtmp`。返回实际使用的根目录 */
+function ensureTempDir(target) {
+	try {
+		mkdirSync(target, { recursive: true });
+		return target;
+	} catch {
+		const fallback = path.join(tmpdir(), TEMP_DIR_NAME);
+		mkdirSync(fallback, { recursive: true });
+		return fallback;
+	}
+}
+/** 本次 run 的产物目录：`<根>/run-<时间戳>-<pid>`（缺省自动建好并返回） */
+function createRunDir(kind) {
+	const root = ensureTempDir(tempRootDir());
+	const dir = path.join(root, kind === void 0 ? runDirName() : `${kind}-${runDirName()}`);
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
+//#endregion
+//#region
 /** 命令名（不带斜杠）；DSH 命令名需匹配其 COMMAND_NAME 正则（小写字母开头） */
 var COMMAND_NAME = "kinemesh";
 /** 可分析的模型扩展名（与 core registry 一致） */
@@ -33283,9 +33321,9 @@ function composeCommandMessage(paths, request) {
 function selectModelAttachments(attachments) {
 	return attachments.filter((item) => isModelFileName(item.name));
 }
-/** 临时落盘目录（与 analyze 的缺省输出同源，Host 重启可清） */
+/** 临时落盘目录（0.9.2：与缺省产物同源，落在 <cwd>/.kinemeshtmp/command-attachments，Host 重启可清） */
 function attachmentTempDir() {
-	return path.join(tmpdir(), "kinemesh-command-attachments");
+	return ensureTempDir(path.join(tempRootDir(), "command-attachments"));
 }
 /**
 * 把附件内容落成带正确扩展名的临时文件，返回绝对路径。
@@ -33492,7 +33530,7 @@ async function renderScreenshots(request) {
 	if (frames.some((frame) => !Number.isInteger(frame) || frame < 0)) throw new KinemeshError("frames 含非法帧号（需非负整数）。", "帧号按 30fps 口径（time = frame/30）；先 kinemesh_info 查 clips[].duration，或直接用 analyze digest 的 keyframeRender 配方帧号。");
 	const width = clampInt(request.width ?? 1280, 64, 4096);
 	const height = clampInt(request.height ?? 720, 64, 4096);
-	const workDir = path.join(request.outDir ?? path.join(tmpdir(), "kinemesh-shots"), `run-${Date.now()}-${process.pid}`);
+	const workDir = request.outDir === void 0 ? createRunDir() : path.join(request.outDir, runDirName());
 	await mkdir(workDir, { recursive: true });
 	const session = await openShotPage(width, height);
 	const images = [];
@@ -33604,7 +33642,7 @@ async function renderLabelScreenshots(request) {
 }
 async function openShotPage(width, height) {
 	const viewerJs = await readViewerBundle();
-	const pageDir = await mkdtemp(path.join(tmpdir(), "kinemesh-shot-page-"));
+	const pageDir = await mkdtemp(path.join(ensureTempDir(tempRootDir()), "shot-page-"));
 	const pageFile = path.join(pageDir, "viewer.html");
 	await writeFile(pageFile, composePage(viewerJs, width, height), "utf8");
 	const browser = await (await loadChromium()).launch({ headless: true });
@@ -34132,7 +34170,7 @@ async function runAnalyze(data, fileName, params, context = {}) {
 		boneMap: bonesMapping
 	});
 	const specified = params.out !== void 0 && params.out.trim() !== "";
-	const dir = specified ? path.resolve(expandHome(params.out.trim())) : path.join(tmpdir(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
+	const dir = specified ? path.resolve(expandHome(params.out.trim())) : createRunDir();
 	const files = [];
 	for (const artifact of analysis.files) {
 		const target = path.join(dir, artifact.name);
@@ -34152,7 +34190,7 @@ async function runAnalyze(data, fileName, params, context = {}) {
 		files,
 		summaryDigest: batch ? analysis.digest : analysis.digest,
 		...warnings.length > 0 ? { warnings } : {},
-		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
+		...specified ? {} : { hint: "输出在当前工作目录的 .kinemeshtmp/ 下；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
 	};
 }
 /** range 参数投影（M6f）：undefined = 未给；null = 形状/顺序不合法（调用方给三段式）；数组 = 通过 */
@@ -34181,7 +34219,7 @@ function analyzeTool(record) {
 				},
 				out: {
 					type: "string",
-					description: "中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/"
+					description: "中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/"
 				},
 				range: {
 					type: "array",
@@ -34307,7 +34345,7 @@ async function runSkeleton(data, fileName, params, context = {}) {
 		extraPrefixes: vocab.prefixes
 	});
 	const specified = params.out !== void 0 && params.out.trim() !== "";
-	const dir = specified ? path.resolve(expandHome(params.out.trim())) : path.join(tmpdir(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
+	const dir = specified ? path.resolve(expandHome(params.out.trim())) : createRunDir();
 	const content = skeletonReportJson(report);
 	const target = path.join(dir, "skeleton-report.json");
 	await mkdir(path.dirname(target), { recursive: true });
@@ -34351,7 +34389,7 @@ async function runSkeleton(data, fileName, params, context = {}) {
 		files,
 		digest: buildSkeletonDigest(report, shots, shotsWarning),
 		...warnings.length > 0 ? { warnings } : {},
-		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
+		...specified ? {} : { hint: "输出在当前工作目录的 .kinemeshtmp/ 下；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
 	};
 }
 function skeletonTool(record) {
@@ -34380,7 +34418,7 @@ function skeletonTool(record) {
 				},
 				out: {
 					type: "string",
-					description: "中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/"
+					description: "中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/"
 				}
 			},
 			required: ["path"],
@@ -34507,7 +34545,7 @@ function renderTool(record) {
 				},
 				out: {
 					type: "string",
-					description: "PNG 输出目录；缺省系统临时目录"
+					description: "PNG 输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/"
 				}
 			},
 			required: ["path", "frames"],

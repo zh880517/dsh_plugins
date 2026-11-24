@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process$1 from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { mkdirSync } from "node:fs";
 //#region
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -52225,6 +52226,43 @@ function headBytes(data) {
 }
 //#endregion
 //#region
+/** 目录名（相对 cwd）：`.kinemeshtmp` */
+var TEMP_DIR_NAME = ".kinemeshtmp";
+/** 环境变量：覆盖临时根目录（绝对路径；测试把产物导向自己的临时目录） */
+var TEMP_DIR_ENV = "KINEMESH_TMP_DIR";
+/** 本次 run 的子目录名：`run-<时间戳>-<pid>`（同类 run 相互隔离，避免互相覆盖） */
+function runDirName(now = Date.now(), pid = process.pid) {
+	return `run-${now}-${pid}`;
+}
+/**
+* 临时根目录（不创建）：优先 KINEMESH_TMP_DIR，其次 `<cwd>/.kinemeshtmp`。
+* 注意这里只做路径拼接，不保证可写——写之前用 ensureTempDir。
+*/
+function tempRootDir() {
+	const override = process.env[TEMP_DIR_ENV];
+	if (typeof override === "string" && override.trim() !== "") return path.resolve(override.trim());
+	return path.join(process.cwd(), TEMP_DIR_NAME);
+}
+/** 建目录（递归）；cwd 不可写时退回系统临时目录下的 `.kinemeshtmp`。返回实际使用的根目录 */
+function ensureTempDir(target) {
+	try {
+		mkdirSync(target, { recursive: true });
+		return target;
+	} catch {
+		const fallback = path.join(tmpdir(), TEMP_DIR_NAME);
+		mkdirSync(fallback, { recursive: true });
+		return fallback;
+	}
+}
+/** 本次 run 的产物目录：`<根>/run-<时间戳>-<pid>`（缺省自动建好并返回） */
+function createRunDir(kind) {
+	const root = ensureTempDir(tempRootDir());
+	const dir = path.join(root, kind === void 0 ? runDirName() : `${kind}-${runDirName()}`);
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
+//#endregion
+//#region
 var VIEW_PRESETS = {
 	front: {
 		azimuth: 0,
@@ -52407,7 +52445,7 @@ async function renderScreenshots(request) {
 	if (frames.some((frame) => !Number.isInteger(frame) || frame < 0)) throw new KinemeshError("frames 含非法帧号（需非负整数）。", "帧号按 30fps 口径（time = frame/30）；先 kinemesh_info 查 clips[].duration，或直接用 analyze digest 的 keyframeRender 配方帧号。");
 	const width = clampInt(request.width ?? 1280, 64, 4096);
 	const height = clampInt(request.height ?? 720, 64, 4096);
-	const workDir = path.join(request.outDir ?? path.join(tmpdir(), "kinemesh-shots"), `run-${Date.now()}-${process.pid}`);
+	const workDir = request.outDir === void 0 ? createRunDir() : path.join(request.outDir, runDirName());
 	await mkdir(workDir, { recursive: true });
 	const session = await openShotPage(width, height);
 	const images = [];
@@ -52519,7 +52557,7 @@ async function renderLabelScreenshots(request) {
 }
 async function openShotPage(width, height) {
 	const viewerJs = await readViewerBundle();
-	const pageDir = await mkdtemp(path.join(tmpdir(), "kinemesh-shot-page-"));
+	const pageDir = await mkdtemp(path.join(ensureTempDir(tempRootDir()), "shot-page-"));
 	const pageFile = path.join(pageDir, "viewer.html");
 	await writeFile(pageFile, composePage(viewerJs, width, height), "utf8");
 	const browser = await (await loadChromium()).launch({ headless: true });
@@ -55624,7 +55662,7 @@ async function runAnalyze(data, fileName, params, context = {}) {
 		boneMap: bonesMapping
 	});
 	const specified = params.out !== void 0 && params.out.trim() !== "";
-	const dir = specified ? path.resolve(expandHome$1(params.out.trim())) : path.join(tmpdir(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
+	const dir = specified ? path.resolve(expandHome$1(params.out.trim())) : createRunDir();
 	const files = [];
 	for (const artifact of analysis.files) {
 		const target = path.join(dir, artifact.name);
@@ -55644,7 +55682,7 @@ async function runAnalyze(data, fileName, params, context = {}) {
 		files,
 		summaryDigest: batch ? analysis.digest : analysis.digest,
 		...warnings.length > 0 ? { warnings } : {},
-		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
+		...specified ? {} : { hint: "输出在当前工作目录的 .kinemeshtmp/ 下；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
 	};
 }
 /**
@@ -55669,7 +55707,7 @@ async function runSkeleton(data, fileName, params, context = {}) {
 		extraPrefixes: vocab.prefixes
 	});
 	const specified = params.out !== void 0 && params.out.trim() !== "";
-	const dir = specified ? path.resolve(expandHome$1(params.out.trim())) : path.join(tmpdir(), "kinemesh-analysis", `run-${Date.now()}-${process.pid}`);
+	const dir = specified ? path.resolve(expandHome$1(params.out.trim())) : createRunDir();
 	const content = skeletonReportJson(report);
 	const target = path.join(dir, "skeleton-report.json");
 	await mkdir(path.dirname(target), { recursive: true });
@@ -55713,7 +55751,7 @@ async function runSkeleton(data, fileName, params, context = {}) {
 		files,
 		digest: buildSkeletonDigest(report, shots, shotsWarning),
 		...warnings.length > 0 ? { warnings } : {},
-		...specified ? {} : { hint: "输出在系统临时目录；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
+		...specified ? {} : { hint: "输出在当前工作目录的 .kinemeshtmp/ 下；若读文件被沙箱拦截，用 out 参数重跑指向工作区" }
 	};
 }
 //#endregion
@@ -55786,7 +55824,7 @@ server.tool("kinemesh_info", "读取 3D 模型/动画资源文件的结构信息
 server.tool("kinemesh_analyze", "对模型文件的动画片段做动作分析（本地只读）：产出中间文件目录（summary/frames/segments/keyframes/trajectory/关节曲线），并返回内联 summaryDigest（分段表 + 全片统计 + loopCheck + keyframeRender 配方）。数据层工具：数值/label/guess/verdict 都由它产出，AI 只引用数值做语义推测；语义存疑时把 summaryDigest.keyframeRender 配方原样传给 kinemesh_render 出识别用图。", {
 	path: string().describe("模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）"),
 	clip: string().optional().describe("动画片段名或 \"*\"（批量分析全部 clips，先 kinemesh_info 查）；缺省第一个 clip"),
-	out: string().optional().describe("中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/"),
+	out: string().optional().describe("中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/"),
 	range: tuple([number(), number()]).refine(([t0, t1]) => t0 < t1, { message: "range 需要 t0 < t1（[t0, t1] 秒切片）" }).optional().describe("[t0, t1] 秒切片（0 ≤ t0 < t1 ≤ 片段时长）；帧号仍按全片口径，结果可直接喂 kinemesh_render"),
 	sampleFps: number().int().optional().describe("采样率 1–60，缺省 15（越界由分析层给三段式自愈指引）"),
 	joints: union([literal("auto"), array(string())]).optional().describe("\"auto\"（缺省）或关节 id / 骨骼名清单"),
@@ -55837,7 +55875,7 @@ server.tool("kinemesh_skeleton", "骨架识别与映射（本地只读）：产�
 		"all"
 	]).optional().describe("标注截图批次：auto（缺省，CORE15 有缺口才出）/ none（只出 report）/ all（强制全量批次）"),
 	boneMap: string().optional().describe("骨架映射文件路径（kinemesh-bones.json）；缺省按 资产同目录 > 工作区 发现"),
-	out: string().optional().describe("中间文件输出目录；缺省系统临时目录 kinemesh-analysis/run-<时间戳>-<pid>/")
+	out: string().optional().describe("中间文件输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/")
 }, async ({ path: rawPath, shots, boneMap, out }) => {
 	try {
 		const loaded = await readModelFile(rawPath);
@@ -55871,7 +55909,7 @@ server.tool("kinemesh_render", "按视角 + 帧号渲染模型截图，PNG 落�
 	]).optional().describe("骨骼名文字标注（B.4，与 mode:skeleton / bones-overlay 联用）：\"auto\"（第 1 批）| 批次号（1 起，stride 分批防叠）| \"all\"（全部骨骼名都画，允许重叠，调试用）"),
 	width: number().int().optional().describe("宽度像素，缺省 1280"),
 	height: number().int().optional().describe("高度像素，缺省 720"),
-	out: string().optional().describe("PNG 输出目录；缺省系统临时目录")
+	out: string().optional().describe("PNG 输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/")
 }, async ({ path: rawPath, clip, frames, view, viewPreset, mode, boneLabels, width, height, out }) => {
 	if (frames === void 0 || frames.length === 0) return errorResult(new KinemeshError("frames 为空：至少给一个帧号。", "frames 是整数数组，例如 \"frames\": [30]；静态模型传 [0]。"), "渲染截图");
 	try {

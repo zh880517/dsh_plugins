@@ -230,8 +230,11 @@ heightMeters）/ warnings[]`。
 开放问题（M1 草稿）的处理约定：
 
 - 预览面板入口形态：**已决定**——输入框左侧「动析」胶囊 + 浮层预览（aiworkflow picker 模式，见 3.9）；
-- 截图输出目录：**已决定**——`kinemesh_render` 的 `out` 参数可指定；缺省系统临时目录
-  `<tmp>/kinemesh-shots/run-<时间戳>-<pid>/`；
+- 截图输出目录（0.9.2 改）：`kinemesh_render` 的 `out` 参数可指定；缺省
+  **`<当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/`**——原先落到系统临时目录
+  `<tmp>/kinemesh-shots/…`（Windows 上 `AppData\Local\Temp\…`）产物散落不好找；
+  现在统一在 cwd 下的隐藏目录，且已进 `.gitignore`；`KINEMESH_TMP_DIR` 可覆盖根目录，
+  cwd 不可写（只读工作区）时自动退回系统临时目录；
 - 性能预算：`kinemesh_info` / 模型路由文件上限 512 MiB，info 工具超时 60s，render 工具超时 180s，
   一次渲染 ≤ 64 帧，页面操作超时 60s；
 - BVH 重定向 / 多模型同场景对比：v1 不做；
@@ -355,10 +358,10 @@ motion-top15 回退**。
 Agent 的推荐工作流 = **引用 facts 重写成自然语言**；要推翻 label 必须引用文件里的数值作为依据。
 label 英文、notes/facts 中文（用户拍板）。
 
-**输出目录**：缺省**系统临时目录** `<tmp>/kinemesh-analysis/run-<时间戳>-<pid>/`（与 render 一致，
-用户拍板）。配套两条防读不到的措施：① 工具返回内联 `summaryDigest`（分段表+全片统计+loopCheck），
-常见情况 Agent 不必读文件；② Agent 读临时目录文件被沙箱挡时，报错自愈指引「用 `out` 参数重跑指向
-工作区」。DSH 预览面板走 host 路由取数，不经文件（见 M6e）。
+**输出目录**（0.9.2 改）：缺省 **`<当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/`**
+（与 render 一致，用户拍板；不再落到系统临时目录）。配套两条防读不到的措施：① 工具返回内联
+`summaryDigest`（分段表+全片统计+loopCheck），常见情况 Agent 不必读文件；② Agent 读产物目录文件
+被沙箱挡时，报错自愈指引「用 `out` 参数重跑指向工作区」。DSH 预览面板走 host 路由取数，不经文件（见 M6e）。
 
 ### 6.5 近似姿势对比：循环 / 归位检测
 
@@ -474,7 +477,7 @@ null（字段恒在）。阈值常量与强度档位同管理：内置、随输�
 ```
 kinemesh_analyze(path, {
   clip?: string | "*",        // 缺省第一个有动画的 clip；"*" 批量分析全部
-  out?: string,               // 缺省 <tmp>/kinemesh-analysis/run-<ts>-<pid>/
+  out?: string,               // 缺省 <cwd>/.kinemeshtmp/run-<ts>-<pid>/
   range?: [number, number],   // [t0, t1] 秒，切片分析（帧号仍按全片口径，可直接喂 render）
   sampleFps?: number = 15,    // 1–60
   joints?: string[] | "auto",
@@ -836,7 +839,7 @@ kinemesh_analyze(path, {
 4. **guess 词表**：不写死——词汇表文件机制（§6.6.3），由 Agent 根据记忆在用户工程里维护。
 5. **trajectory SVG**：进 v1（手写轻量 SVG，无栅格化依赖）。
 6. **预览面板叠加**：进 v1（M6e，落在预览页时间轴）。
-7. **输出目录**：缺省系统临时目录（与 render 一致）；summaryDigest + 自愈指引兜底可读性。
+7. **输出目录**：缺省 <cwd>/.kinemeshtmp/run-<时间戳>-<pid>/（与 render 一致）；summaryDigest + 自愈指引兜底可读性。
 8. **facts 语言与粒度**：中文；每段一句 + loopCheck 一句。
 9. **AI 分工口径**：AI 不自行计算数值，基于工具产出的一组数据做**推测**；
    能用工具生成的就用工具生成；关键帧由 AI 调 `kinemesh_render` 出图做视觉识别，
