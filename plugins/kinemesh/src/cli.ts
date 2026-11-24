@@ -1,6 +1,7 @@
 // CLI 入口（M4）：`node kinemesh.cjs info <file>` / `render` / `analyze` / `skeleton`（M6d/M7）。
 // 契约（设计文档 §5.2）：stdout 出 JSON、图片落盘、非零退出码 + stderr 报错（Agent 解析友好）。
 // 构建成单文件 CJS（skill/cli/kinemesh.cjs，three.js 全内联；playwright 保持外部依赖）。
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -392,11 +393,22 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 // 直接执行时才跑（测试 / MCP 里 import main 不触发）；ESM 源码态没有 __filename，落在 catch
+// 0.9.5：技能目录是**以 junction/软链接**挂到 ~/.claude/skills、~/.codex/skills 的，
+// 此时 argv[1] 是链接路径、__filename 是 Node 解析后的真实路径——两侧都先 realpath 再比，
+// 否则 CLI 被"链接调用"时会静默什么都不做（真实踩过）。
 const invokedDirectly = (() => {
   try {
-    const self = path.resolve(__filename);
-    const invoked = path.resolve(process.argv[1] ?? '');
-    return invoked !== '' && invoked === self;
+    const self = realpathSync(path.resolve(__filename));
+    const invokedRaw = process.argv[1] ?? '';
+    if (invokedRaw === '') return false;
+    // 文件可能被删/不可达时 realpath 会抛，退回字面比较
+    let invoked: string;
+    try {
+      invoked = realpathSync(path.resolve(invokedRaw));
+    } catch {
+      invoked = path.resolve(invokedRaw);
+    }
+    return invoked === self;
   } catch {
     return false;
   }

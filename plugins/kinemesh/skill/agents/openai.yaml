@@ -1,0 +1,9 @@
+# Codex 技能包元数据（agents/openai.yaml，0.9.5）：Codex 用它在技能列表里显示名字/简介/预置提示。
+# 规范见 Codex 内置 skill-creator 的 references/openai_yaml.md；Claude 侧忽略本文件。
+interface:
+  display_name: "动析 kinemesh"
+  short_description: "游戏模型/动画资源分析与截图：片段清单、骨骼网格体检、动作分析、关键帧截图"
+  brand_color: "#4C8BF5"
+  default_prompt: "Use $kinemesh to inspect this model: list clips with kinemesh_info, run kinemesh_analyze for motion facts, then kinemesh_render the key frames and read the images."
+policy:
+  allow_implicit_invocation: true

@@ -22,12 +22,12 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 	enumerable: true
 }) : target, mod));
 //#endregion
+let node_fs = require("node:fs");
 let node_fs_promises = require("node:fs/promises");
 let node_os = require("node:os");
 let node_path = require("node:path");
 node_path = __toESM(node_path, 1);
 let node_url = require("node:url");
-let node_fs = require("node:fs");
 /**
 * @license
 * Copyright 2010-2026 Three.js Authors
@@ -33878,7 +33878,7 @@ async function runSkeleton(data, fileName, params, context = {}) {
 //#region
 /** CLI 版本：`--version` 输出（第三方 Agent 用来确认手上是哪一版） */
 function cliVersion() {
-	return "0.9.4";
+	return "0.9.5";
 }
 var USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
@@ -34253,9 +34253,16 @@ async function main(argv) {
 }
 if ((() => {
 	try {
-		const self = node_path.default.resolve(__filename);
-		const invoked = node_path.default.resolve(process.argv[1] ?? "");
-		return invoked !== "" && invoked === self;
+		const self = (0, node_fs.realpathSync)(node_path.default.resolve(__filename));
+		const invokedRaw = process.argv[1] ?? "";
+		if (invokedRaw === "") return false;
+		let invoked;
+		try {
+			invoked = (0, node_fs.realpathSync)(node_path.default.resolve(invokedRaw));
+		} catch {
+			invoked = node_path.default.resolve(invokedRaw);
+		}
+		return invoked === self;
 	} catch {
 		return false;
 	}

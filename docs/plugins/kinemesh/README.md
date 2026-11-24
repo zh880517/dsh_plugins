@@ -35,13 +35,38 @@
 自动选模式、root motion 开关、轴参考）与截图取景（自动模式、逐帧取景），以及产物临时目录收口到
 `<cwd>/.kinemeshtmp/`；状态见 [design.md](./design.md) §5 与 §6.10。
 
+## 安装到 Claude / Codex 全局（软链接方式，推荐开发用）
+
+Skill 目录是**唯一事实源**（`plugins/kinemesh/skill/`），用 junction 挂到各 Agent 的全局技能目录即可，
+改 `SKILL.md` 或重新 `npm run build` 后**立刻生效、不用复制**：
+
+```powershell
+# 一次装到 ~/.claude/skills/kinemesh 与 ~/.codex/skills/kinemesh（已存在则复用/替换为链接）
+.\scripts\install-skill.ps1
+# 只删链接、不动源码
+.\scripts\install-skill.ps1 -Uninstall
+```
+
+手动等价命令：
+
+```powershell
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.claude\skills\kinemesh" -Target "D:\GitHub\dsh_plugins\plugins\kinemesh\skill"
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.codex\skills\kinemesh" -Target "D:\GitHub\dsh_plugins\plugins\kinemesh\skill"
+```
+
+- Claude 读 `SKILL.md`（frontmatter name/description）；
+- Codex 额外读 `agents/openai.yaml`（技能列表里的显示名/简介/预置 prompt，`$kinemesh` 调用）；
+- 两个 Agent 都通过链接跑同一份 `cli/kinemesh.cjs`：装完用 `node ~/.claude/skills/kinemesh/cli/kinemesh.cjs --version` 核对；
+- 链接调用依赖「argv 与真实路径都做 realpath 比较」（0.9.5 修复：此前经 junction 调用会静默不执行）；
+- 分发给别人（不在本机开发时）用下面的 zip；解压后同样可以挂链接或直接复制目录。
+
 ## 分发给第三方 Agent（Skill / CLI / MCP）
 
 DSH 之外的 Agent 工具只用 **Skill + MCP** 两种形式（CLI 作为 Skill 的执行器随附）：
 
 | 产物 | 位置 | 说明 |
 |---|---|---|
-| Skill 目录 | `plugins/kinemesh/skill/` | `SKILL.md` + `cli/kinemesh.cjs` **共 2 个文件**，拷贝即用（0.9.4 起 viewer 内联，`render` 也自包含） |
+| Skill 目录 | `plugins/kinemesh/skill/` | `SKILL.md` + `agents/openai.yaml`（Codex 元数据）+ `cli/kinemesh.cjs`，拷贝即用（0.9.4 起 viewer 内联，`render` 也自包含） |
 | MCP server | `plugins/kinemesh/mcp/kinemesh-mcp.js` | stdio，单文件 ESM，与 DSH 工具同名同参 |
 | 打包（推荐分发形式） | `npm run pack:skill` → `dist/kinemesh-<version>.zip` | 一个 zip 含 SKILL.md / CLI / MCP / 包内 README / VERSION |
 

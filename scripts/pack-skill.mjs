@@ -16,6 +16,8 @@ const repo = path.resolve(import.meta.dirname, '..');
 /** 需要打进的产物（相对插件目录） */
 const PAYLOADS = [
   { from: 'skill/SKILL.md', to: 'SKILL.md' },
+  // Codex 技能包元数据（agents/openai.yaml：技能列表里的名字/简介/预置提示）
+  { from: 'skill/agents', to: 'agents', dir: true },
   { from: 'skill/cli', to: 'cli', dir: true },
   { from: 'mcp', to: 'mcp', dir: true },
 ];

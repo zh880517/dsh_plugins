@@ -188,6 +188,15 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
   以及 `npm run pack:skill` → `dist/kinemesh-<version>.zip`（自带 store-only ZIP 写入器、
   不引依赖；包内 SKILL.md / cli / mcp / 包内 README / VERSION）。
   实测：解压后 `cli/kinemesh.cjs analyze` 与 `--version` 正常，`render` 在含 playwright 的工程里可出图。
+- **安装到 Agent 全局技能目录（0.9.5）**：Skill 目录用 **junction** 挂到 `~/.claude/skills/<id>` 与
+  `~/.codex/skills/<id>`（`scripts/install-skill.ps1`，支持 `-Uninstall`；脚本用 UTF-8 BOM 保存，
+  Windows PowerShell 5.1 与 pwsh 7 都能跑），源码即事实源、重建立即生效。Codex 侧额外提供
+  `skill/agents/openai.yaml`（`interface.display_name/short_description/default_prompt` +
+  `policy.allow_implicit_invocation`，规范来自 Codex 内置 skill-creator 的 references/openai_yaml.md），
+  打包时一并进 zip。
+  同时修了链接调用下的真 bug：CLI 的「是否直接执行」判定原先比较 `argv[1]` 与 `__filename` 的
+  **字面路径**，经 junction 调用时前者是链接路径、后者是 Node 解析后的真实路径 → 判定为 false，
+  **CLI 静默什么都不做**。现在两侧都先 `realpathSync` 再比较（0.9.5）。
 - 契约：成功 stdout 一行 JSON（ok:true）；失败 stderr 三段式 JSON + 非零退出码；
   `info <file>` / `render <file> --frames 0,15,30 --view-preset front --mode skeleton --out-dir …`。
 
