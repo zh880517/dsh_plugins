@@ -59,6 +59,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.codex\skills\kinemesh" -Tar
 - 两个 Agent 都通过链接跑同一份 `cli/kinemesh.cjs`：装完用 `node ~/.claude/skills/kinemesh/cli/kinemesh.cjs --version` 核对；
 - 链接调用依赖「argv 与真实路径都做 realpath 比较」（0.9.5 修复：此前经 junction 调用会静默不执行）；
 - 分发给别人（不在本机开发时）用下面的 zip；解压后同样可以挂链接或直接复制目录。
+- **让别人/别人的 AI 自己装**：给对方这一条说明即可 —— [install-skill.md](./install-skill.md)（含 raw 下载命令与自检清单）。
 
 ## 分发给第三方 Agent（Skill / CLI / MCP）
 
@@ -80,7 +81,7 @@ DSH 之外的 Agent 工具只用 **Skill + MCP** 两种形式（CLI 作为 Skill
 { "mcpServers": { "kinemesh": { "command": "node", "args": ["<解压目录>/mcp/kinemesh-mcp.js"] } } }
 ```
 
-## 安装
+## 安装（DSH 插件）
 
 在 DSH 侧栏 **Plugins → Add plugin** 里粘一条 spec：
 
@@ -89,6 +90,19 @@ git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/kinemesh
 ```
 
 钉版本用包含构建产物的 commit（`npm run release:plugin -- --only kinemesh` 会打印）。
+
+## 安装（第三方 Agent 工具：Skill / CLI / MCP）
+
+**给 AI Agent 一条链接就能自己装**——把这条发给对方 Agent 并说「按这个装 kinemesh 技能」：
+
+```
+https://github.com/zh880517/dsh_plugins/blob/main/docs/plugins/kinemesh/install-skill.md
+```
+
+完整说明（Claude Code / Codex 全局技能目录、raw 下载命令、自检清单、升级卸载、常见问题）见
+**[install-skill.md](./install-skill.md)**。要点：装 3 个文件到 `~/.claude/skills/kinemesh`
+或 `~/.codex/skills/kinemesh`，`node cli/kinemesh.cjs --version` 校验，重启客户端生效；
+`info/analyze/skeleton` 零依赖，`render` 需目标工程装 playwright。
 
 ## 边界
 

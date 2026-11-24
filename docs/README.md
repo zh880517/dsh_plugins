@@ -28,6 +28,10 @@
 | handoff | [docs/plugins/handoff/README.md](./plugins/handoff/README.md) | `plugins/handoff/` | `@handoff/dsh-plugin` |
 | kinemesh | [docs/plugins/kinemesh/README.md](./plugins/kinemesh/README.md) | `plugins/kinemesh/` | `@kinemesh/dsh-plugin` |
 
+单主题深入文档：kinemesh 的**第三方 Agent 安装说明**（给 Claude Code / Codex / 其它 Agent 的
+Skill/CLI/MCP 安装，含可直接转发的链接）见
+[plugins/kinemesh/install-skill.md](./plugins/kinemesh/install-skill.md)。
+
 ## 链接规则（`npm run check:docs` 会校验）
 
 1. 根 `README.md` 的「插件」表必须有一行链到 `docs/plugins/<id>/README.md`；

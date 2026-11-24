@@ -30,6 +30,18 @@ git+<仓库地址>.git#<ref>&path:/plugins/<插件 id>
 https://raw.githubusercontent.com/zh880517/dsh_plugins/main/market/index.json
 ```
 
+### 第三方 Agent 工具装 Skill（交给 AI Agent 自己装）
+
+kinemesh 的 Skill/CLI/MCP 也给 DSH 之外的 Agent（Claude Code / Codex / 其它）用，**一条说明文档即可让
+对方的 AI 自己装**——把这条链接发给它并说「按这个装 kinemesh 技能」：
+
+```
+https://github.com/zh880517/dsh_plugins/blob/main/docs/plugins/kinemesh/install-skill.md
+```
+
+安装说明（含 Claude/Codex 全局技能目录、raw 下载命令、自检清单、升级卸载、常见问题）：
+[docs/plugins/kinemesh/install-skill.md](docs/plugins/kinemesh/install-skill.md)。
+
 ## 仓库结构
 
 ```

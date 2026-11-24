@@ -18,7 +18,10 @@
   XYZ 参考轴、左下角全局轴指示器）；会话内另有 `/kinemesh` 命令（拖入 FBX + 要求直接启动分析）
   与「模型预览」页签（会话模型列表 + 发送给 AI 分析）。
 - **Skill + CLI**（[skill/](./skill/)）：`SKILL.md + cli/kinemesh.cjs` 自包含技能目录，
-  任何有 shell + Node 的 Agent 复制即用。
+  任何有 shell + Node 的 Agent 复制即用。**给第三方 Agent（Claude Code / Codex / 其它）安装**：
+  把这条说明链接发给对方的 AI，让它照做即可 ——
+  <https://github.com/zh880517/dsh_plugins/blob/main/docs/plugins/kinemesh/install-skill.md>
+  （也见 [docs/plugins/kinemesh/install-skill.md](../../docs/plugins/kinemesh/install-skill.md)）。
 - **MCP Server**（[mcp/](./mcp/)）：stdio，两工具与 DSH / CLI 同名同参。
 
 - 支持格式：FBX（ASCII ≥7.0 / 二进制 ≥6400）、glTF / GLB（含 VRM）、OBJ

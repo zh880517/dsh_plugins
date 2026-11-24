@@ -197,6 +197,11 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
   同时修了链接调用下的真 bug：CLI 的「是否直接执行」判定原先比较 `argv[1]` 与 `__filename` 的
   **字面路径**，经 junction 调用时前者是链接路径、后者是 Node 解析后的真实路径 → 判定为 false，
   **CLI 静默什么都不做**。现在两侧都先 `realpathSync` 再比较（0.9.5）。
+- **对外安装说明（0.9.6）**：新增 [install-skill.md](./install-skill.md)——面向**第三方 AI Agent 自己装**
+  的单文档说明（可直接把 GitHub 链接丢给对方 Agent）：目标目录（Claude/Codex 全局技能目录）、
+  raw 下载命令（PowerShell + bash）、`--version`/`info` 自检清单、MCP 可选安装、链接安装、
+  升级卸载、常见问题（含「raw 链接跟随 main、务必核对版本」与旧版 junction 静默 bug）。
+  根 README「安装」、docs/README「单主题文档」、插件 README 都已链过去。
 - 契约：成功 stdout 一行 JSON（ok:true）；失败 stderr 三段式 JSON + 非零退出码；
   `info <file>` / `render <file> --frames 0,15,30 --view-preset front --mode skeleton --out-dir …`。
 
