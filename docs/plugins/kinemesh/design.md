@@ -1,8 +1,9 @@
 # kinemesh（动析）架构设计
 
-> 状态：v0.9.2（**M1–M7 已实施**：M6 动作分析与 M7 骨架识别随 0.5.0 发布；0.6.0–0.9.2 为预览交互与
+> 状态：v0.10.0（**M1–M7 已实施**：M6 动作分析与 M7 骨架识别随 0.5.0 发布；0.6.0–0.9.x 为预览交互与
 > 截图取景的连续迭代——三入口重构、播放条/轨道/速度、显示方式拆分、载入自动选模式、逐帧取景、
-> root motion 开关与根节点参考轴、产物临时目录收口，逐条见 §6.10 与各条款括注的版本号）。
+> root motion 开关与根节点参考轴、产物临时目录收口；0.10.0 新增**独立 mesh 文件绑定**，逐条见
+> §6.10 / §6.11 与各条款括注的版本号）。
 > M1 设计输入来自 `docs/dev/2026-11-18-kinemesh-design.md`（已按 docs/dev 生命周期删除）；
 > M6/M7 设计输入来自 `docs/dev/2026-11-18-kinemesh-motion-analysis-design.md`（草稿 v0.1–v0.9，
 > 经 14 条拍板决策定稿，结论已全部回写本文，草稿已删除）。本文是长期有效的正式文档。
@@ -158,11 +159,15 @@ min/max 判断；FBX 场景路径解析根骨骼 position 轨道的首尾值。
 - **路由**（`/kinemesh` 前缀，CORS 放行同 aiworkflow）：
   - `GET /kinemesh/model?path=…`：给预览面板供模型字节（512 MiB 上限，octet-stream）；
   - `GET /kinemesh/info?path=…`：轻量 InfoReport；
+  - `GET /kinemesh/analysis?path=…&clip=…`（M6e）：预览曲线数据源（digest/分段/关键帧/能量，内存返回）；
+  - `GET /kinemesh/companions?path=…`（0.10.0）：动作-only 文件的同资产候选网格文件（命名/目录启发式，
+    不解析内容；客户端逐个加载校验 meshes 非空后绑定，见 §6.11）。
   - `POST /kinemesh/analyze`：**「发送给 AI 分析」**的宿主入口——Client 把当前路径/片段/帧号/
     ViewState 描述 POST 上来，Host 用 `ctx.get('agents').get(sessionId).followup({role:'user',…})`
     唤醒该会话 Agent（与 aiworkflow / 定时提醒同一机制；设计草稿里的 `agent.inject/followup`
     经 cordis_inspect 验证后落定为此形态）。Agent 收到的消息明确指示它调 `kinemesh_render`
     渲染该视角并读图分析——闭环「收到视角 → 截图 → 分析」。Agent 不在线时回 409 + 自愈文案。
+    0.10.0 起请求可带 `mesh`（预览面板已绑定的独立网格文件），消息里写明绑定网格文件、指示 render 传该参数。
 - **面板入口形态**（草稿 §10 开放问题的决定）：参照 aiworkflow 的模式——输入框左侧「动析」胶囊
   + 浮层预览对话框，不占主面板。浮层内：路径加载、clip/渲染模式选择、帧滑条与播放、
   视角实时回读（OrbitControls 拖转 → 球坐标 ViewState）、发送按钮。
@@ -692,6 +697,10 @@ kinemesh_analyze(path, {
     时也看得见。工具栏加勾选框「根节点轴」（默认开，可关；`viewer.setRootAxesVisible`，
     mount 选项 `rootAxes` 决定是否创建——**截图管线不创建**，避免杂线干扰 AI 读图）。
     选择随面板记忆（`PaneMemory.rootAxes`）恢复；无模型时自动隐藏。
+  - **独立 mesh 文件输入（0.10.0）**：工具栏路径输入旁加「mesh 文件」输入框（占位提示；留空时载入后自动识别）；
+    载入动画-only 文件后自动查 `GET /kinemesh/companions` 候选、客户端逐个加载校验并绑定，
+    绑定状态以 chip 显示「mesh 文件名 · 命中骨骼数/骨架骨骼数」，绑定提示（自动识别 / 未命中骨骼）
+    进 info banner；mesh 路径进 `PaneMemory.mesh` 与「发送给 AI 分析」请求（契约见 §6.11）。
   - 地面：20 段灰色网格 + X 轴偏红 / Z 轴偏蓝（3D 工具习惯）。**所有渲染模式都显示**
     （0.6.10：`default / solid / wireframe / skeleton / bones-overlay` 一视同仁——线框与骨架
     模式下同样需要地面/轴向参照；地面不参与包围盒，显示与否不影响机位适配）；
@@ -772,8 +781,58 @@ kinemesh_analyze(path, {
 - 页签文案与页面文本走 locale 服务（zh/en locale 文件已有）；
 - 不做跨会话历史列表（会话日志才是事实源；要做也是后续从会话日志回放，非 v1）。
 
-## 7. M7 骨架识别与映射（已实施）
+### 6.11 独立 mesh 文件绑定（0.10.0，用户需求）
 
+**需求**：游戏资产常把动作单独导出——FBX 只有骨架 + 动画（`meshes: []`，实测
+`4006_tankclaw_ice/hit/decide_spine_shake.fbx` 只有 5 根脊柱骨骼），角色网格在另一个文件
+（`4006_tankclaw_ice/basic/4006_tankclaw_ice_skin.fbx`，88 骨 + 2 个蒙皮网格）。这类文件直接
+`render` 只能出骨架图，AI 做动作/模型视觉分析时缺网格。用户要求：**可以提供一个独立 mesh 文件用于
+预览和截图分析，工具自动识别并绑定**。
+
+**契约**（三出口同名同参）：
+
+- `kinemesh_render` / `kinemesh_info` 新增可选 `mesh` 参数（CLI `--mesh`）；`path` 是动画文件、
+  `mesh` 是网格文件（角色/道具的蒙皮网格）。`kinemesh_analyze` / `kinemesh_skeleton` 不接 `mesh`——
+  动作分析只吃动画通道、骨架报告只看骨架，网格不参与数值。
+- **角色自动识别**（`core/bind/roles.ts`，纯逻辑）：网格优先 mesh 参数文件，其次 `path` 自带；
+  动画优先 `path`，其次 mesh 参数文件（两个参数传反也能纠正）；两侧都缺网格/动画 → 三段式。
+  网格与动画同源（同一文件）→ 不绑定、警告说明哪一侧没用上。
+- **骨骼名绑定**（`core/bind/remap.ts`，纯 three 对象操作）：逐轨道用
+  `THREE.PropertyBinding.parseTrackName` 取 nodeName → 精确名 > 归一化名（去 `mixamorig:` /
+  `Armature|` / `Root|` 等命名空间、空格转下划线、小写，另收 `PropertyBinding` 清洗形）→
+  命中则克隆轨道并换前缀；未命中丢弃并记入报告。**部分骨骼动画可用**（如 5 根脊柱的受击附加动画：
+  命中骨骼被驱动、其余保持 rest）；0 命中 → `KinemeshError` 三段式（提示来自同一套 rig、可分别
+  `info`/`skeleton` 对比骨骼名）。不做重定向：单位/初始朝向差异不修正，这是 retarget 的范畴。
+- **同资产网格发现**（`core/bind/discover.ts`，Node fs）：动作文件附近的本目录 / 上级角色目录 /
+  上级资产目录 + 其 `basic|mesh|model|body|skin|char` 子目录，按 `_skin` / `skin` / `mesh` / `body` /
+  `model` 文件名关键词 + 目录约定 + 角色目录名词干打分，动画词降权、排除自身与动作文件，最多 5 候选。
+  - 工具侧（`core/bind/auto.ts`）：仅当 `path` 文件确实没有网格时触发，逐个解析确认 `meshes` 非空
+    （最多 3 个），命中即绑定并在 `warnings` 说明「已自动识别同资产的网格文件「…」并绑定」；
+    解析失败/无候选则退回骨架并提示用 `mesh` 显式指定。
+  - 预览面板：`GET /kinemesh/companions?path=…` 拿候选（不解析内容），客户端逐个加载校验并绑定。
+- **合成与三出口共用**（`core/bind/bundle.ts`，浏览器安全）：`loadSceneFromData` / `sceneFacts` /
+  `bindScenes`（= `planCompanion` + `applyPlan`）/ `loadSceneWithCompanion`。截图页桥
+  `load(b64, name, companionB64?, companionName?)` 在页面内加载两个文件并绑定，保证「预览 = 截图」；
+  `RenderResult` 增 `binding`（plan + facts），绑定 warnings 透传到结果；无网格且无 companion 时
+  给出 mesh 参数提示。
+- **info 体检**（`core/bind/inspect.ts`）：加载两个场景（path+mtime 缓存）→ 角色识别 → 试算绑定，
+  返回 `companion`（网格文件 InfoReport）+ `binding`（plan / report 命中统计 / facts / warnings /
+  error）。绑定失败**不致命**：info 仍 `ok:true`，`binding.error` 给三段式；不带 `mesh` 且无网格时
+  附同资产候选网格文件名。
+- **预览面板**（§6.10 那条 bullet）：工具栏「mesh 文件」输入框（留空自动识别）+ 绑定 chip + 绑定提示
+  banner；`mesh` 进 `PaneMemory` 与 `POST /kinemesh/analyze`，消息里写明绑定网格文件并指示 Agent 给
+  `kinemesh_render` 传该 `mesh` 参数。
+- **输出统计口径**：`matchedNodes`（命中 mesh 命名节点数）与 `matchedBones`（其中骨骼数）分开统计——
+  动画也可能驱动 mesh 上的非骨骼节点（武器网格等）；facts 用「动画驱动 mesh 骨架的
+  matchedBones/meshBones 根骨骼；轨道命中 matchedTracks/totalTracks」。
+- **测试**：`tests/kinemesh/companion.test.ts`（轨道重绑定/命名空间/部分骨骼/完全不匹配、角色识别与
+  三段式、同资产发现、info `mesh` 体检、预览 chip 文案）；`screenshot.int.test.ts` 新增
+  「绑定渲染 / 参数传反 / 骨骼完全对不上」三例；`host-routes.test.ts` 加 companions 路由与 analyze
+  带 mesh 的消息；`cli.test.ts` 加 `info --mesh` / `render --mesh`；fixtures 新增 mesh-only 与
+  animation-only GLB。真实资产实测：tankclaw 受击附加动画自动识别 `basic/*_skin.fbx`，绑定
+  5/88 骨、轨道 18/18，渲出带网格的角色图。
+
+## 7. M7 骨架识别与映射（已实施）
 需求（用户拍板）：AI 要能识别骨架类型（约定）与身体部件（头/胳膊/手/腿/脚）；命名不标准的 rig，
 用「**截图带骨骼名字让 AI 识别**」定案。
 

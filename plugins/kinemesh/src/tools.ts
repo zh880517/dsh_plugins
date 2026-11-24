@@ -13,6 +13,9 @@ import { getCachedScene } from './core/scene-cache.js';
 import { createRunDir } from './core/temp-dir.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots, renderLabelScreenshots } from './core/render/screenshot.js';
+import { autoResolveCompanion } from './core/bind/auto.js';
+import { discoverCompanionMeshes } from './core/bind/discover.js';
+import { companionBindingJson, inspectCompanion } from './core/bind/inspect.js';
 import {
   checkBonesAgainstSkeleton,
   loadBonesFile,
@@ -107,6 +110,67 @@ async function readModelFile(rawPath: string): Promise<LoadedModel> {
       ),
     };
   }
+}
+
+// ———————— 独立 mesh 文件的共用口径（0.10.0） ————————
+
+/** 已读入内存的模型文件（path 参数与 mesh 参数都用它） */
+export interface ModelFileRef {
+  data: ArrayBuffer;
+  fileName: string;
+  abs: string;
+}
+
+/**
+ * 渲染前的 mesh 伙伴解析（三出口共用）：显式 mesh 参数优先；没给时自动识别同资产网格文件
+ * （动作-only 资产的需求：「让工具自动识别然后绑定」）。返回的 companion 直接喂 renderScreenshots。
+ */
+export async function resolveCompanionForRender(
+  primary: ModelFileRef,
+  explicitMesh: ModelFileRef | undefined,
+): Promise<{ companion?: { data: ArrayBuffer; fileName: string }; warnings: string[] }> {
+  if (explicitMesh !== undefined) {
+    return { companion: { data: explicitMesh.data, fileName: explicitMesh.fileName }, warnings: [] };
+  }
+  const resolution = await autoResolveCompanion(primary.abs, primary.data, primary.fileName);
+  if (resolution.companion === null) return { warnings: resolution.warnings };
+  return {
+    companion: { data: resolution.companion.data, fileName: resolution.companion.fileName },
+    warnings: resolution.warnings,
+  };
+}
+
+/**
+ * info 三出口共用 runner：主文件结构信息；给了 mesh 参数时附带 mesh 文件报告 + 绑定体检
+ * （自动识别角色、试算骨骼命中，绑定不成立时 error 段给三段式但不让 info 失败）。
+ * 没给 mesh 参数且主文件没有网格时，附加同资产候选网格文件提示。
+ */
+export async function runInfo(primary: ModelFileRef, mesh?: ModelFileRef): Promise<Record<string, unknown>> {
+  const report = await analyzeModelCached(primary.abs, primary.data, primary.fileName);
+  if (mesh !== undefined) {
+    const inspection = await inspectCompanion(
+      { data: primary.data, fileName: primary.fileName, abs: primary.abs },
+      { data: mesh.data, fileName: mesh.fileName, abs: mesh.abs },
+    );
+    return {
+      ok: true,
+      ...report,
+      companion: { ...inspection.companionInfo, fileName: mesh.fileName },
+      binding: companionBindingJson(inspection),
+    };
+  }
+  const warnings = [...report.warnings];
+  if (report.meshes.length === 0) {
+    const candidates = await discoverCompanionMeshes(primary.abs);
+    warnings.push(
+      '该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件' +
+        (candidates.length > 0
+          ? `；同资产发现候选：${candidates.map((candidate) => candidate.name).join('、')}（可直接作为 mesh 参数）`
+          : '') +
+        '。',
+    );
+  }
+  return { ok: true, ...report, warnings };
 }
 
 // ———————— kinemesh_analyze（M6d，设计文档 §6.7 / §6.6.3 / §6.4） ————————
@@ -521,11 +585,19 @@ function infoTool(record?: SessionModelRecorder): AgentTool {
       '支持 FBX（ASCII ≥7.0 / 二进制 ≥6400）、glTF / GLB（含 VRM）、OBJ。' +
       '返回：动画片段（名称/时长/通道数/是否有根运动）、骨骼（数量/最大深度/是否人形，提示可否重定向）、' +
       '网格（三角面/顶点/蒙皮比例/材质数）、贴图清单、包围盒与单位体检（厘米未换算这类坑会标出来）。' +
+      '**动作文件不带 mesh 时（动画-only）**：主报告会提示没有网格；可再用 mesh 参数给一个独立 mesh 文件，' +
+      '工具会返回该 mesh 文件的结构信息 + 绑定体检（自动识别谁提供网格/动画、试算骨骼名命中数）。' +
       '拿到模型文件要回答「有哪些动作、多长、能不能用」时先调它。',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）' },
+        mesh: {
+          type: 'string',
+          description:
+            '独立 mesh 文件路径（可选）：path 文件只有动画没有网格时，用这个角色网格文件做预览/截图主体；' +
+            '工具会自动识别谁提供网格、谁提供动画，并试算骨骼名绑定（返回 binding 段）',
+        },
       },
       required: ['path'],
       additionalProperties: false,
@@ -536,11 +608,19 @@ function infoTool(record?: SessionModelRecorder): AgentTool {
       const given = typeof args?.path === 'string' ? args.path : '';
       const loaded = await readModelFile(given);
       if (!loaded.ok) return loaded.payload;
+      const meshArg = typeof args?.mesh === 'string' ? args.mesh.trim() : '';
+      const meshLoaded = meshArg === '' ? undefined : await readModelFile(meshArg);
+      if (meshLoaded !== undefined && !meshLoaded.ok) return meshLoaded.payload;
       try {
-        // M6f：info 的场景构造路径（FBX/OBJ 无 fastInfo）走 path+mtime 进程内缓存
-        const report = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
+        const primary: ModelFileRef = { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs };
+        const mesh: ModelFileRef | undefined =
+          meshLoaded === undefined
+            ? undefined
+            : { data: meshLoaded.data, fileName: path.basename(meshLoaded.abs), abs: meshLoaded.abs };
+        const result = await runInfo(primary, mesh);
         recordSessionModel(record, exec, loaded.abs);
-        return { ok: true, ...report };
+        if (mesh !== undefined) recordSessionModel(record, exec, mesh.abs);
+        return result;
       } catch (error) {
         if (error instanceof KinemeshError) {
           return errorPayload(error.message, error.guidance, `读取 ${loaded.abs} 的模型信息`);
@@ -559,6 +639,8 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
       '视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，' +
       'orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay，**省略 mode 时按模型自动选**' +
       '（无 mesh→skeleton；贴图解不出来→solid 素模；有可用贴图→default——贴图缺失的资产用 default 会渲成黑剪影）。' +
+      '**动作文件不带 mesh 时**：mesh 参数给一个独立 mesh 文件（自动识别谁提供网格/动画、按骨骼名自动绑定，' +
+      '动画只覆盖部分骨骼也可以）；不传 mesh 时工具会自动在资产目录里识别候选网格文件。' +
       '**只给 viewPreset 时逐帧按当前帧身体包围盒自动取景**：带 root motion 的动作（冲刺/突进）不会跑出画面；' +
       '显式传 view（camera.target / distance）则按你给的固定构图。' +
       'boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，' +
@@ -567,6 +649,12 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
       type: 'object',
       properties: {
         path: { type: 'string', description: '模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）' },
+        mesh: {
+          type: 'string',
+          description:
+            '独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；' +
+            '不传时自动识别同资产网格文件（结果看 warnings）',
+        },
         clip: { type: 'string', description: '动画片段名（先 kinemesh_info 查）；静态模型省略' },
         frames: {
           type: 'array',
@@ -619,9 +707,20 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
             ? boneLabelsRaw
             : undefined;
       try {
+        // 0.10.0：独立 mesh 文件（显式 mesh 参数优先；否则自动识别同资产网格文件）
+        const primaryRef: ModelFileRef = { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs };
+        const meshArg = typeof args?.mesh === 'string' ? args.mesh.trim() : '';
+        let meshRef: ModelFileRef | undefined;
+        if (meshArg !== '') {
+          const meshLoaded = await readModelFile(meshArg);
+          if (!meshLoaded.ok) return meshLoaded.payload;
+          meshRef = { data: meshLoaded.data, fileName: path.basename(meshLoaded.abs), abs: meshLoaded.abs };
+        }
+        const companion = await resolveCompanionForRender(primaryRef, meshRef);
         const result = await renderScreenshots({
           data: loaded.data,
           fileName: path.basename(loaded.abs),
+          companion: companion.companion,
           viewInput: { view: args?.view, viewPreset: args?.viewPreset, mode: args?.mode, clip: args?.clip },
           frames: frames.map((frame: unknown) => Number(frame)),
           width: typeof args?.width === 'number' ? args.width : undefined,
@@ -630,11 +729,13 @@ function renderTool(record?: SessionModelRecorder): AgentTool {
           boneLabels,
         });
         recordSessionModel(record, exec, loaded.abs);
+        if (meshRef !== undefined) recordSessionModel(record, exec, meshRef.abs);
         return {
           ok: true,
           images: result.images,
           count: result.images.length,
-          warnings: result.warnings,
+          warnings: [...companion.warnings, ...result.warnings],
+          ...(result.binding === undefined || result.binding === null ? {} : { binding: result.binding }),
           hint: 'PNG 已落盘，用读图工具逐张查看后再给结论。',
         };
       } catch (error) {

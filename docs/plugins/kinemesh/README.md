@@ -23,6 +23,11 @@
   bones-overlay，**省略 `mode` 时按模型自动选**（无 mesh→skeleton；贴图解不出来→solid；有可用贴图→
   default）；只给视角预设时**逐帧按身体包围盒精确取景**，带 root motion 的动作不会跑出画面，
   显式给 view 则按指定构图。需要本机 playwright + chromium。
+- **独立 mesh 文件绑定（0.10.0）**：动作文件不带 mesh 时（游戏里动作单独导出的常见情况），
+  `kinemesh_render` / `kinemesh_info` 加 `mesh` 参数用独立网格文件做渲染主体，动画**按骨骼名自动绑定**
+  （部分骨骼的附加动画也支持，未命中骨骼保持 rest 姿态；完全不匹配给三段式）；不传 `mesh` 时自动识别
+  同资产候选网格文件（`basic/*_skin.fbx` 等）。内置预览面板同样自动识别并显示「mesh 文件名 · 命中骨骼数」，
+  亦可在「mesh 文件」输入框里显式指定。
 - **预览面板（0.6.0 起三入口）**：左侧侧边栏「动析」独立预览页 / `/kinemesh` 命令 / 会话「模型预览」
   页签。预览能力：拖转视角、播放条（首帧·逐帧·播放暂停·末帧）与播放速度 0.1×～2×、轨道条拖帧 + 强度
   曲线 + 三档刻度、显示方式（素模 / 贴图 / 线框互斥 + 独立「叠加骨架」）、载入后自动选显示模式、
@@ -30,10 +35,11 @@
   指示器、发送给 AI 分析（附动作分析 digest）。
 - 本地只读分析：只读模型文件本身，不联网、不写模型所在目录。
 
-当前版本 0.9.2：M1–M7 的四个工具 `kinemesh_info` / `kinemesh_render` / `kinemesh_analyze` /
-`kinemesh_skeleton` 三出口同名同参；0.6.0–0.9.2 迭加了预览交互（播放条/轨道/速度、显示方式拆分、
+当前版本 0.10.0：M1–M7 的四个工具 `kinemesh_info` / `kinemesh_render` / `kinemesh_analyze` /
+`kinemesh_skeleton` 三出口同名同参；0.6.0–0.9.x 迭加了预览交互（播放条/轨道/速度、显示方式拆分、
 自动选模式、root motion 开关、轴参考）与截图取景（自动模式、逐帧取景），以及产物临时目录收口到
-`<cwd>/.kinemeshtmp/`；状态见 [design.md](./design.md) §5 与 §6.10。
+`<cwd>/.kinemeshtmp/`；0.10.0 新增**独立 mesh 文件绑定**（动作-only 资产自动识别网格文件 + 按骨骼名绑定）。
+状态见 [design.md](./design.md) §5、§6.10 与 §6.11。
 
 ## 安装到 Claude / Codex 全局（软链接方式，推荐开发用）
 

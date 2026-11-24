@@ -7,10 +7,9 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { analyzeModelCached } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
-import { runAnalyze, runSkeleton } from './tools.js';
+import { resolveCompanionForRender, runAnalyze, runInfo as runInfoModel, runSkeleton, type ModelFileRef } from './tools.js';
 import type { InfoReport } from './core/types.js';
 
 const SERVER_VERSION = '0.5.0';
@@ -57,16 +56,27 @@ server.tool(
   'kinemesh_info',
   '读取 3D 模型/动画资源文件的结构信息（本地只读）。' +
     '支持 FBX（ASCII ≥7.0 / 二进制 ≥6400）、glTF / GLB（含 VRM）、OBJ。' +
-    '返回动画片段（名称/时长/通道数/根运动）、骨骼（数量/深度/人形）、网格（三角面/顶点/蒙皮比例/材质数）、贴图、包围盒与单位体检。',
+    '返回动画片段（名称/时长/通道数/根运动）、骨骼（数量/深度/人形）、网格（三角面/顶点/蒙皮比例/材质数）、贴图、包围盒与单位体检。' +
+    '动作文件不带 mesh 时（动画-only）：主报告提示没有网格；可再用 mesh 参数给独立网格文件，返回它的结构信息 + 绑定体检。',
   {
     path: z.string().describe('模型文件路径（绝对路径，或相对客户端进程工作目录；支持 ~ 开头）'),
+    mesh: z
+      .string()
+      .optional()
+      .describe('独立 mesh 文件路径（可选）：path 文件只有动画没有网格时，用该角色网格文件做预览/截图主体；自动识别角色并试算骨骼绑定'),
   },
-  async ({ path: rawPath }) => {
+  async ({ path: rawPath, mesh }) => {
     try {
       const loaded = await readModelFile(rawPath);
-      // M6f：info 的场景构造路径（FBX/OBJ 无 fastInfo）走 path+mtime 进程内缓存
-      const report: InfoReport = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...report }, null, 2) }] };
+      const primary: ModelFileRef = { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs };
+      let meshRef: ModelFileRef | undefined;
+      if (mesh !== undefined && mesh.trim() !== '') {
+        const loadedMesh = await readModelFile(mesh);
+        meshRef = { data: loadedMesh.data, fileName: path.basename(loadedMesh.abs), abs: loadedMesh.abs };
+      }
+      const result: InfoReport & Record<string, unknown> = (await runInfoModel(primary, meshRef)) as InfoReport &
+        Record<string, unknown>;
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (error) {
       return errorResult(error, `读取 ${rawPath} 的模型信息`);
     }
@@ -168,9 +178,12 @@ server.tool(
     '渲染模式 default / solid / wireframe / skeleton / bones-overlay，**省略 mode 时按模型自动选**' +
     '（无 mesh→skeleton；贴图解不出来→solid；有可用贴图→default）。**只给 viewPreset 时逐帧按身体包围盒' +
     '自动取景**（带 root motion 的动作不会跑出画面；显式给 view 则按指定构图）。boneLabels 在 skeleton / bones-overlay 模式下' +
-    '给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板一致。',
+    '给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。' +
+    '**动作文件不带 mesh 时**：mesh 参数给独立网格文件（自动识别角色、按骨骼名绑定，部分骨骼动作也可）；' +
+    '不传时自动识别同资产网格文件。截屏构图与 DSH「动析」预览面板一致。',
   {
     path: z.string().describe('模型文件路径'),
+    mesh: z.string().optional().describe('独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；不传时自动识别同资产网格文件'),
     clip: z.string().optional().describe('动画片段名（先 kinemesh_info 查）；静态模型省略'),
     frames: z.array(z.number().int().nonnegative()).optional().describe('帧号列表（≤64 个，按 30fps 换算 time=frame/30；必填语义在 handler 校验，缺了给三段式指引）'),
     view: z.record(z.string(), z.unknown()).optional().describe('完整视角对象 {"camera":{"azimuth":45,"elevation":15,"distance":3.2,"target":[0,1,0],"fov":40}}'),
@@ -187,15 +200,23 @@ server.tool(
     height: z.number().int().optional().describe('高度像素，缺省 720'),
     out: z.string().optional().describe('PNG 输出目录；缺省 <当前工作目录>/.kinemeshtmp/run-<时间戳>-<pid>/'),
   },
-  async ({ path: rawPath, clip, frames, view, viewPreset, mode, boneLabels, width, height, out }) => {
+  async ({ path: rawPath, mesh, clip, frames, view, viewPreset, mode, boneLabels, width, height, out }) => {
     if (frames === undefined || frames.length === 0) {
       return errorResult(new KinemeshError('frames 为空：至少给一个帧号。', 'frames 是整数数组，例如 "frames": [30]；静态模型传 [0]。'), '渲染截图');
     }
     try {
       const loaded = await readModelFile(rawPath);
+      const primary: ModelFileRef = { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs };
+      let meshRef: ModelFileRef | undefined;
+      if (mesh !== undefined && mesh.trim() !== '') {
+        const loadedMesh = await readModelFile(mesh);
+        meshRef = { data: loadedMesh.data, fileName: path.basename(loadedMesh.abs), abs: loadedMesh.abs };
+      }
+      const companion = await resolveCompanionForRender(primary, meshRef);
       const result = await renderScreenshots({
         data: loaded.data,
         fileName: path.basename(loaded.abs),
+        companion: companion.companion,
         viewInput: { view, viewPreset, mode, clip },
         frames,
         width,
@@ -204,7 +225,23 @@ server.tool(
         boneLabels,
       });
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true, images: result.images, count: result.images.length, warnings: result.warnings, hint: '用读图工具逐张查看后再给结论。' }, null, 2) }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                ok: true,
+                images: result.images,
+                count: result.images.length,
+                warnings: [...companion.warnings, ...result.warnings],
+                ...(result.binding === undefined || result.binding === null ? {} : { binding: result.binding }),
+                hint: '用读图工具逐张查看后再给结论。',
+              },
+              null,
+              2,
+            ),
+          },
+        ],
       };
     } catch (error) {
       return errorResult(error, `渲染 ${rawPath} 的截图`);
@@ -213,3 +250,4 @@ server.tool(
 );
 
 await server.connect(new StdioServerTransport());
+

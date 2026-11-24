@@ -2,10 +2,10 @@
 // render/screenshot.ts 内联进独立 HTML，用 Playwright 打开。
 // 通过 window.__kinemeshViewer 暴露最小桥接：载入模型 → 解析视角 → 逐帧出图。
 // M3 的 DSH 预览面板直接复用 core/viewer/kinemesh-viewer.ts（同一模块，不经过本桥）。
-import { analyzeWith } from './core/analyze-file.js';
+// 0.10.0：load 支持可选的「mesh 参数文件」（动作-only 资产），加载时自动识别角色并按骨骼名绑定。
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { collectLabelTargets, strideLabelBatches } from './core/analyze/label-batches.js';
-import { detectFormat, unknownFormatError } from './core/registry.js';
+import { sceneFacts, loadSceneWithCompanion, type CompanionBinding } from './core/bind/bundle.js';
 import { mountViewer, type ViewerHandle } from './core/viewer/kinemesh-viewer.js';
 import type { CanonicalScene } from './core/types.js';
 import { RENDER_FPS, type ViewState } from './core/viewstate.js';
@@ -15,6 +15,16 @@ interface LoadResult {
   clips: string[];
   bounds: { center: [number, number, number]; radius: number };
   durationSeconds: number;
+  /** 场景里网格数（0 = 动画-only / 纯骨架，截图管线据此提示可用 mesh 参数） */
+  meshCount: number;
+  /** 0.10.0：绑定结果（没给 mesh 参数时为 null） */
+  binding: {
+    plan: CompanionBinding['plan'];
+    report: CompanionBinding['report'];
+    facts: string[];
+  } | null;
+  /** 绑定过程的提示（截图管线透传到 warnings） */
+  warnings: string[];
 }
 
 /** B.4 骨骼名标注入参：批次号（1 起，与 skeleton-report 批号/PNG 序号一致）| 'auto'（第 1 批）|
@@ -31,7 +41,8 @@ interface BoneLabelsOutcome {
 }
 
 interface Bridge {
-  load(b64: string, fileName: string): Promise<LoadResult | { ok: false; error: string }>;
+  /** 0.10.0：后两个参数 = 可选的 mesh 参数文件（动画-only 资产用） */
+  load(b64: string, fileName: string, companionB64?: string, companionFileName?: string): Promise<LoadResult | { ok: false; error: string }>;
   applyView(view: ViewState): void;
   seekFrame(frame: number): Promise<{ frame: number }>;
   frameInfo(): ReturnType<ViewerHandle['frameInfo']>;
@@ -70,15 +81,25 @@ function getViewer(): ViewerHandle {
   return viewer;
 }
 
-async function load(b64: string, fileName: string): Promise<LoadResult | { ok: false; error: string }> {
+/** 桥接用的 base64 → ArrayBuffer（atob 产出二进制字符串；必须逐字符取 charCodeAt） */
+function decodeBase64(b64: string): ArrayBuffer {
+  const binary = Uint8Array.from(atob(b64), (character) => character.charCodeAt(0));
+  return binary.buffer.slice(binary.byteOffset, binary.byteOffset + binary.byteLength) as ArrayBuffer;
+}
+
+async function load(
+  b64: string,
+  fileName: string,
+  companionB64?: string,
+  companionFileName?: string,
+): Promise<LoadResult | { ok: false; error: string }> {
   try {
-    // atob 产出二进制字符串；必须逐字符取 charCodeAt（Uint8Array.from 对字符串元素会得到 NaN→0）
-    const binary = Uint8Array.from(atob(b64), (character) => character.charCodeAt(0));
-    const data = binary.buffer.slice(binary.byteOffset, binary.byteOffset + binary.byteLength) as ArrayBuffer;
-    const head = new Uint8Array(data, 0, Math.min(1024, data.byteLength));
-    const entry = detectFormat(head, fileName);
-    if (entry === null) throw unknownFormatError(fileName);
-    const scene: CanonicalScene = await entry.load(data, { fileName });
+    const primary = { data: decodeBase64(b64), fileName };
+    const companion =
+      companionB64 === undefined || companionFileName === undefined || companionB64 === ''
+        ? undefined
+        : { data: decodeBase64(companionB64), fileName: companionFileName };
+    const { scene, binding } = await loadSceneWithCompanion(primary, companion);
     loadedScene = scene;
     getViewer().loadScene(scene);
     bounds = getViewer().sceneBounds();
@@ -87,6 +108,12 @@ async function load(b64: string, fileName: string): Promise<LoadResult | { ok: f
       clips: bounds.clips,
       bounds: { center: bounds.center, radius: bounds.radius },
       durationSeconds: bounds.durationSeconds,
+      meshCount: sceneFacts(scene).meshCount,
+      binding:
+        binding === null
+          ? null
+          : { plan: binding.plan, report: binding.report, facts: binding.facts },
+      warnings: binding === null ? [] : binding.warnings,
     };
   } catch (error) {
     const message = error instanceof KinemeshError ? error.helpText() : reasonOf(error);

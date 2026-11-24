@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { analyzeModel, loadModelScene } from './core/analyze-file.js';
 import { sceneBoundsHeight } from './core/analyze/scene-info.js';
+import { discoverCompanionMeshes } from './core/bind/discover.js';
 import { analyzeClip, type KeyframeEntry, type MotionDigest, type MotionSummary } from './core/motion/analyze.js';
 import { computeChannels } from './core/motion/channels.js';
 import { sampleClip } from './core/motion/sample.js';
@@ -77,6 +78,11 @@ async function handleRequest(ctx: any, sessions: SessionModels, req: IncomingMes
       return;
     }
 
+    if (routePath === `${ROUTE_PREFIX}/companions` && method === 'GET') {
+      await serveCompanionCandidates(res, url.searchParams.get('path') ?? '');
+      return;
+    }
+
     if (routePath === `${ROUTE_PREFIX}/session-models` && method === 'GET') {
       const sessionId = (url.searchParams.get('sessionId') ?? '').trim();
       if (sessionId === '') {
@@ -110,6 +116,7 @@ async function handleRequest(ctx: any, sessions: SessionModels, req: IncomingMes
         return;
       }
       sessions.record(parsed.request.sessionId, resolveLocal(parsed.request.path));
+      if (parsed.request.mesh !== null) sessions.record(parsed.request.sessionId, resolveLocal(parsed.request.mesh));
       send(res, 200, { ok: true, delivered: true });
       return;
     }
@@ -186,6 +193,25 @@ async function serveAnalysis(res: ServerResponse, rawPath: string, rawClip: stri
     }
     throw error;
   }
+}
+
+/**
+ * GET /kinemesh/companions?path=：预览面板的独立 mesh 自动识别（0.10.0）。
+ * 只做命名/目录启发式发现，不解析文件；客户端按顺序取字节加载，校验 meshes 非空后绑定。
+ */
+async function serveCompanionCandidates(res: ServerResponse, rawPath: string): Promise<void> {
+  if (rawPath.trim() === '') {
+    send(res, 400, { ok: false, error: { code: 'bad-request', message: '缺少 path 参数。' } });
+    return;
+  }
+  const abs = resolveLocal(rawPath);
+  const info = await stat(abs).catch(() => undefined);
+  if (info === undefined || !info.isFile()) {
+    send(res, 404, { ok: false, error: { code: 'not-found', message: `文件不存在：${abs}` } });
+    return;
+  }
+  const candidates = await discoverCompanionMeshes(abs).catch(() => []);
+  send(res, 200, { ok: true, candidates });
 }
 
 /** GET /kinemesh/analysis 的返回体（§6.10.3）：digest + 分段 + 关键帧 + 曲线序列 */

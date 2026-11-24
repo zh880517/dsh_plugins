@@ -15,6 +15,11 @@ import { orbit8Azimuths, RENDER_FPS, resolveView, type NormalizedViewInput, type
 export interface RenderRequest {
   data: ArrayBuffer;
   fileName: string;
+  /**
+   * 0.10.0：独立 mesh 文件（动画-only 资产用）。page 侧加载两个文件后自动识别「谁提供网格、
+   * 谁提供动画」，按骨骼名把动画绑定到 mesh 骨架，再按同一套 viewer 出图。
+   */
+  companion?: { data: ArrayBuffer; fileName: string };
   /** kinemesh_render 的 view / viewPreset / mode / clip / frame 聚合入参（frame 被忽略，用 frames 批量） */
   viewInput: NormalizedViewInput;
   /** 要渲染的帧号（整数）；orbit8 时每帧 × 8 方位 */
@@ -31,6 +36,8 @@ export interface RenderResult {
   /** PNG 绝对路径（按渲染顺序） */
   images: string[];
   warnings: string[];
+  /** 0.10.0：mesh 绑定结果（给了 mesh 参数且发生绑定时）——facts 给 AI 读「动画驱动了几根骨骼」 */
+  binding?: { plan: { mesh: string; animation: string }; facts: string[] } | null;
 }
 
 /** B.4 标注截图的一批：batch = 1 起批号（与 skeleton-report 的 batches[].batch / PNG 两位序号一致） */
@@ -80,10 +87,23 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
 
   const session = await openShotPage(width, height);
   const images: string[] = [];
+  let bindingSummary: RenderResult['binding'] = null;
   try {
-    const loadOutcome = await loadModelIntoPage(session.page, request.data, request.fileName);
+    const loadOutcome = await loadModelIntoPage(session.page, request.data, request.fileName, request.companion);
     if (!loadOutcome.ok) {
       throw new KinemeshError(`模型载入失败：${loadOutcome.error}`, '先把文件交给 kinemesh_info 确认能解析，再渲染。');
+    }
+    // 0.10.0：绑定过程的提示（角色自动识别 / 骨骼未命中 / 无网格提示）统一进 warnings
+    session.warnings.push(...loadOutcome.warnings);
+    if (loadOutcome.binding !== null) {
+      bindingSummary = {
+        plan: { mesh: loadOutcome.binding.plan.mesh, animation: loadOutcome.binding.plan.animation },
+        facts: loadOutcome.binding.facts,
+      };
+    } else if (request.companion === undefined && loadOutcome.meshCount === 0) {
+      session.warnings.push(
+        '该文件没有网格（动画-only）：按骨架渲染/截图。要带网格出图，用 mesh 参数指定独立 mesh 文件（同资产会自动识别）。',
+      );
     }
 
     // 0.8.0：未显式给 mode 时按模型自动选（与预览面板同一套规则）——
@@ -175,7 +195,7 @@ export async function renderScreenshots(request: RenderRequest): Promise<RenderR
   } finally {
     await session.close();
   }
-  return { images, warnings: session.warnings };
+  return { images, warnings: session.warnings, binding: bindingSummary };
 }
 
 /**
@@ -249,9 +269,24 @@ interface BridgeHost {
   };
 }
 
-/** 页面桥 load() 的返回形状 */
+/** 页面桥 load() 的返回形状（0.10.0 起含 mesh 绑定结果与提示） */
 type LoadOutcome =
-  | { ok: true; clips: string[]; bounds: { center: [number, number, number]; radius: number }; durationSeconds: number }
+  | {
+      ok: true;
+      clips: string[];
+      bounds: { center: [number, number, number]; radius: number };
+      durationSeconds: number;
+      /** 场景网格数（0 = 动画-only，截图管线据此提示 mesh 参数） */
+      meshCount: number;
+      /** mesh 绑定结果（未给 companion 时为 null） */
+      binding: {
+        plan: { mesh: 'primary' | 'companion'; animation: 'primary' | 'companion'; warnings: string[] };
+        report: { ok: boolean; matchedNodes: number; meshBones: number } | null;
+        facts: string[];
+      } | null;
+      /** 绑定过程提示（角色自动识别 / 未命中骨骼等） */
+      warnings: string[];
+    }
   | { ok: false; error: string };
 
 /** 一次截图会话：独立 viewer 页 + 按次启停的浏览器；warnings 由页面异常等被动事件汇入 */
@@ -295,14 +330,22 @@ async function loadModelIntoPage(
   page: import('playwright').Page,
   data: ArrayBuffer,
   fileName: string,
+  companion?: { data: ArrayBuffer; fileName: string },
 ): Promise<LoadOutcome> {
   const base64 = Buffer.from(data).toString('base64');
+  const companionB64 = companion === undefined ? undefined : Buffer.from(companion.data).toString('base64');
   return (await page.evaluate(
-    async ({ b64, name }) => {
-      const bridge = (window as unknown as { __kinemeshViewer: { load(b64: string, fileName: string): Promise<unknown> } }).__kinemeshViewer;
-      return bridge.load(b64, name);
+    async ({ b64, name, companionB64: cb64, companionName }) => {
+      const bridge = (
+        window as unknown as {
+          __kinemeshViewer: {
+            load(b64: string, fileName: string, companionB64?: string, companionFileName?: string): Promise<unknown>;
+          };
+        }
+      ).__kinemeshViewer;
+      return bridge.load(b64, name, cb64, companionName);
     },
-    { b64: base64, name: fileName },
+    { b64: base64, name: fileName, companionB64: companionB64, companionName: companion?.fileName },
   )) as LoadOutcome;
 }
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { mkdirSync } from "node:fs";
@@ -30356,6 +30356,129 @@ function headBytes(data) {
 }
 //#endregion
 //#region
+var MODEL_EXTENSIONS$1 = /* @__PURE__ */ new Set([
+	".fbx",
+	".glb",
+	".gltf",
+	".obj"
+]);
+/** 常见 mesh 目录名（资产里角色网格通常放这些目录） */
+var MESH_DIR_NAMES = /^(basic|mesh|meshes|model|models|body|skin|char|character)$/i;
+/** 文件名里像动画的词——命中则降权（避免把另一段动作当成网格文件） */
+var ANIM_NAME_HINTS = /(attack|idle|run|walk|hit|behit|dead|dodge|skill|jump|stand|stun|turn|charge|cast|born|start|end|loop|pose|anim)/i;
+/** 文件名里像网格的词（分数从高到低，取第一个命中的） */
+var MESH_NAME_HINTS = [
+	{
+		pattern: /_skin\b/i,
+		score: 140,
+		reason: "文件名含 _skin"
+	},
+	{
+		pattern: /skin/i,
+		score: 120,
+		reason: "文件名含 skin"
+	},
+	{
+		pattern: /mesh/i,
+		score: 100,
+		reason: "文件名含 mesh"
+	},
+	{
+		pattern: /body/i,
+		score: 80,
+		reason: "文件名含 body"
+	},
+	{
+		pattern: /model/i,
+		score: 70,
+		reason: "文件名含 model"
+	},
+	{
+		pattern: /char(acter)?/i,
+		score: 60,
+		reason: "文件名含 character"
+	}
+];
+/**
+* 发现同资产的候选 mesh 文件（按分数降序）。
+* 只看动作文件附近的目录（含 basic/ 之类约定子目录），不递归全盘；排除动作文件本身。
+*/
+async function discoverCompanionMeshes(absPath) {
+	const self = path.resolve(absPath);
+	const ownDir = path.dirname(self);
+	const characterDir = path.dirname(ownDir);
+	const dirs = await collectCandidateDirs([
+		ownDir,
+		characterDir,
+		path.dirname(characterDir)
+	]);
+	const candidates = [];
+	const seen = /* @__PURE__ */ new Set();
+	for (const dir of dirs) {
+		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+		for (const entry of entries) {
+			if (!entry.isFile()) continue;
+			const ext = path.extname(entry.name).toLowerCase();
+			if (!MODEL_EXTENSIONS$1.has(ext)) continue;
+			const filePath = path.join(dir, entry.name);
+			if (path.resolve(filePath) === self) continue;
+			const key = path.resolve(filePath).toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			candidates.push(scoreCandidate(filePath, entry.name, dir, ownDir, characterDir));
+		}
+	}
+	return candidates.filter((candidate) => candidate.score > 0).sort((left, right) => right.score - left.score || left.name.localeCompare(right.name)).slice(0, 5);
+}
+/** 目录清单：本目录 / 角色目录 / 资产目录 + 各自下的 mesh 约定子目录（dedupe） */
+async function collectCandidateDirs(seeds) {
+	const dirs = [];
+	const seen = /* @__PURE__ */ new Set();
+	const push = (dir) => {
+		const key = path.resolve(dir).toLowerCase();
+		if (seen.has(key)) return;
+		seen.add(key);
+		dirs.push(dir);
+	};
+	/** 只展开一层「mesh 约定」子目录（basic/、mesh/ 等），不做全递归 */
+	const expand = async (dir) => {
+		push(dir);
+		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+		for (const entry of entries) if (entry.isDirectory() && MESH_DIR_NAMES.test(entry.name)) push(path.join(dir, entry.name));
+	};
+	for (const seed of seeds) await expand(seed);
+	return dirs;
+}
+/** 打分：目录约定 + 文件名关键词 − 动画词降权 + 与角色目录名的词干重合 */
+function scoreCandidate(filePath, fileName, dir, ownDir, characterDir) {
+	const stem = fileName.replace(/\.[^.]+$/, "");
+	const reasons = [];
+	let score = 0;
+	const dirBase = path.basename(dir);
+	if (MESH_DIR_NAMES.test(dirBase)) {
+		score += 40;
+		reasons.push(`${dirBase}/ 目录`);
+	} else if (path.resolve(dir) === path.resolve(ownDir)) score += 10;
+	for (const hint of MESH_NAME_HINTS) if (hint.pattern.test(stem)) {
+		score += hint.score;
+		reasons.push(hint.reason);
+		break;
+	}
+	if (ANIM_NAME_HINTS.test(stem) && !/skin|mesh|body|model/i.test(stem)) score -= 90;
+	const characterStem = path.basename(characterDir).toLowerCase();
+	if (characterStem !== "" && stem.toLowerCase().startsWith(characterStem)) {
+		score += 30;
+		reasons.push("文件名以角色目录名开头");
+	}
+	return {
+		path: filePath,
+		name: fileName,
+		score,
+		reason: reasons.length === 0 ? "同目录附近的模型文件" : reasons.join(" + ")
+	};
+}
+//#endregion
+//#region
 var DIR_WORDS = [
 	"forward",
 	"forward-right",
@@ -33170,6 +33293,7 @@ function parseAnalyzeRequest(body) {
 		ok: false,
 		message: "缺少 path（模型文件路径）。"
 	};
+	const mesh = typeof raw.mesh === "string" && raw.mesh.trim() !== "" ? raw.mesh.trim() : null;
 	const sessionId = typeof raw.sessionId === "string" ? raw.sessionId.trim() : "";
 	if (sessionId === "") return {
 		ok: false,
@@ -33181,6 +33305,7 @@ function parseAnalyzeRequest(body) {
 		ok: true,
 		request: {
 			path,
+			mesh,
 			sessionId,
 			clip,
 			frame: typeof frameRaw === "number" && Number.isFinite(frameRaw) && frameRaw >= 0 && Number.isInteger(frameRaw) ? frameRaw : clip === null ? null : 0,
@@ -33200,14 +33325,11 @@ function composeAnalyzeMessage(request) {
 	const viewText = view === null ? "缺省视角（three-quarter：azimuth 45° / elevation 20°，距离按模型包围球自适应）" : `azimuth ${round(view.camera.azimuth)}°，elevation ${round(view.camera.elevation)}°，distance ${round(view.camera.distance)}，target [${view.camera.target.map((axis) => round(axis)).join(", ")}]，fov ${round(view.camera.fov)}，渲染模式 ${view.mode}`;
 	const clipText = request.clip === null ? "（无动画/静态）" : `「${request.clip}」`;
 	const frameText = request.frame === null ? "0" : String(request.frame);
-	const lines = [
-		"【动析 kinemesh】用户在 3D 预览面板里请求对模型做视觉分析。",
-		`模型文件：${request.path}`,
-		`动画片段：${clipText}；帧号：${frameText}（换算 time = frame / 30）`,
-		`视角：${viewText}`
-	];
+	const lines = ["【动析 kinemesh】用户在 3D 预览面板里请求对模型做视觉分析。", `模型文件：${request.path}`];
+	if (request.mesh !== null) lines.push(`绑定网格文件：${request.mesh}（动作文件没有网格，预览里已用它做网格主体、动画按骨骼名绑定）`);
+	lines.push(`动画片段：${clipText}；帧号：${frameText}（换算 time = frame / 30）`, `视角：${viewText}`);
 	if (request.note !== null) lines.push("用户附言：", "\"\"\"", request.note, "\"\"\"");
-	lines.push("请调用 kinemesh_render 渲染上面这个视角的截图（clip/frames/view 按上面取值；view 直接传完整对象），然后用读图工具查看 PNG，给出视觉分析（结构、动作质量、穿模/悬空、比例等，按用户附言侧重）。");
+	lines.push("请调用 kinemesh_render 渲染上面这个视角的截图（clip/frames/view 按上面取值；view 直接传完整对象" + (request.mesh === null ? "" : "；mesh 参数传上面那个绑定网格文件路径") + "），然后用读图工具查看 PNG，给出视觉分析（结构、动作质量、穿模/悬空、比例等，按用户附言侧重）。");
 	return lines.join("\n");
 }
 function round(value) {
@@ -33534,9 +33656,19 @@ async function renderScreenshots(request) {
 	await mkdir(workDir, { recursive: true });
 	const session = await openShotPage(width, height);
 	const images = [];
+	let bindingSummary = null;
 	try {
-		const loadOutcome = await loadModelIntoPage(session.page, request.data, request.fileName);
+		const loadOutcome = await loadModelIntoPage(session.page, request.data, request.fileName, request.companion);
 		if (!loadOutcome.ok) throw new KinemeshError(`模型载入失败：${loadOutcome.error}`, "先把文件交给 kinemesh_info 确认能解析，再渲染。");
+		session.warnings.push(...loadOutcome.warnings);
+		if (loadOutcome.binding !== null) bindingSummary = {
+			plan: {
+				mesh: loadOutcome.binding.plan.mesh,
+				animation: loadOutcome.binding.plan.animation
+			},
+			facts: loadOutcome.binding.facts
+		};
+		else if (request.companion === void 0 && loadOutcome.meshCount === 0) session.warnings.push("该文件没有网格（动画-only）：按骨架渲染/截图。要带网格出图，用 mesh 参数指定独立 mesh 文件（同资产会自动识别）。");
 		const viewInput = { ...request.viewInput };
 		if (viewInput.mode === void 0 || viewInput.mode === null) {
 			const suggestion = await session.page.evaluate(() => window.__kinemeshViewer.modeSuggestion());
@@ -33589,7 +33721,8 @@ async function renderScreenshots(request) {
 	}
 	return {
 		images,
-		warnings: session.warnings
+		warnings: session.warnings,
+		binding: bindingSummary
 	};
 }
 /**
@@ -33676,13 +33809,16 @@ async function openShotPage(width, height) {
 		throw error;
 	}
 }
-async function loadModelIntoPage(page, data, fileName) {
+async function loadModelIntoPage(page, data, fileName, companion) {
 	const base64 = Buffer.from(data).toString("base64");
-	return await page.evaluate(async ({ b64, name }) => {
-		return window.__kinemeshViewer.load(b64, name);
+	const companionB64 = companion === void 0 ? void 0 : Buffer.from(companion.data).toString("base64");
+	return await page.evaluate(async ({ b64, name, companionB64: cb64, companionName }) => {
+		return window.__kinemeshViewer.load(b64, name, cb64, companionName);
 	}, {
 		b64: base64,
-		name: fileName
+		name: fileName,
+		companionB64,
+		companionName: companion?.fileName
 	});
 }
 /** B.4：按 boneLabels 入参给页面挂骨骼名标签；仅 skeleton / bones-overlay 模式叠加，其余模式给警告 */
@@ -33761,6 +33897,395 @@ function clampInt(value, low, high) {
 function sanitizeBaseName(fileName) {
 	const stem = fileName.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_");
 	return stem === "" ? "model" : stem;
+}
+//#endregion
+//#region
+/** 最多解析多少个候选（每个都是一次完整场景加载） */
+var MAX_CANDIDATE_PARSES = 3;
+/**
+* 给一个「可能没有网格」的模型文件自动找同资产网格文件。
+* - path 文件有网格 → 不触发（companion=null、无警告）；
+* - path 文件解析失败 → 不触发（错误交给后续渲染/分析链路报）；
+* - 找到 → companion + 一条「已自动识别」警告；找不到 → 一条「如何显式指定」警告。
+*/
+async function autoResolveCompanion(primaryAbs, primaryData, primaryFileName = path.basename(primaryAbs)) {
+	let hasMesh;
+	try {
+		hasMesh = (await analyzeModelCached(primaryAbs, primaryData, primaryFileName)).meshes.length > 0;
+	} catch {
+		return {
+			companion: null,
+			warnings: []
+		};
+	}
+	if (hasMesh) return {
+		companion: null,
+		warnings: []
+	};
+	const candidates = await discoverCompanionMeshes(primaryAbs);
+	if (candidates.length === 0) return {
+		companion: null,
+		warnings: [missingMeshWarning()]
+	};
+	const tried = [];
+	for (const candidate of candidates.slice(0, MAX_CANDIDATE_PARSES)) {
+		let companion = null;
+		try {
+			const buffer = await readFile(candidate.path);
+			const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+			if ((await analyzeModelCached(candidate.path, data, candidate.name)).meshes.length > 0) companion = {
+				data,
+				fileName: candidate.name,
+				abs: candidate.path,
+				reason: candidate.reason
+			};
+			else tried.push(candidate.name);
+		} catch {
+			tried.push(candidate.name);
+		}
+		if (companion !== null) {
+			const alternatives = candidates.filter((entry) => entry.path !== candidate.path).map((entry) => entry.name).slice(0, 3);
+			return {
+				companion,
+				warnings: [`path 文件没有网格（动画-only）：已自动识别同资产的网格文件「${candidate.name}」（${candidate.reason}）并交给绑定；绑定按骨骼名自动匹配（未命中骨骼保持 rest 姿态）。替换网格用 mesh 参数显式指定。` + (alternatives.length > 0 ? `其它候选：${alternatives.join("、")}。` : "")]
+			};
+		}
+	}
+	return {
+		companion: null,
+		warnings: [`path 文件没有网格（动画-only），同资产没有找到可用的网格文件` + (tried.length > 0 ? `（已尝试：${tried.join("、")}）` : "") + `：按骨架预览/截图；要带网格请用 mesh 参数指定网格文件。`]
+	};
+}
+function missingMeshWarning() {
+	return "path 文件没有网格（动画-only），同资产目录里也没有发现候选网格文件：按骨架预览/截图；要带网格请用 mesh 参数指定网格文件（先 kinemesh_info 确认该文件 meshes 非空）。";
+}
+//#endregion
+//#region
+/** 常见的导出器命名空间前缀（可叠加，如 `Armature|mixamorig:Hips`） */
+var NAMESPACE_PREFIXES = [
+	/^mixamorig\d*:/i,
+	/^armature\s*[|:]\s*/i,
+	/^root\s*[|:]\s*/i,
+	/^biped\s*[|:]\s*/i,
+	/^bip\d*\s*[|:]\s*/i
+];
+/** 去掉命名空间前缀（最多剥 4 层，防止异常名字死循环） */
+function stripNodeNamespaces(name) {
+	let current = name.trim();
+	for (let depth = 0; depth < 4; depth += 1) {
+		let next = current;
+		for (const pattern of NAMESPACE_PREFIXES) next = next.replace(pattern, "");
+		if (next === current) break;
+		current = next;
+	}
+	return current;
+}
+/** 归一化比较键：去命名空间 → 空格转下划线 → 小写 */
+function nodeNameKey(name) {
+	return stripNodeNamespaces(name).replace(/\s+/g, "_").toLowerCase();
+}
+/** 给 mesh 场景建节点索引（一次遍历，后续按名字查） */
+function buildNodeIndex(root) {
+	const exact = /* @__PURE__ */ new Map();
+	const normalized = /* @__PURE__ */ new Map();
+	let count = 0;
+	let bones = 0;
+	root.traverse((child) => {
+		if (child.isBone) bones += 1;
+		const name = child.name;
+		if (name === "") return;
+		count += 1;
+		if (!exact.has(name)) exact.set(name, child);
+		const key = nodeNameKey(name);
+		if (!normalized.has(key)) normalized.set(key, child);
+		const sanitized = key.replace(/[.[\]:/]/g, "");
+		if (!normalized.has(sanitized)) normalized.set(sanitized, child);
+	});
+	return {
+		exact,
+		normalized,
+		count,
+		bones
+	};
+}
+/** 查节点：精确名 > 归一化名；找不到返回 null */
+function matchNode(index, nodeName) {
+	const exact = index.exact.get(nodeName);
+	if (exact !== void 0) return {
+		node: exact,
+		via: "exact"
+	};
+	const key = nodeNameKey(nodeName);
+	const normalized = index.normalized.get(key);
+	if (normalized !== void 0) return {
+		node: normalized,
+		via: "normalized"
+	};
+	const sanitized = key.replace(/[.[\]:/]/g, "");
+	const fallback = index.normalized.get(sanitized);
+	if (fallback !== void 0) return {
+		node: fallback,
+		via: "normalized"
+	};
+	return null;
+}
+//#endregion
+//#region
+/** 动画轨道里命中的节点名去重上限（报告里只列前 12 个，避免长清单灌爆 token） */
+var MAX_UNMATCHED_NODES = 12;
+/**
+* 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
+* 命中则把轨道名前缀换成 mesh 节点名，未命中则丢弃。
+* 不修改入参 clips / mesh 对象（轨道是 clone 的），可以安全地在只读分析里调用。
+*/
+function bindClipsToModel(mesh, clips) {
+	const index = buildNodeIndex(mesh);
+	const matched = /* @__PURE__ */ new Set();
+	const matchedBones = /* @__PURE__ */ new Set();
+	const unseen = /* @__PURE__ */ new Set();
+	const boundClips = [];
+	let totalTracks = 0;
+	let matchedTracks = 0;
+	let renamedTracks = 0;
+	for (const clip of clips) {
+		const tracks = [];
+		for (const track of clip.tracks) {
+			totalTracks += 1;
+			const parsed = PropertyBinding.parseTrackName(track.name);
+			const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+			if (nodeName === "") {
+				tracks.push(track);
+				continue;
+			}
+			const hit = matchNode(index, nodeName);
+			if (hit === null) {
+				unseen.add(nodeName);
+				continue;
+			}
+			matched.add(nodeName);
+			if (hit.node.isBone) matchedBones.add(hit.node);
+			matchedTracks += 1;
+			if (hit.node.name === nodeName) {
+				tracks.push(track);
+				continue;
+			}
+			const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : "";
+			const renamed = track.clone();
+			renamed.name = suffix === "" ? `${hit.node.name}.${parsed.propertyName}` : `${hit.node.name}${suffix}`;
+			renamedTracks += 1;
+			tracks.push(renamed);
+		}
+		boundClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
+	}
+	const animNodes = matched.size + unseen.size;
+	const report = {
+		meshNodes: index.count,
+		meshBones: index.bones,
+		animNodes,
+		matchedNodes: matched.size,
+		matchedBones: matchedBones.size,
+		totalTracks,
+		matchedTracks,
+		unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
+		unmatchedNodeCount: unseen.size,
+		renamedTracks,
+		ok: matchedTracks > 0,
+		warnings: []
+	};
+	report.warnings.push(...bindingWarnings(report));
+	return {
+		clips: boundClips,
+		report
+	};
+}
+/** 由报告派生人话 warnings（截图/预览/工具直接透传） */
+function bindingWarnings(report) {
+	const warnings = [];
+	if (!report.ok) {
+		warnings.push(`动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼）。`);
+		return warnings;
+	}
+	if (report.unmatchedNodeCount > 0) {
+		const sample = report.unmatchedNodes.join("、");
+		warnings.push(`动画有 ${report.unmatchedNodeCount} 个节点在 mesh 骨架里没有对应骨骼，已忽略（常见于动作里带的道具/相机/IK 辅助节点）：${sample}${report.unmatchedNodeCount > MAX_UNMATCHED_NODES ? " …" : ""}`);
+	}
+	if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
+	return warnings;
+}
+/** 报告 → 给 AI 读的中文事实句（info/CLI/MCP 共用，数值不重复计算） */
+function bindingFacts(report) {
+	const facts = [];
+	facts.push(`动画驱动 mesh 骨架的 ${report.matchedBones}/${report.meshBones} 根骨骼；轨道命中 ${report.matchedTracks}/${report.totalTracks}。`);
+	if (report.unmatchedNodeCount > 0) facts.push(`未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join("、")}${report.unmatchedNodeCount > report.unmatchedNodes.length ? " …" : ""}）——这些节点的动作不会显示。`);
+	if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
+	return facts;
+}
+//#endregion
+//#region
+/**
+* 自动识别两侧角色：
+* · 网格优先 mesh 参数文件；它没有网格时退回 path 文件自带的网格；
+* · 动画优先 path 文件；它没有动画时改用 mesh 参数文件的片段（支持两个参数传反）。
+* 两侧都没有网格 / 都没有动画 → KinemeshError（三段式）。
+*/
+function planCompanion(primary, companion, names = {
+	primary: "path 文件",
+	companion: "mesh 参数文件"
+}) {
+	const warnings = [];
+	let mesh;
+	if (companion.hasMesh) {
+		mesh = "companion";
+		if (primary.hasMesh) warnings.push(`${names.primary} 自带网格，但按 mesh 参数改用「${names.companion}」的网格做渲染主体（想用 ${names.primary} 自己的网格，去掉 mesh 参数）。`);
+	} else if (primary.hasMesh) {
+		mesh = "primary";
+		warnings.push(`mesh 参数文件「${names.companion}」没有网格，网格改用 ${names.primary} 自带的。`);
+	} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（例如游戏资产里的 basic/*_skin.fbx，可先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
+	let animation;
+	if (primary.clipCount > 0) animation = "primary";
+	else if (companion.clipCount > 0) {
+		animation = "companion";
+		warnings.push(`path 文件「${names.primary}」没有动画片段，动画改用 mesh 参数文件「${names.companion}」的片段。`);
+	} else throw new KinemeshError(`两个文件都没有动画片段：${names.primary}、${names.companion}。`, "mesh 参数只负责「给动作套网格」，动画得来自 path 文件（先 kinemesh_info 确认 clips 非空）；要渲染静态模型请去掉 mesh 参数直接渲染 path 文件。");
+	if (mesh === animation) warnings.push(`网格与动画都来自${mesh === "primary" ? ` ${names.primary}` : `「${names.companion}」`}：另一侧文件没有用上（${mesh === "primary" ? "mesh 参数文件" : "path 文件"}既没有网格也没有可用动画）。`);
+	return {
+		mesh,
+		animation,
+		warnings
+	};
+}
+/** 角色分配 → 给 AI 读的中文事实句（info/CLI/MCP 共用） */
+function assignmentFacts(plan, names = {
+	primary: "path 文件",
+	companion: "mesh 参数文件"
+}) {
+	return [`网格来自 ${plan.mesh === "primary" ? names.primary : `「${names.companion}」`}，动画来自 ${plan.animation === "primary" ? names.primary : `「${names.companion}」`}；骨骼按名字自动绑定。`];
+}
+//#endregion
+//#region
+/** 已加载场景的结构判定事实（角色分配用） */
+function sceneFacts(scene) {
+	let meshCount = 0;
+	let boneCount = 0;
+	scene.object.traverse((child) => {
+		if (child.isMesh === true) meshCount += 1;
+		if (child.isBone === true) boneCount += 1;
+	});
+	return {
+		hasMesh: meshCount > 0,
+		meshCount,
+		clipCount: scene.animations.length,
+		boneCount
+	};
+}
+/**
+* 按已识别好的角色分配合成最终场景（bindScenes 的第二步；info 需要在 plan 报错时仍能拿到
+* 角色信息，所以拆开）。完全不匹配时抛 KinemeshError（三段式）。
+*/
+function applyPlan(primary, companion, plan, names = {
+	primary: "path 文件",
+	companion: "mesh 参数文件"
+}) {
+	const warnings = [...plan.warnings];
+	const facts = assignmentFacts(plan, names);
+	const meshScene = plan.mesh === "primary" ? primary : companion;
+	if (plan.mesh === plan.animation) return {
+		scene: meshScene,
+		plan,
+		report: null,
+		facts,
+		warnings
+	};
+	const animScene = plan.animation === "primary" ? primary : companion;
+	if (animScene.animations.length === 0) throw new KinemeshError(`动画侧没有可用片段：${plan.animation === "primary" ? names.primary : names.companion} 没有解析到 AnimationClip。`, "先 kinemesh_info 确认哪个文件的 clips 非空，再把动画文件作为 path、网格文件作为 mesh 参数。");
+	const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations);
+	if (!report.ok) throw new KinemeshError(`动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼，示例节点：${report.unmatchedNodes.join("、")}）。`, "确认两个文件来自同一套 rig（骨骼名要能对上，如 Bip001_Spine / mixamorig:Hips 这类）；动画只导出部分骨骼也能绑定（例如 5 根脊柱的受击附加动画），但至少要命中一根；分别对两个文件跑 kinemesh_info 对比 bones/convention，或先用 kinemesh_skeleton 看骨骼清单。");
+	warnings.push(...report.warnings);
+	facts.push(...bindingFacts(report));
+	return {
+		scene: {
+			object: meshScene.object,
+			animations: clips,
+			meta: meshScene.meta
+		},
+		plan,
+		report,
+		facts,
+		warnings
+	};
+}
+//#endregion
+//#region
+/** 加载两个文件并试算绑定（场景走 path+mtime 进程内缓存） */
+async function inspectCompanion(primary, companion) {
+	const primaryScene = await cachedScene(primary);
+	const companionScene = await cachedScene(companion);
+	const companionInfo = sceneToInfo(companionScene, {
+		fileName: companion.fileName,
+		fileSize: companion.data.byteLength,
+		expectsAnimation: true
+	});
+	const names = {
+		primary: primary.fileName,
+		companion: companion.fileName
+	};
+	const facts = [];
+	const warnings = [];
+	let plan = null;
+	let report = null;
+	let error = null;
+	try {
+		plan = planCompanion(sceneFacts(primaryScene), sceneFacts(companionScene), names);
+	} catch (cause) {
+		error = toErrorMessage(cause);
+		return {
+			companionInfo,
+			plan,
+			report,
+			facts,
+			warnings,
+			error
+		};
+	}
+	try {
+		const binding = applyPlan(primaryScene, companionScene, plan, names);
+		report = binding.report;
+		facts.push(...binding.facts);
+		warnings.push(...binding.warnings);
+	} catch (cause) {
+		error = toErrorMessage(cause);
+	}
+	return {
+		companionInfo,
+		plan,
+		report,
+		facts,
+		warnings,
+		error
+	};
+}
+async function cachedScene(input) {
+	return getCachedScene(input.abs, async () => (await loadModelScene(input.data, input.fileName)).scene);
+}
+function toErrorMessage(cause) {
+	if (cause instanceof KinemeshError) return {
+		what: cause.message,
+		guidance: cause.guidance
+	};
+	return {
+		what: cause instanceof Error ? cause.message : String(cause),
+		guidance: "确认两个文件都能被 kinemesh_info 解析后重试。"
+	};
+}
+/** info 输出里的绑定段（紧凑 JSON，数值由 core 产出） */
+function companionBindingJson(inspection) {
+	return {
+		plan: inspection.plan,
+		report: inspection.report,
+		facts: inspection.facts,
+		warnings: inspection.warnings,
+		...inspection.error === null ? {} : { error: inspection.error }
+	};
 }
 //#endregion
 //#region
@@ -34125,6 +34650,66 @@ async function readModelFile(rawPath) {
 	}
 }
 /**
+* 渲染前的 mesh 伙伴解析（三出口共用）：显式 mesh 参数优先；没给时自动识别同资产网格文件
+* （动作-only 资产的需求：「让工具自动识别然后绑定」）。返回的 companion 直接喂 renderScreenshots。
+*/
+async function resolveCompanionForRender(primary, explicitMesh) {
+	if (explicitMesh !== void 0) return {
+		companion: {
+			data: explicitMesh.data,
+			fileName: explicitMesh.fileName
+		},
+		warnings: []
+	};
+	const resolution = await autoResolveCompanion(primary.abs, primary.data, primary.fileName);
+	if (resolution.companion === null) return { warnings: resolution.warnings };
+	return {
+		companion: {
+			data: resolution.companion.data,
+			fileName: resolution.companion.fileName
+		},
+		warnings: resolution.warnings
+	};
+}
+/**
+* info 三出口共用 runner：主文件结构信息；给了 mesh 参数时附带 mesh 文件报告 + 绑定体检
+* （自动识别角色、试算骨骼命中，绑定不成立时 error 段给三段式但不让 info 失败）。
+* 没给 mesh 参数且主文件没有网格时，附加同资产候选网格文件提示。
+*/
+async function runInfo(primary, mesh) {
+	const report = await analyzeModelCached(primary.abs, primary.data, primary.fileName);
+	if (mesh !== void 0) {
+		const inspection = await inspectCompanion({
+			data: primary.data,
+			fileName: primary.fileName,
+			abs: primary.abs
+		}, {
+			data: mesh.data,
+			fileName: mesh.fileName,
+			abs: mesh.abs
+		});
+		return {
+			ok: true,
+			...report,
+			companion: {
+				...inspection.companionInfo,
+				fileName: mesh.fileName
+			},
+			binding: companionBindingJson(inspection)
+		};
+	}
+	const warnings = [...report.warnings];
+	if (report.meshes.length === 0) {
+		const candidates = await discoverCompanionMeshes(primary.abs);
+		warnings.push("该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件" + (candidates.length > 0 ? `；同资产发现候选：${candidates.map((candidate) => candidate.name).join("、")}（可直接作为 mesh 参数）` : "") + "。");
+	}
+	return {
+		ok: true,
+		...report,
+		warnings
+	};
+}
+/**
 * 映射文件发现 + 对骨架校验（M7 B.5，analyze 与 skeleton 共用）：
 * boneMap 参数 > 资产同目录 kinemesh-bones.json > cwd > 无；显式路径不存在 → KinemeshError
 * （存在性校验，不再静默成功）；JSON/schema/骨骼名/肢链链不合法 → 三段式 KinemeshError。
@@ -34458,13 +35043,19 @@ function skeletonTool(record) {
 function infoTool(record) {
 	return {
 		name: "kinemesh_info",
-		description: "读取 3D 模型/动画资源文件的结构信息（本地只读分析，不改文件）。支持 FBX（ASCII ≥7.0 / 二进制 ≥6400）、glTF / GLB（含 VRM）、OBJ。返回：动画片段（名称/时长/通道数/是否有根运动）、骨骼（数量/最大深度/是否人形，提示可否重定向）、网格（三角面/顶点/蒙皮比例/材质数）、贴图清单、包围盒与单位体检（厘米未换算这类坑会标出来）。拿到模型文件要回答「有哪些动作、多长、能不能用」时先调它。",
+		description: "读取 3D 模型/动画资源文件的结构信息（本地只读分析，不改文件）。支持 FBX（ASCII ≥7.0 / 二进制 ≥6400）、glTF / GLB（含 VRM）、OBJ。返回：动画片段（名称/时长/通道数/是否有根运动）、骨骼（数量/最大深度/是否人形，提示可否重定向）、网格（三角面/顶点/蒙皮比例/材质数）、贴图清单、包围盒与单位体检（厘米未换算这类坑会标出来）。**动作文件不带 mesh 时（动画-only）**：主报告会提示没有网格；可再用 mesh 参数给一个独立 mesh 文件，工具会返回该 mesh 文件的结构信息 + 绑定体检（自动识别谁提供网格/动画、试算骨骼名命中数）。拿到模型文件要回答「有哪些动作、多长、能不能用」时先调它。",
 		parameters: {
 			type: "object",
-			properties: { path: {
-				type: "string",
-				description: "模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）"
-			} },
+			properties: {
+				path: {
+					type: "string",
+					description: "模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）"
+				},
+				mesh: {
+					type: "string",
+					description: "独立 mesh 文件路径（可选）：path 文件只有动画没有网格时，用这个角色网格文件做预览/截图主体；工具会自动识别谁提供网格、谁提供动画，并试算骨骼名绑定（返回 binding 段）"
+				}
+			},
 			required: ["path"],
 			additionalProperties: false
 		},
@@ -34479,13 +35070,24 @@ function infoTool(record) {
 		async execute(args, exec) {
 			const loaded = await readModelFile(typeof args?.path === "string" ? args.path : "");
 			if (!loaded.ok) return loaded.payload;
+			const meshArg = typeof args?.mesh === "string" ? args.mesh.trim() : "";
+			const meshLoaded = meshArg === "" ? void 0 : await readModelFile(meshArg);
+			if (meshLoaded !== void 0 && !meshLoaded.ok) return meshLoaded.payload;
 			try {
-				const report = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
-				recordSessionModel(record, exec, loaded.abs);
-				return {
-					ok: true,
-					...report
+				const primary = {
+					data: loaded.data,
+					fileName: path.basename(loaded.abs),
+					abs: loaded.abs
 				};
+				const mesh = meshLoaded === void 0 ? void 0 : {
+					data: meshLoaded.data,
+					fileName: path.basename(meshLoaded.abs),
+					abs: meshLoaded.abs
+				};
+				const result = await runInfo(primary, mesh);
+				recordSessionModel(record, exec, loaded.abs);
+				if (mesh !== void 0) recordSessionModel(record, exec, mesh.abs);
+				return result;
 			} catch (error) {
 				if (error instanceof KinemeshError) return errorPayload(error.message, error.guidance, `读取 ${loaded.abs} 的模型信息`);
 				return errorPayload(reasonOf(error), "确认文件是完整的模型文件后重试。", `读取 ${loaded.abs} 的模型信息`);
@@ -34496,13 +35098,17 @@ function infoTool(record) {
 function renderTool(record) {
 	return {
 		name: "kinemesh_render",
-		description: "按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay，**省略 mode 时按模型自动选**（无 mesh→skeleton；贴图解不出来→solid 素模；有可用贴图→default——贴图缺失的资产用 default 会渲成黑剪影）。**只给 viewPreset 时逐帧按当前帧身体包围盒自动取景**：带 root motion 的动作（冲刺/突进）不会跑出画面；显式传 view（camera.target / distance）则按你给的固定构图。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。",
+		description: "按视角 + 帧号渲染模型截图，PNG 落盘后返回绝对路径数组（再用读图工具逐张查看）。视角二选一：view（完整球坐标对象）或 viewPreset（front/side/back/three-quarter/orbit8，orbit8 = 八方位连拍）；渲染模式 default / solid / wireframe / skeleton / bones-overlay，**省略 mode 时按模型自动选**（无 mesh→skeleton；贴图解不出来→solid 素模；有可用贴图→default——贴图缺失的资产用 default 会渲成黑剪影）。**动作文件不带 mesh 时**：mesh 参数给一个独立 mesh 文件（自动识别谁提供网格/动画、按骨骼名自动绑定，动画只覆盖部分骨骼也可以）；不传 mesh 时工具会自动在资产目录里识别候选网格文件。**只给 viewPreset 时逐帧按当前帧身体包围盒自动取景**：带 root motion 的动作（冲刺/突进）不会跑出画面；显式传 view（camera.target / distance）则按你给的固定构图。boneLabels 在 skeleton / bones-overlay 模式下给截图画骨骼名文字标签（B.4：auto 第 1 批 | 批次号 | all，骨架识别读图用）。截屏构图与 DSH「动析」预览面板完全一致。",
 		parameters: {
 			type: "object",
 			properties: {
 				path: {
 					type: "string",
 					description: "模型文件路径（绝对路径，或相对当前工作目录；支持 ~ 开头）"
+				},
+				mesh: {
+					type: "string",
+					description: "独立 mesh 文件路径（可选）：动作文件只有动画没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；不传时自动识别同资产网格文件（结果看 warnings）"
 				},
 				clip: {
 					type: "string",
@@ -34568,9 +35174,27 @@ function renderTool(record) {
 			const boneLabelsRaw = args?.boneLabels;
 			const boneLabels = boneLabelsRaw === "auto" || boneLabelsRaw === "all" ? boneLabelsRaw : typeof boneLabelsRaw === "number" && Number.isInteger(boneLabelsRaw) && boneLabelsRaw >= 1 ? boneLabelsRaw : void 0;
 			try {
+				const primaryRef = {
+					data: loaded.data,
+					fileName: path.basename(loaded.abs),
+					abs: loaded.abs
+				};
+				const meshArg = typeof args?.mesh === "string" ? args.mesh.trim() : "";
+				let meshRef;
+				if (meshArg !== "") {
+					const meshLoaded = await readModelFile(meshArg);
+					if (!meshLoaded.ok) return meshLoaded.payload;
+					meshRef = {
+						data: meshLoaded.data,
+						fileName: path.basename(meshLoaded.abs),
+						abs: meshLoaded.abs
+					};
+				}
+				const companion = await resolveCompanionForRender(primaryRef, meshRef);
 				const result = await renderScreenshots({
 					data: loaded.data,
 					fileName: path.basename(loaded.abs),
+					companion: companion.companion,
 					viewInput: {
 						view: args?.view,
 						viewPreset: args?.viewPreset,
@@ -34584,11 +35208,13 @@ function renderTool(record) {
 					boneLabels
 				});
 				recordSessionModel(record, exec, loaded.abs);
+				if (meshRef !== void 0) recordSessionModel(record, exec, meshRef.abs);
 				return {
 					ok: true,
 					images: result.images,
 					count: result.images.length,
-					warnings: result.warnings,
+					warnings: [...companion.warnings, ...result.warnings],
+					...result.binding === void 0 || result.binding === null ? {} : { binding: result.binding },
 					hint: "PNG 已落盘，用读图工具逐张查看后再给结论。"
 				};
 			} catch (error) {
@@ -34644,6 +35270,10 @@ async function handleRequest(ctx, sessions, req, res) {
 			await serveAnalysis(res, url.searchParams.get("path") ?? "", url.searchParams.get("clip") ?? "");
 			return;
 		}
+		if (routePath === `${ROUTE_PREFIX}/companions` && method === "GET") {
+			await serveCompanionCandidates(res, url.searchParams.get("path") ?? "");
+			return;
+		}
 		if (routePath === `${ROUTE_PREFIX}/session-models` && method === "GET") {
 			const sessionId = (url.searchParams.get("sessionId") ?? "").trim();
 			if (sessionId === "") {
@@ -34688,6 +35318,7 @@ async function handleRequest(ctx, sessions, req, res) {
 				return;
 			}
 			sessions.record(parsed.request.sessionId, resolveLocal(parsed.request.path));
+			if (parsed.request.mesh !== null) sessions.record(parsed.request.sessionId, resolveLocal(parsed.request.mesh));
 			send(res, 200, {
 				ok: true,
 				delivered: true
@@ -34821,6 +35452,38 @@ async function serveAnalysis(res, rawPath, rawClip) {
 		}
 		throw error;
 	}
+}
+/**
+* GET /kinemesh/companions?path=：预览面板的独立 mesh 自动识别（0.10.0）。
+* 只做命名/目录启发式发现，不解析文件；客户端按顺序取字节加载，校验 meshes 非空后绑定。
+*/
+async function serveCompanionCandidates(res, rawPath) {
+	if (rawPath.trim() === "") {
+		send(res, 400, {
+			ok: false,
+			error: {
+				code: "bad-request",
+				message: "缺少 path 参数。"
+			}
+		});
+		return;
+	}
+	const abs = resolveLocal(rawPath);
+	const info = await stat(abs).catch(() => void 0);
+	if (info === void 0 || !info.isFile()) {
+		send(res, 404, {
+			ok: false,
+			error: {
+				code: "not-found",
+				message: `文件不存在：${abs}`
+			}
+		});
+		return;
+	}
+	send(res, 200, {
+		ok: true,
+		candidates: await discoverCompanionMeshes(abs).catch(() => [])
+	});
 }
 /**
 * 预览页曲线数据源（§6.10.3）：与 kinemesh_analyze 的 runAnalyze 走同一条管线

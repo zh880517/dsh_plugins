@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildAnimatedCubeGltf, buildBinaryFbx, buildStaticCubeGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
+import { buildAnimatedCubeGltf, buildBinaryFbx, buildCubeAnimationOnlyGltf, buildSkinnedMeshOnlyGltf, buildStaticCubeGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
 
 const cliFile = path.resolve(import.meta.dirname, '..', '..', 'plugins', 'kinemesh', 'skill', 'cli', 'kinemesh.cjs');
 
@@ -17,6 +17,10 @@ const glbPath = path.join(workDir, 'cube-anim.glb');
 await writeFile(glbPath, Buffer.from(encodeGlb(buildAnimatedCubeGltf())));
 const staticGlbPath = path.join(workDir, 'cube-static.glb');
 await writeFile(staticGlbPath, Buffer.from(encodeGlb(buildStaticCubeGltf())));
+const meshOnlyGlbPath = path.join(workDir, 'mesh-only.glb');
+await writeFile(meshOnlyGlbPath, Buffer.from(encodeGlb(buildSkinnedMeshOnlyGltf())));
+const animOnlyGlbPath = path.join(workDir, 'anim-only.glb');
+await writeFile(animOnlyGlbPath, Buffer.from(encodeGlb(buildCubeAnimationOnlyGltf())));
 
 afterAll(async () => {
   await rm(workDir, { recursive: true, force: true });
@@ -202,6 +206,73 @@ describe.skipIf(!existsSync(cliFile))('kinemesh CLI（构建产物）', () => {
     expect(status).toBe(0);
     const parsed = JSON.parse(stdout) as { ok: boolean; images: string[] };
     expect(parsed.images).toHaveLength(2);
+    for (const file of parsed.images) expect(existsSync(file)).toBe(true);
+  }, 120_000);
+
+  it('info --mesh：返回网格文件报告 + 绑定体检（0.10.0 独立 mesh 文件）', () => {
+    const { status, stdout } = runCli(['info', animOnlyGlbPath, '--mesh', meshOnlyGlbPath]);
+    expect(status).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      ok: boolean;
+      meshes: unknown[];
+      companion: { fileName: string; meshes: unknown[] };
+      binding: { plan: { mesh: string; animation: string }; report: { ok: boolean; matchedTracks: number } };
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.meshes).toEqual([]); // 动画-only 文件自身没有网格
+    expect(parsed.companion.fileName).toBe('mesh-only.glb');
+    expect(parsed.binding.plan).toMatchObject({ mesh: 'companion', animation: 'primary' });
+    expect(parsed.binding.report.ok).toBe(true);
+    expect(parsed.binding.report.matchedTracks).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('info（动画-only、不带 mesh）：警告提示 mesh 参数', () => {
+    const { status, stdout } = runCli(['info', animOnlyGlbPath]);
+    expect(status).toBe(0);
+    const parsed = JSON.parse(stdout) as { warnings: string[] };
+    expect(parsed.warnings.join('\n')).toContain('动画-only');
+    expect(parsed.warnings.join('\n')).toContain('mesh 参数');
+  }, 60_000);
+
+  it('render --mesh：动画-only 文件 + 独立网格文件绑定出图（chromium 可用时）', async () => {
+    let chromiumReady = false;
+    try {
+      const { chromium } = await import('playwright');
+      const browser = await chromium.launch({ headless: true });
+      await browser.close();
+      chromiumReady = true;
+    } catch {
+      chromiumReady = false;
+    }
+    if (!chromiumReady) return;
+    const outDir = path.join(workDir, 'bound-shots');
+    const { status, stdout, stderr } = runCli([
+      'render',
+      animOnlyGlbPath,
+      '--mesh',
+      meshOnlyGlbPath,
+      '--clip',
+      'Walk',
+      '--frames',
+      '0,15',
+      '--view-preset',
+      'front',
+      '--width',
+      '320',
+      '--height',
+      '240',
+      '--out-dir',
+      outDir,
+    ]);
+    expect(stderr).toBe('');
+    expect(status).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      ok: boolean;
+      images: string[];
+      binding: { plan: { mesh: string; animation: string }; facts: string[] };
+    };
+    expect(parsed.images).toHaveLength(2);
+    expect(parsed.binding.plan).toMatchObject({ mesh: 'companion', animation: 'primary' });
     for (const file of parsed.images) expect(existsSync(file)).toBe(true);
   }, 120_000);
 });

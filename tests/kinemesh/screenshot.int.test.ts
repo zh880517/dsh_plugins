@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildBinaryFbx, buildNamedRigGltf, encodeGlb, type NamedRigNodeSpec } from '../support/kinemesh-fixtures.js';
+import { buildBinaryFbx, buildCubeAnimationOnlyGltf, buildNamedRigGltf, buildSkinnedMeshOnlyGltf, encodeGlb, type NamedRigNodeSpec } from '../support/kinemesh-fixtures.js';
 import { renderScreenshots } from '../../plugins/kinemesh/src/core/render/screenshot.js';
 import { registerTools } from '../../plugins/kinemesh/src/tools.js';
 
@@ -204,6 +204,66 @@ function skeletonToolExecute(): ((args: Record<string, unknown>) => Promise<Reco
   if (tool === undefined) throw new Error('kinemesh_skeleton 没有注册');
   return tool.execute;
 }
+
+describe.skipIf(!chromiumReady)('0.10.0 独立 mesh 文件绑定渲染', () => {
+  const meshGlb = encodeGlb(buildSkinnedMeshOnlyGltf());
+  const animGlb = encodeGlb(buildCubeAnimationOnlyGltf());
+
+  it('动画-only 文件 + mesh 文件：自动识别角色、绑定后出图并返回 binding facts', async () => {
+    const result = await renderScreenshots({
+      data: meshGlb,
+      fileName: 'mesh.glb',
+      companion: { data: animGlb, fileName: 'anim.glb' },
+      viewInput: { viewPreset: 'front', clip: 'Walk' },
+      frames: [0, 15],
+      width: 320,
+      height: 240,
+      outDir: workDir,
+    });
+    expect(result.images).toHaveLength(2);
+    for (const file of result.images) {
+      expect(existsSync(file)).toBe(true);
+      expect(readFileSync(file).length).toBeGreaterThan(200);
+    }
+    // mesh 文件（primary）自带网格但没有动画 → 网格用 primary、动画用 companion
+    expect(result.binding?.plan).toEqual({ mesh: 'primary', animation: 'companion' });
+    expect(result.binding?.facts.join('\n')).toContain('动画来自');
+    // 画面里的网格确实是 mesh 文件（不是空骨架图）：solid 素模下主体像素明显多于背景
+    const shot = readFileSync(result.images[0]!);
+    expect(shot.length).toBeGreaterThan(1000);
+  }, 120_000);
+
+  it('参数传反（path = 动画、mesh = 网格）也能渲染', async () => {
+    const result = await renderScreenshots({
+      data: animGlb,
+      fileName: 'anim.glb',
+      companion: { data: meshGlb, fileName: 'mesh.glb' },
+      viewInput: { viewPreset: 'side', clip: 'Walk' },
+      frames: [0],
+      width: 320,
+      height: 240,
+      outDir: workDir,
+    });
+    expect(result.images).toHaveLength(1);
+    expect(result.binding?.plan).toEqual({ mesh: 'companion', animation: 'primary' });
+  }, 120_000);
+
+  it('骨骼完全对不上：拒绝渲染并给三段式（错在哪/正确姿势）', async () => {
+    const foreignRig = encodeGlb(buildNamedRigGltf(HUMANOID_SPECS, { animNode: 'Hips', withMesh: false }));
+    await expect(
+      renderScreenshots({
+        data: meshGlb,
+        fileName: 'mesh.glb',
+        companion: { data: foreignRig, fileName: 'named-rig-anim.glb' },
+        viewInput: { viewPreset: 'front' },
+        frames: [0],
+        width: 160,
+        height: 120,
+        outDir: workDir,
+      }),
+    ).rejects.toThrow(/完全不匹配/);
+  }, 120_000);
+});
 
 describe.skipIf(!chromiumReady)('B.4 骨骼名标注截图', () => {
   const rigGlb = encodeGlb(buildNamedRigGltf(chainSpecs(14)));

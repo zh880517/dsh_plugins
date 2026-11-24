@@ -6,7 +6,8 @@
 import * as React from 'react';
 import type { ModeReason } from './core/viewer/auto-mode.js';
 import { mountViewer, type ViewerHandle } from './core/viewer/kinemesh-viewer.js';
-import { detectFormat } from './core/registry.js';
+import { bindScenes, loadSceneFromData, sceneFacts, type CompanionBinding } from './core/bind/bundle.js';
+import type { CanonicalScene } from './core/types.js';
 import { resolveEndpoint } from './endpoint.js';
 import { Styles } from './styles.js';
 import { RENDER_FPS, SURFACE_MODES, composeViewMode, type SurfaceMode, type ViewState, type ViewMode } from './core/viewstate.js';
@@ -37,6 +38,16 @@ export interface PaneMemory {
   rootLock?: { translation: boolean; rotation: boolean };
   /** 角色根节点 XYZ 参考轴开关（0.9.1） */
   rootAxes?: boolean;
+  /** 0.10.0：绑定的独立 mesh 文件路径（动作-only 资产；空 = 未绑定） */
+  mesh?: string;
+}
+
+/** 独立 mesh 候选（host /kinemesh/companions 返回；类型与 core/bind/discover 对齐，避免 client 打包 node:fs） */
+export interface CompanionCandidateInfo {
+  path: string;
+  name: string;
+  score: number;
+  reason: string;
 }
 
 /** 面板的表面选项（不含 `none`：「不画网格」只出现在无 mesh 模型身上，由骨架叠加自然覆盖） */
@@ -93,6 +104,24 @@ export function resolveRestoreTarget(
 /** 支持拖入的模型扩展名（与 registry 的检测范围一致；大小写不敏感） */
 export const MODEL_FILE_EXTENSIONS = ['.fbx', '.glb', '.gltf', '.obj'] as const;
 
+/** 从任意平台路径取文件名（预览面板展示绑定 mesh 用） */
+export function basenameOf(filePath: string): string {
+  const parts = filePath.split(/[\\/]/);
+  return parts[parts.length - 1] ?? filePath;
+}
+
+/**
+ * 0.10.0：绑定状态 chip 文案（纯函数，测试直测）。
+ * 空串 = 没有绑定；有绑定报告时附带「动画命中 mesh 骨骼数/骨架骨骼数」。
+ */
+export function meshBindingChip(binding: CompanionBinding | null, meshPath: string): string {
+  if (meshPath === '') return '';
+  const name = basenameOf(meshPath);
+  const report = binding?.report;
+  if (report === null || report === undefined) return name;
+  return `${name} · ${report.matchedBones}/${report.meshBones} 骨`;
+}
+
 /** 拖入文件是否为可预览的模型（纯函数，测试直测）：只看扩展名，实际格式由主进程嗅探 */
 export function isModelFileName(fileName: string): boolean {
   const lowered = fileName.toLowerCase();
@@ -131,6 +160,11 @@ const ZH_TEXTS: Record<string, string> = {
   'page.emptyModels': '本会话还没有用过的模型：用「动析」浮层加载，或在下方输入路径打开。',
   'page.openPath': '模型文件路径（.fbx / .glb / .gltf / .obj）',
   'page.open': '打开',
+  'page.meshPath': 'mesh 文件（可选：动作没网格时绑网格）',
+  'page.meshTitle': '独立 mesh 文件（动作-only 资产）：例如 basic/xxx_skin.fbx；留空时自动识别同资产网格文件',
+  'binding.chip': 'mesh',
+  'binding.bonesTitle': 'mesh 绑定：动画按骨骼名自动匹配到 mesh 骨架',
+  'binding.auto': '已自动绑定 mesh',
   'list.animated': '动画',
   'timeline.hint': '强度曲线（点击/拖动定位帧）；色带=分段 guess，半透明=循环区间',
   'timeline.hintNoCurve': '点击/拖动这条轨道定位帧（该片段没有强度曲线数据）',
@@ -189,6 +223,11 @@ const EN_TEXTS: Record<string, string> = {
   'page.emptyModels': 'No models used in this session yet: load one in the preview overlay, or type a path below.',
   'page.openPath': 'Model file path (.fbx / .glb / .gltf / .obj)',
   'page.open': 'Open',
+  'page.meshPath': 'mesh file (optional: bind a mesh to a mesh-less motion)',
+  'page.meshTitle': 'Standalone mesh file (motion-only assets), e.g. basic/xxx_skin.fbx; leave empty to auto-detect a mesh in the same asset',
+  'binding.chip': 'mesh',
+  'binding.bonesTitle': 'mesh binding: animation tracks auto-mapped to mesh bones by name',
+  'binding.auto': 'mesh auto-bound',
   'list.animated': 'anim',
   'timeline.hint': 'Energy curve (click/drag to scrub); band = segment guess, translucent = loop range',
   'timeline.hintNoCurve': 'Click/drag this track to scrub frames (no energy curve for this clip)',
@@ -787,6 +826,15 @@ interface LoadState {
   maxFrame: number;
 }
 
+/** 预览面板的 mesh 绑定解析结果（0.10.0） */
+interface BoundPreviewScene {
+  scene: CanonicalScene;
+  binding: CompanionBinding | null;
+  /** 实际绑定的 mesh 文件路径（'' = 未绑定） */
+  meshPath: string;
+  warnings: string[];
+}
+
 function PreviewPane(props: {
   sessionId: string;
   /** 输入框附言（浮层传入；页面无） */
@@ -838,6 +886,11 @@ function PreviewPane(props: {
   const [sent, setSent] = React.useState<string | null>(null);
   /** 拖入文件高亮（dragenter/dragleave 计数，避免子元素抖动） */
   const [dragOver, setDragOver] = React.useState(false);
+  /** 0.10.0：独立 mesh 绑定——用户输入的 mesh 文件（可选）/ 当前已绑定的 mesh / 绑定报告 */
+  const [meshInput, setMeshInput] = React.useState('');
+  const [meshPath, setMeshPath] = React.useState('');
+  const [binding, setBinding] = React.useState<CompanionBinding | null>(null);
+  const [bindingWarnings, setBindingWarnings] = React.useState<string[]>([]);
 
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const viewerRef = React.useRef<ViewerHandle | null>(null);
@@ -948,26 +1001,108 @@ function PreviewPane(props: {
     return nextDisplay;
   };
 
-  const load = async (rawTarget?: string): Promise<void> => {
+  // ———————— 独立 mesh 绑定（0.10.0）：动作-only 资产用外部 mesh 文件做渲染主体 ————————
+
+  /** 读模型字节（预览面板走 host 路由）；伴随 mesh 文件不记会话表，避免候选探测污染模型清单 */
+  const fetchModelBytes = async (targetPath: string, withSession: boolean): Promise<ArrayBuffer> => {
+    const sessionQuery =
+      withSession && props.sessionId !== '' ? `&sessionId=${encodeURIComponent(props.sessionId)}` : '';
+    const response = await fetch(resolveEndpoint(`kinemesh/model?path=${encodeURIComponent(targetPath)}${sessionQuery}`), {
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+      throw new Error(body?.error?.message ?? `HTTP ${response.status}`);
+    }
+    return response.arrayBuffer();
+  };
+
+  /** host 侧候选网格文件（命名/目录启发式，不解析内容） */
+  const discoverCompanionCandidates = async (targetPath: string): Promise<CompanionCandidateInfo[]> => {
+    try {
+      const response = await fetch(resolveEndpoint(`kinemesh/companions?path=${encodeURIComponent(targetPath)}`), {
+        cache: 'no-store',
+      });
+      const body = (await response.json().catch(() => null)) as { ok?: boolean; candidates?: CompanionCandidateInfo[] } | null;
+      return body?.ok === true && Array.isArray(body.candidates) ? body.candidates : [];
+    } catch {
+      return [];
+    }
+  };
+
+  /**
+   * 载入后解析 mesh 绑定：
+   * · 显式 mesh 文件（输入框）优先，绑定失败直接报错（用户明确指定，不能静默忽略）；
+   * · 没给 mesh 且主文件没有网格 → 自动识别同资产候选网格文件（逐个加载校验 meshes 非空），
+   *   成功则绑定并给警告说明，全失败退回无网格（骨架）预览；
+   * · 主文件自带网格 → 不触发。
+   */
+  const resolveBoundScene = async (
+    primaryScene: CanonicalScene,
+    target: string,
+    explicitMesh: string,
+  ): Promise<BoundPreviewScene> => {
+    if (explicitMesh !== '') {
+      const bytes = await fetchModelBytes(explicitMesh, false);
+      const companionScene = await loadSceneFromData(bytes, explicitMesh);
+      const bound = bindScenes(primaryScene, companionScene, explicitMesh, target);
+      return { scene: bound.scene, binding: bound, meshPath: explicitMesh, warnings: bound.warnings };
+    }
+    if (sceneFacts(primaryScene).hasMesh) {
+      return { scene: primaryScene, binding: null, meshPath: '', warnings: [] };
+    }
+    const candidates = await discoverCompanionCandidates(target);
+    for (const candidate of candidates.slice(0, 3)) {
+      try {
+        const bytes = await fetchModelBytes(candidate.path, false);
+        const companionScene = await loadSceneFromData(bytes, candidate.path);
+        if (!sceneFacts(companionScene).hasMesh) continue;
+        const bound = bindScenes(primaryScene, companionScene, candidate.path, target);
+        return {
+          scene: bound.scene,
+          binding: bound,
+          meshPath: candidate.path,
+          warnings: [
+            `该文件没有网格（动画-only）：已自动识别同资产的网格文件「${candidate.name}」（${candidate.reason}）并绑定；可在「mesh 文件」框里换文件。`,
+            ...bound.warnings,
+          ],
+        };
+      } catch {
+        // 这个候选不是可用网格（解析失败/骨骼完全不匹配）：试下一个
+        continue;
+      }
+    }
+    return {
+      scene: primaryScene,
+      binding: null,
+      meshPath: '',
+      warnings: [
+        '该文件没有网格（动画-only），没有找到可绑定的同资产网格文件：先按骨架预览；要带网格请在「mesh 文件」框填角色网格路径后再加载。',
+      ],
+    };
+  };
+
+  const load = async (rawTarget?: string, rawMesh?: string): Promise<void> => {
     const target = (rawTarget ?? pathInput).trim();
     if (target === '') return;
+    const explicitMesh = (rawMesh ?? meshInput).trim();
     setState({ phase: 'loading', error: null, clips: [], maxFrame: 0 });
     setPlaying(false);
     setSent(null);
+    // 0.10.0：换模型/重载时先清掉上一次的绑定状态，失败时也不会残留旧 chip / banner
+    setBinding(null);
+    setBindingWarnings([]);
+    setMeshPath('');
     try {
-      const sessionQuery = props.sessionId !== '' ? `&sessionId=${encodeURIComponent(props.sessionId)}` : '';
-      const response = await fetch(resolveEndpoint(`kinemesh/model?path=${encodeURIComponent(target)}${sessionQuery}`), {
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
-        throw new Error(body?.error?.message ?? `HTTP ${response.status}`);
-      }
-      const bytes = await response.arrayBuffer();
+      const bytes = await fetchModelBytes(target, true);
       const viewer = viewerRef.current;
       if (viewer === null) throw new Error('预览还没准备好');
-      const scene = await loadSceneFromBytes(bytes, target);
-      viewer.loadScene(scene);
+      const primaryScene = await loadSceneFromData(bytes, target);
+      const resolved = await resolveBoundScene(primaryScene, target, explicitMesh);
+      viewer.loadScene(resolved.scene);
+      setBinding(resolved.binding);
+      setBindingWarnings(resolved.warnings);
+      setMeshPath(resolved.meshPath);
       const bounds = viewer.sceneBounds();
       const maxFrame = Math.max(0, Math.floor(bounds.durationSeconds * RENDER_FPS));
       setState({ phase: 'ready', error: null, clips: bounds.clips, maxFrame });
@@ -1019,8 +1154,17 @@ function PreviewPane(props: {
   // 状态记忆（0.6.0：切到别的侧边栏面板/页签再回来，已加载模型与进度不丢；进程内内存，重启清空）
   React.useEffect(() => {
     if (props.persistKey === undefined || loadedPath === '') return;
-    writePaneMemory(props.persistKey, { path: loadedPath, clip, frame, surface, bones: bonesOn, rootLock, rootAxes: rootAxesOn });
-  }, [props.persistKey, loadedPath, clip, frame, surface, bonesOn, rootLock, rootAxesOn]);
+    writePaneMemory(props.persistKey, {
+      path: loadedPath,
+      clip,
+      frame,
+      surface,
+      bones: bonesOn,
+      rootLock,
+      rootAxes: rootAxesOn,
+      mesh: meshPath,
+    });
+  }, [props.persistKey, loadedPath, clip, frame, surface, bonesOn, rootLock, rootAxesOn, meshPath]);
 
   // 首次挂载恢复上次的模型（必须在 load 定义之后）
   const restoredRef = React.useRef(false);
@@ -1031,7 +1175,8 @@ function PreviewPane(props: {
     const memory = readPaneMemory(props.persistKey);
     if (memory === null || memory.path === '') return;
     setPathInput(memory.path);
-    void load(memory.path);
+    setMeshInput(memory.mesh ?? '');
+    void load(memory.path, memory.mesh ?? '');
   }, [props.persistKey]);
 
   // 页面选中/打开模型：nonce 变化才重新加载（避免同一路径的无关重渲染触发重载）
@@ -1188,6 +1333,7 @@ function PreviewPane(props: {
         headers: { 'content-type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({
           path: loadedPath,
+          mesh: meshPath === '' ? null : meshPath,
           sessionId: props.sessionId,
           clip: clip === '' ? null : clip,
           frame,
@@ -1248,6 +1394,17 @@ function PreviewPane(props: {
             <button type="button" className="kinemesh-btn" onClick={() => void load()} disabled={state.phase === 'loading'}>
               {state.phase === 'loading' ? translate('pane.loading') : translate('pane.load')}
             </button>
+            {/* 0.10.0：独立 mesh 文件（动作-only 资产）；留空时载入后自动识别同资产网格文件 */}
+            <input
+              className="kinemesh-input kinemesh-input-mesh"
+              value={meshInput}
+              placeholder={translate('page.meshPath')}
+              title={translate('page.meshTitle')}
+              onChange={(event) => setMeshInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void load();
+              }}
+            />
           </React.Fragment>
         )}
         <select className="kinemesh-select" value={clip} onChange={(event) => applyClip(event.target.value)} disabled={state.clips.length === 0}>
@@ -1296,6 +1453,13 @@ function PreviewPane(props: {
         </label>
       </div>
       {state.error !== null && <div className="kinemesh-banner">{state.error}</div>}
+      {bindingWarnings.length > 0 && (
+        <div className="kinemesh-banner" data-kind="info">
+          {bindingWarnings.map((warning, index) => (
+            <div key={index}>{warning}</div>
+          ))}
+        </div>
+      )}
       {sent !== null && (
         <div className="kinemesh-banner" data-kind="ok">
           {sent}
@@ -1348,6 +1512,11 @@ function PreviewPane(props: {
       )}
       <div className="kinemesh-readout">
         <span className="kinemesh-chip">{viewText}</span>
+        {meshPath !== '' && (
+          <span className="kinemesh-chip" data-kind="auto" title={translate('binding.bonesTitle')}>
+            {`${translate('binding.chip')} ${meshBindingChip(binding, meshPath)}`}
+          </span>
+        )}
         {autoReason !== null && (
           <span className="kinemesh-chip" data-kind="auto" title={translate('mode.autoTitle')}>
             {translate('mode.auto.' + autoReason)}
@@ -1558,14 +1727,6 @@ function defaultView(center: [number, number, number], radius: number): ViewStat
   };
 }
 
-async function loadSceneFromBytes(data: ArrayBuffer, fileName: string) {
-  // 与 kinemesh_info 同一套格式探测：浏览器端走 loader 的 CanonicalScene 路径
-  const head = new Uint8Array(data, 0, Math.min(1024, data.byteLength));
-  const entry = detectFormat(head, fileName);
-  if (entry === null) throw new Error(`不认识的格式：${fileName}（支持 FBX / glTF / GLB / OBJ）`);
-  return entry.load(data, { fileName });
-}
-
 export function apply(ctx: any): void {
   const disposeTexts = registerTexts(ctx);
   translate = bindTranslate(ctx);
@@ -1642,3 +1803,4 @@ export function apply(ctx: any): void {
   );
   void layout;
 }
+

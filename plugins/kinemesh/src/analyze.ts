@@ -5,6 +5,8 @@ import { RENDER_FPS, type ViewState } from './core/viewstate.js';
 export interface AnalyzeRequest {
   /** 模型文件路径（Agent 端可见的同一路径） */
   path: string;
+  /** 0.10.0：独立 mesh 文件路径（预览面板已绑定的网格文件）；无绑定为 null */
+  mesh: string | null;
   /** 目标会话 id（界面传原始 id） */
   sessionId: string;
   clip: string | null;
@@ -26,6 +28,7 @@ export function parseAnalyzeRequest(body: unknown): ParsedAnalyze {
   const raw = body as Record<string, unknown>;
   const path = typeof raw.path === 'string' ? raw.path.trim() : '';
   if (path === '') return { ok: false, message: '缺少 path（模型文件路径）。' };
+  const mesh = typeof raw.mesh === 'string' && raw.mesh.trim() !== '' ? raw.mesh.trim() : null;
   const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId.trim() : '';
   if (sessionId === '') return { ok: false, message: '缺少 sessionId（当前会话 id）。' };
   const clip = typeof raw.clip === 'string' && raw.clip.trim() !== '' ? raw.clip.trim() : null;
@@ -38,7 +41,7 @@ export function parseAnalyzeRequest(body: unknown): ParsedAnalyze {
         : 0;
   const view = isViewStateLike(raw.view) ? (raw.view as ViewState) : null;
   const note = typeof raw.note === 'string' && raw.note.trim() !== '' ? raw.note.trim() : null;
-  return { ok: true, request: { path, sessionId, clip, frame, view, note } };
+  return { ok: true, request: { path, mesh, sessionId, clip, frame, view, note } };
 }
 
 function isViewStateLike(value: unknown): boolean {
@@ -60,15 +63,21 @@ export function composeAnalyzeMessage(request: AnalyzeRequest): string {
   const lines = [
     '【动析 kinemesh】用户在 3D 预览面板里请求对模型做视觉分析。',
     `模型文件：${request.path}`,
+  ];
+  if (request.mesh !== null) {
+    lines.push(`绑定网格文件：${request.mesh}（动作文件没有网格，预览里已用它做网格主体、动画按骨骼名绑定）`);
+  }
+  lines.push(
     `动画片段：${clipText}；帧号：${frameText}（换算 time = frame / ${RENDER_FPS}）`,
     `视角：${viewText}`,
-  ];
+  );
   if (request.note !== null) {
     lines.push('用户附言：', '"""', request.note, '"""');
   }
   lines.push(
-    '请调用 kinemesh_render 渲染上面这个视角的截图（clip/frames/view 按上面取值；view 直接传完整对象），' +
-      '然后用读图工具查看 PNG，给出视觉分析（结构、动作质量、穿模/悬空、比例等，按用户附言侧重）。',
+    '请调用 kinemesh_render 渲染上面这个视角的截图（clip/frames/view 按上面取值；view 直接传完整对象' +
+      (request.mesh === null ? '' : '；mesh 参数传上面那个绑定网格文件路径') +
+      '），然后用读图工具查看 PNG，给出视觉分析（结构、动作质量、穿模/悬空、比例等，按用户附言侧重）。',
   );
   return lines.join('\n');
 }

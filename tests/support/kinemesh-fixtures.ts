@@ -96,6 +96,29 @@ export function buildStaticCubeGltf(): Record<string, unknown> {
   return clone;
 }
 
+// ———————— 独立 mesh 绑定（0.10.0）：蒙皮网格文件 × 动画-only 文件 ————————
+// 两个文件来自同一个 rig（节点名 rig / bone_a / bone_b 一致），模拟游戏里「动作导出不带 mesh」。
+
+/** 只有蒙皮网格 + 骨骼的 mesh 文件（Walk 动画被去掉） */
+export function buildSkinnedMeshOnlyGltf(): Record<string, unknown> {
+  const clone = structuredClone(buildAnimatedCubeGltf()) as Record<string, unknown>;
+  delete clone.animations;
+  return clone;
+}
+
+/** 只有骨骼 + 动画的动画文件（网格/蒙皮/材质被去掉） */
+export function buildCubeAnimationOnlyGltf(): Record<string, unknown> {
+  const clone = structuredClone(buildAnimatedCubeGltf()) as Record<string, unknown>;
+  delete clone.skins;
+  delete clone.meshes;
+  delete clone.materials;
+  // node 3 是蒙皮网格节点（mesh/skin），动画-only 文件里不应该有它
+  const nodes = (clone.nodes as Array<Record<string, unknown>>).slice(0, 3);
+  clone.nodes = nodes;
+  clone.scenes = [{ name: 'Scene', nodes: [0] }];
+  return clone;
+}
+
 /** 只有 morph/weights 动画的平面网格（验证「形态动画 → 骨骼分析拒绝」分支，A.14） */
 export function buildMorphOnlyGltf(): Record<string, unknown> {
   const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]);
@@ -576,7 +599,11 @@ export interface NamedRigNodeSpec {
  * translation 动画（截图测试按静态渲染，动画不参与）。nodes 只列根 + 网格节点
  * （全列成根会让 GLTFLoader 造出双份实例、骨架清单翻倍——见 skeleton 测试的同款注释）。
  */
-export function buildNamedRigGltf(specs: NamedRigNodeSpec[], options: { animNode?: string } = {}): Record<string, unknown> {
+export function buildNamedRigGltf(
+  specs: NamedRigNodeSpec[],
+  options: { animNode?: string; withMesh?: boolean } = {},
+): Record<string, unknown> {
+  const withMesh = options.withMesh !== false;
   const names = specs.map((spec) => spec.name);
   const nodes = specs.map((spec) => {
     const children = specs.filter((other) => other.parent === spec.name).map((other) => names.indexOf(other.name));
@@ -602,13 +629,17 @@ export function buildNamedRigGltf(specs: NamedRigNodeSpec[], options: { animNode
   return {
     asset: { version: '2.0', generator: 'kinemesh-fixtures' },
     scene: 0,
-    scenes: [{ name: 'Scene', nodes: [...rootIndices, nodes.length] }],
+    scenes: [{ name: 'Scene', nodes: [...rootIndices, ...(withMesh ? [nodes.length] : [])] }],
     nodes: [
       ...nodes,
-      { mesh: 0, translation: [0, 0, 0] }, // 未命名网格节点：进包围盒，不进骨骼清单
+      ...(withMesh ? [{ mesh: 0, translation: [0, 0, 0] }] : []), // 未命名网格节点：进包围盒，不进骨骼清单
     ],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }] }],
-    materials: [{ name: 'BodyMat', pbrMetallicRoughness: { baseColorFactor: [0.8, 0.6, 0.4, 1] } }],
+    ...(withMesh
+      ? {
+          meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }] }],
+          materials: [{ name: 'BodyMat', pbrMetallicRoughness: { baseColorFactor: [0.8, 0.6, 0.4, 1] } }],
+        }
+      : {}),
     accessors: [
       { bufferView: 0, componentType: 5126, count: 8, type: 'VEC3', min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
       { bufferView: 1, componentType: 5123, count: 36, type: 'SCALAR' },

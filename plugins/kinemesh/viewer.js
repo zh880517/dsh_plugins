@@ -45728,6 +45728,292 @@ void main() {
 		return fileName.slice(dot).toLowerCase();
 	}
 	//#endregion
+	//#region plugins/kinemesh/src/core/bind/names.ts
+	/** 常见的导出器命名空间前缀（可叠加，如 `Armature|mixamorig:Hips`） */
+	var NAMESPACE_PREFIXES = [
+		/^mixamorig\d*:/i,
+		/^armature\s*[|:]\s*/i,
+		/^root\s*[|:]\s*/i,
+		/^biped\s*[|:]\s*/i,
+		/^bip\d*\s*[|:]\s*/i
+	];
+	/** 去掉命名空间前缀（最多剥 4 层，防止异常名字死循环） */
+	function stripNodeNamespaces(name) {
+		let current = name.trim();
+		for (let depth = 0; depth < 4; depth += 1) {
+			let next = current;
+			for (const pattern of NAMESPACE_PREFIXES) next = next.replace(pattern, "");
+			if (next === current) break;
+			current = next;
+		}
+		return current;
+	}
+	/** 归一化比较键：去命名空间 → 空格转下划线 → 小写 */
+	function nodeNameKey(name) {
+		return stripNodeNamespaces(name).replace(/\s+/g, "_").toLowerCase();
+	}
+	/** 给 mesh 场景建节点索引（一次遍历，后续按名字查） */
+	function buildNodeIndex(root) {
+		const exact = /* @__PURE__ */ new Map();
+		const normalized = /* @__PURE__ */ new Map();
+		let count = 0;
+		let bones = 0;
+		root.traverse((child) => {
+			if (child.isBone) bones += 1;
+			const name = child.name;
+			if (name === "") return;
+			count += 1;
+			if (!exact.has(name)) exact.set(name, child);
+			const key = nodeNameKey(name);
+			if (!normalized.has(key)) normalized.set(key, child);
+			const sanitized = key.replace(/[.[\]:/]/g, "");
+			if (!normalized.has(sanitized)) normalized.set(sanitized, child);
+		});
+		return {
+			exact,
+			normalized,
+			count,
+			bones
+		};
+	}
+	/** 查节点：精确名 > 归一化名；找不到返回 null */
+	function matchNode(index, nodeName) {
+		const exact = index.exact.get(nodeName);
+		if (exact !== void 0) return {
+			node: exact,
+			via: "exact"
+		};
+		const key = nodeNameKey(nodeName);
+		const normalized = index.normalized.get(key);
+		if (normalized !== void 0) return {
+			node: normalized,
+			via: "normalized"
+		};
+		const sanitized = key.replace(/[.[\]:/]/g, "");
+		const fallback = index.normalized.get(sanitized);
+		if (fallback !== void 0) return {
+			node: fallback,
+			via: "normalized"
+		};
+		return null;
+	}
+	//#endregion
+	//#region plugins/kinemesh/src/core/bind/remap.ts
+	/** 动画轨道里命中的节点名去重上限（报告里只列前 12 个，避免长清单灌爆 token） */
+	var MAX_UNMATCHED_NODES = 12;
+	/**
+	* 把动画片段绑定到 mesh 场景：逐轨道查 mesh 节点（精确名 > 命名空间归一化名），
+	* 命中则把轨道名前缀换成 mesh 节点名，未命中则丢弃。
+	* 不修改入参 clips / mesh 对象（轨道是 clone 的），可以安全地在只读分析里调用。
+	*/
+	function bindClipsToModel(mesh, clips) {
+		const index = buildNodeIndex(mesh);
+		const matched = /* @__PURE__ */ new Set();
+		const matchedBones = /* @__PURE__ */ new Set();
+		const unseen = /* @__PURE__ */ new Set();
+		const boundClips = [];
+		let totalTracks = 0;
+		let matchedTracks = 0;
+		let renamedTracks = 0;
+		for (const clip of clips) {
+			const tracks = [];
+			for (const track of clip.tracks) {
+				totalTracks += 1;
+				const parsed = PropertyBinding.parseTrackName(track.name);
+				const nodeName = typeof parsed.nodeName === "string" ? parsed.nodeName : "";
+				if (nodeName === "") {
+					tracks.push(track);
+					continue;
+				}
+				const hit = matchNode(index, nodeName);
+				if (hit === null) {
+					unseen.add(nodeName);
+					continue;
+				}
+				matched.add(nodeName);
+				if (hit.node.isBone) matchedBones.add(hit.node);
+				matchedTracks += 1;
+				if (hit.node.name === nodeName) {
+					tracks.push(track);
+					continue;
+				}
+				const suffix = track.name.startsWith(nodeName) ? track.name.slice(nodeName.length) : "";
+				const renamed = track.clone();
+				renamed.name = suffix === "" ? `${hit.node.name}.${parsed.propertyName}` : `${hit.node.name}${suffix}`;
+				renamedTracks += 1;
+				tracks.push(renamed);
+			}
+			boundClips.push(new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode));
+		}
+		const animNodes = matched.size + unseen.size;
+		const report = {
+			meshNodes: index.count,
+			meshBones: index.bones,
+			animNodes,
+			matchedNodes: matched.size,
+			matchedBones: matchedBones.size,
+			totalTracks,
+			matchedTracks,
+			unmatchedNodes: [...unseen].slice(0, MAX_UNMATCHED_NODES),
+			unmatchedNodeCount: unseen.size,
+			renamedTracks,
+			ok: matchedTracks > 0,
+			warnings: []
+		};
+		report.warnings.push(...bindingWarnings(report));
+		return {
+			clips: boundClips,
+			report
+		};
+	}
+	/** 由报告派生人话 warnings（截图/预览/工具直接透传） */
+	function bindingWarnings(report) {
+		const warnings = [];
+		if (!report.ok) {
+			warnings.push(`动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼）。`);
+			return warnings;
+		}
+		if (report.unmatchedNodeCount > 0) {
+			const sample = report.unmatchedNodes.join("、");
+			warnings.push(`动画有 ${report.unmatchedNodeCount} 个节点在 mesh 骨架里没有对应骨骼，已忽略（常见于动作里带的道具/相机/IK 辅助节点）：${sample}${report.unmatchedNodeCount > MAX_UNMATCHED_NODES ? " …" : ""}`);
+		}
+		if (report.renamedTracks > 0) warnings.push(`按命名空间归一化匹配了 ${report.renamedTracks} 条轨道（如 mixamorig: / Armature| 前缀）。`);
+		return warnings;
+	}
+	/** 报告 → 给 AI 读的中文事实句（info/CLI/MCP 共用，数值不重复计算） */
+	function bindingFacts(report) {
+		const facts = [];
+		facts.push(`动画驱动 mesh 骨架的 ${report.matchedBones}/${report.meshBones} 根骨骼；轨道命中 ${report.matchedTracks}/${report.totalTracks}。`);
+		if (report.unmatchedNodeCount > 0) facts.push(`未匹配动画节点 ${report.unmatchedNodeCount} 个（示例：${report.unmatchedNodes.join("、")}${report.unmatchedNodeCount > report.unmatchedNodes.length ? " …" : ""}）——这些节点的动作不会显示。`);
+		if (report.renamedTracks > 0) facts.push(`其中 ${report.renamedTracks} 条轨道经命名空间归一化后命中。`);
+		return facts;
+	}
+	//#endregion
+	//#region plugins/kinemesh/src/core/bind/roles.ts
+	/**
+	* 自动识别两侧角色：
+	* · 网格优先 mesh 参数文件；它没有网格时退回 path 文件自带的网格；
+	* · 动画优先 path 文件；它没有动画时改用 mesh 参数文件的片段（支持两个参数传反）。
+	* 两侧都没有网格 / 都没有动画 → KinemeshError（三段式）。
+	*/
+	function planCompanion(primary, companion, names = {
+		primary: "path 文件",
+		companion: "mesh 参数文件"
+	}) {
+		const warnings = [];
+		let mesh;
+		if (companion.hasMesh) {
+			mesh = "companion";
+			if (primary.hasMesh) warnings.push(`${names.primary} 自带网格，但按 mesh 参数改用「${names.companion}」的网格做渲染主体（想用 ${names.primary} 自己的网格，去掉 mesh 参数）。`);
+		} else if (primary.hasMesh) {
+			mesh = "primary";
+			warnings.push(`mesh 参数文件「${names.companion}」没有网格，网格改用 ${names.primary} 自带的。`);
+		} else throw new KinemeshError(`两个文件都没有网格（mesh）：${names.primary}、${names.companion} 都只有骨架/动画。`, "mesh 参数要指向角色网格文件（例如游戏资产里的 basic/*_skin.fbx，可先用 kinemesh_info 确认 meshes 非空）；纯动画文件只能做骨架预览与动作分析，无法带网格出图。");
+		let animation;
+		if (primary.clipCount > 0) animation = "primary";
+		else if (companion.clipCount > 0) {
+			animation = "companion";
+			warnings.push(`path 文件「${names.primary}」没有动画片段，动画改用 mesh 参数文件「${names.companion}」的片段。`);
+		} else throw new KinemeshError(`两个文件都没有动画片段：${names.primary}、${names.companion}。`, "mesh 参数只负责「给动作套网格」，动画得来自 path 文件（先 kinemesh_info 确认 clips 非空）；要渲染静态模型请去掉 mesh 参数直接渲染 path 文件。");
+		if (mesh === animation) warnings.push(`网格与动画都来自${mesh === "primary" ? ` ${names.primary}` : `「${names.companion}」`}：另一侧文件没有用上（${mesh === "primary" ? "mesh 参数文件" : "path 文件"}既没有网格也没有可用动画）。`);
+		return {
+			mesh,
+			animation,
+			warnings
+		};
+	}
+	/** 角色分配 → 给 AI 读的中文事实句（info/CLI/MCP 共用） */
+	function assignmentFacts(plan, names = {
+		primary: "path 文件",
+		companion: "mesh 参数文件"
+	}) {
+		return [`网格来自 ${plan.mesh === "primary" ? names.primary : `「${names.companion}」`}，动画来自 ${plan.animation === "primary" ? names.primary : `「${names.companion}」`}；骨骼按名字自动绑定。`];
+	}
+	//#endregion
+	//#region plugins/kinemesh/src/core/bind/bundle.ts
+	/** 已加载场景的结构判定事实（角色分配用） */
+	function sceneFacts(scene) {
+		let meshCount = 0;
+		let boneCount = 0;
+		scene.object.traverse((child) => {
+			if (child.isMesh === true) meshCount += 1;
+			if (child.isBone === true) boneCount += 1;
+		});
+		return {
+			hasMesh: meshCount > 0,
+			meshCount,
+			clipCount: scene.animations.length,
+			boneCount
+		};
+	}
+	/** 格式探测 + 解析一个模型字节流（浏览器/Node 通用；空文件给三段式） */
+	async function loadSceneFromData(data, fileName) {
+		if (data.byteLength === 0) throw new KinemeshError(`文件是空的：${fileName}`, "确认路径与文件本身（0 字节的文件没法分析），必要时重新导出。");
+		const entry = detectFormat(new Uint8Array(data, 0, Math.min(1024, data.byteLength)), fileName);
+		if (entry === null) throw unknownFormatError(fileName);
+		return entry.load(data, { fileName });
+	}
+	/**
+	* 按已识别好的角色分配合成最终场景（bindScenes 的第二步；info 需要在 plan 报错时仍能拿到
+	* 角色信息，所以拆开）。完全不匹配时抛 KinemeshError（三段式）。
+	*/
+	function applyPlan(primary, companion, plan, names = {
+		primary: "path 文件",
+		companion: "mesh 参数文件"
+	}) {
+		const warnings = [...plan.warnings];
+		const facts = assignmentFacts(plan, names);
+		const meshScene = plan.mesh === "primary" ? primary : companion;
+		if (plan.mesh === plan.animation) return {
+			scene: meshScene,
+			plan,
+			report: null,
+			facts,
+			warnings
+		};
+		const animScene = plan.animation === "primary" ? primary : companion;
+		if (animScene.animations.length === 0) throw new KinemeshError(`动画侧没有可用片段：${plan.animation === "primary" ? names.primary : names.companion} 没有解析到 AnimationClip。`, "先 kinemesh_info 确认哪个文件的 clips 非空，再把动画文件作为 path、网格文件作为 mesh 参数。");
+		const { clips, report } = bindClipsToModel(meshScene.object, animScene.animations);
+		if (!report.ok) throw new KinemeshError(`动画与 mesh 骨骼完全不匹配：动画 ${report.animNodes} 个节点没有一个命中 mesh 骨架（${report.meshBones} 根骨骼，示例节点：${report.unmatchedNodes.join("、")}）。`, "确认两个文件来自同一套 rig（骨骼名要能对上，如 Bip001_Spine / mixamorig:Hips 这类）；动画只导出部分骨骼也能绑定（例如 5 根脊柱的受击附加动画），但至少要命中一根；分别对两个文件跑 kinemesh_info 对比 bones/convention，或先用 kinemesh_skeleton 看骨骼清单。");
+		warnings.push(...report.warnings);
+		facts.push(...bindingFacts(report));
+		return {
+			scene: {
+				object: meshScene.object,
+				animations: clips,
+				meta: meshScene.meta
+			},
+			plan,
+			report,
+			facts,
+			warnings
+		};
+	}
+	/**
+	* 把 mesh 文件与动画文件合成一个可渲染场景：
+	* 自动识别谁提供网格、谁提供动画（支持两个参数传反），按骨骼名把动画轨道重绑定到 mesh 骨架。
+	*/
+	function bindScenes(primary, companion, companionFileName, primaryFileName = "path 文件") {
+		const names = {
+			primary: primaryFileName,
+			companion: companionFileName
+		};
+		return applyPlan(primary, companion, planCompanion(sceneFacts(primary), sceneFacts(companion), names), names);
+	}
+	/** 加载 path 文件（可选再加载 mesh 参数文件）并完成自动绑定；没给 mesh 时不涉及绑定 */
+	async function loadSceneWithCompanion(primary, companion) {
+		const primaryScene = await loadSceneFromData(primary.data, primary.fileName);
+		if (companion === void 0) return {
+			scene: primaryScene,
+			binding: null
+		};
+		const binding = bindScenes(primaryScene, await loadSceneFromData(companion.data, companion.fileName), companion.fileName, primary.fileName);
+		return {
+			scene: binding.scene,
+			binding
+		};
+	}
+	//#endregion
 	//#region node_modules/three/examples/jsm/controls/OrbitControls.js
 	/**
 	* Fires when the camera has been transformed by the controls.
@@ -48134,13 +48420,20 @@ void main() {
 		});
 		return viewer;
 	}
-	async function load(b64, fileName) {
+	/** 桥接用的 base64 → ArrayBuffer（atob 产出二进制字符串；必须逐字符取 charCodeAt） */
+	function decodeBase64(b64) {
+		const binary = Uint8Array.from(atob(b64), (character) => character.charCodeAt(0));
+		return binary.buffer.slice(binary.byteOffset, binary.byteOffset + binary.byteLength);
+	}
+	async function load(b64, fileName, companionB64, companionFileName) {
 		try {
-			const binary = Uint8Array.from(atob(b64), (character) => character.charCodeAt(0));
-			const data = binary.buffer.slice(binary.byteOffset, binary.byteOffset + binary.byteLength);
-			const entry = detectFormat(new Uint8Array(data, 0, Math.min(1024, data.byteLength)), fileName);
-			if (entry === null) throw unknownFormatError(fileName);
-			const scene = await entry.load(data, { fileName });
+			const { scene, binding } = await loadSceneWithCompanion({
+				data: decodeBase64(b64),
+				fileName
+			}, companionB64 === void 0 || companionFileName === void 0 || companionB64 === "" ? void 0 : {
+				data: decodeBase64(companionB64),
+				fileName: companionFileName
+			});
 			loadedScene = scene;
 			getViewer().loadScene(scene);
 			bounds = getViewer().sceneBounds();
@@ -48151,7 +48444,14 @@ void main() {
 					center: bounds.center,
 					radius: bounds.radius
 				},
-				durationSeconds: bounds.durationSeconds
+				durationSeconds: bounds.durationSeconds,
+				meshCount: sceneFacts(scene).meshCount,
+				binding: binding === null ? null : {
+					plan: binding.plan,
+					report: binding.report,
+					facts: binding.facts
+				},
+				warnings: binding === null ? [] : binding.warnings
 			};
 		} catch (error) {
 			return {

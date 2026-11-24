@@ -25,6 +25,8 @@ export const css = `
 .kinemesh-input{flex:1;min-width:220px;height:28px;padding:0 10px;border-radius:8px;font:inherit;font-size:12px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
 .kinemesh-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
+/* 0.10.0：独立 mesh 文件输入（与路径输入并列，窄一点） */
+.kinemesh-input-mesh{flex:0 1 260px;min-width:180px}
 .kinemesh-select{height:28px;padding:0 8px;border-radius:8px;font:inherit;font-size:12px;
   border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
 /* 0.7.2：骨架叠加开关（与表面下拉并列的独立控件） */
@@ -79,6 +81,8 @@ export const css = `
 .kinemesh-banner{margin:6px 14px;padding:8px 10px;border-radius:10px;font-size:12px;
   border:1px solid var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
 .kinemesh-banner[data-kind="ok"]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}
+/* 0.10.0：mesh 绑定提示（中性信息色，不是错误） */
+.kinemesh-banner[data-kind="info"]{border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
 
 .kinemesh-foot{display:flex;align-items:center;gap:10px;padding:10px 14px 14px}
 

@@ -1,6 +1,6 @@
 ---
 name: kinemesh
-description: 3D 模型/动画资源分析与截图 CLI。当任务涉及游戏模型资源（FBX/glTF/GLB/OBJ）——查动画片段清单、骨骼/网格统计、单位体检，或需要按视角渲染截图做视觉分析（动作姿势检查、模型审查、关键帧连拍）时使用。
+description: 3D 模型/动画资源分析与截图 CLI。当任务涉及游戏模型资源（FBX/glTF/GLB/OBJ）——查动画片段清单、骨骼/网格统计、单位体检，或需要按视角渲染截图做视觉分析（动作姿势检查、模型审查、关键帧连拍），或动作文件不带 mesh 需要绑定独立 mesh 文件预览/截图时使用。
 ---
 
 # kinemesh（动析）CLI
@@ -13,6 +13,8 @@ bundle（three.js 全内联），免 npm install，任何有 shell + Node ≥ 18
 - 拿到模型文件，回答「这个资源有哪些动作、多长、能不能用」→ `info`
 - 回答「这个动作在干嘛、多激烈、能不能循环」→ `analyze`（分段/facts/循环检测，一次产出中间文件）
 - 需要看画面：按视角 + 帧号出截图，做动作姿势检查 / 模型审查 / 关键帧 contact sheet → `render`
+- **动作文件不带 mesh**（游戏里动作单独导出、只有 `basic/*_skin.fbx` 之类有网格）→ `render` / `info` 加 `--mesh <网格文件>`；
+  不传时工具会自动在同资产目录找候选网格文件并绑定（见下节）
 - 检查单位是否可疑（FBX 厘米未换算）→ `info` 的 warnings 字段
 
 ## 前置
@@ -32,10 +34,10 @@ playwright（装在**你运行 CLI 的工程**里，CLI 按 Node 常规模块解
 ## 命令格式
 
 ```bash
-node <本目录>/cli/kinemesh.cjs info <file>
+node <本目录>/cli/kinemesh.cjs info <file> [--mesh <mesh-file>]
 node <本目录>/cli/kinemesh.cjs analyze <file> [选项]
 node <本目录>/cli/kinemesh.cjs skeleton <file> [选项]
-node <本目录>/cli/kinemesh.cjs render <file> [选项]
+node <本目录>/cli/kinemesh.cjs render <file> [选项] [--mesh <mesh-file>]
 node <本目录>/cli/kinemesh.cjs --version     # 手上是哪一版
 ```
 
@@ -73,6 +75,7 @@ node <本目录>/cli/kinemesh.cjs --version     # 手上是哪一版
 
 | 选项 | 说明 |
 |---|---|
+| `--mesh <file>` | **独立 mesh 文件（动作-only 资产）**：动画文件没有网格时，用它的网格做渲染主体、动画按骨骼名自动绑定；不传时自动识别同资产网格文件（basic/、`*_skin` 等），见下节 |
 | `--clip <name>` | 动画片段名（先 info 查）；静态模型省略 |
 | `--frames 0,15,30` | 帧号列表（≤64 个，按 30fps 换算 time=frame/30）；或 `--frame 30` 单帧 |
 | `--view-preset <name>` | front / side / back / three-quarter / orbit8（八方位连拍） |
@@ -85,6 +88,31 @@ node <本目录>/cli/kinemesh.cjs --version     # 手上是哪一版
 **取景（0.8.0）**：只给 `--view-preset`（或什么都不给）时，**逐帧按当前帧身体包围盒精确取景**——
 带 root motion 的动作（冲刺/突进/跳跃位移）不会跑出画面，身体漂移超过自身半径 15% 时 warnings 会提示；
 显式给 `--azimuth/--elevation/--distance/--target/--fov` 则按你指定的**固定构图**渲染，不做逐帧跟拍。
+
+### 动作文件不带 mesh：独立 mesh 文件（0.10.0）
+
+游戏资产常把**动作单独导出**（例如 `<角色>/hit/decide_spine_shake.fbx` 只有骨架+动画、`meshes: []`），
+角色网格在另一个文件（例如 `<角色>/basic/<角色>_skin.fbx`）。这类文件直接 `render` 只能出骨架图；
+加 `--mesh <网格文件>` 就会用它做网格主体、把动画按骨骼名绑定过去：
+
+```bash
+node cli/kinemesh.cjs render <角色>/hit/hit.fbx --mesh <角色>/basic/<角色>_skin.fbx --clip "Take 001" --frames 0,2 --view-preset front
+node cli/kinemesh.cjs info   <角色>/hit/hit.fbx --mesh <角色>/basic/<角色>_skin.fbx
+```
+
+自动识别与绑定口径（都是工具确定性产出，直接引用即可）：
+
+- **不传 `--mesh` 时自动识别**：工具在动作文件附近（本目录 / 上级角色目录 / 上级资产目录及其 `basic|mesh|model|body|skin` 子目录）
+  按命名/目录启发式找候选网格文件，解析确认有网格后自动绑定，`warnings` 里写明「已自动识别同资产的网格文件「…」并绑定」；
+  找不到则退回骨架并提示用 `--mesh` 显式指定。`info` 不带 `--mesh` 时也会列出同资产候选网格文件名。
+- **角色自动识别**：`path` 提供动画、`--mesh` 提供网格；两个参数传反（path 有网格、mesh 文件有动画）也能自动纠正，
+  `warnings` 会说明实际分配。两个文件都有网格时按 `--mesh` 的网格渲染并提示。
+- **骨骼名绑定**：精确名优先，其次按命名空间归一化（`mixamorig:`、`Armature|` 等）匹配；**只导出部分骨骼的动作
+  （例如 5 根脊柱的受击附加动画）也能绑定**——命中的骨骼被驱动，未命中的保持 rest 姿态；完全不匹配会三段式报错
+  （提示两边来自同一套 rig、可分别 `info`/`skeleton` 对比骨骼名）。
+- **输出**：`render` 返回 `binding.plan`（`{mesh, animation}`）与 `binding.facts`（如「动画驱动 mesh 骨架的 5/88 根骨骼；轨道命中 18/18」）；
+  `info --mesh` 返回 `companion`（网格文件的结构信息）+ `binding`（plan / report 命中统计 / facts / warnings / error）。
+- 前提：两边来自**同一套 rig**（骨骼名能对上）。单位/初始朝向差异不做自动修正——那是重定向（retarget）的范畴，本工具只做同名绑定。
 
 `skeleton` 选项（DSH 工具 `kinemesh_skeleton` / MCP 同名同参）：
 

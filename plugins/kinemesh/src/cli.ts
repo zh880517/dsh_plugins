@@ -5,10 +5,17 @@ import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { analyzeModelCached } from './core/analyze-file.js';
 import { KinemeshError, reasonOf } from './core/errors.js';
 import { renderScreenshots } from './core/render/screenshot.js';
-import { runAnalyze, runSkeleton, type AnalyzeToolParams, type SkeletonToolParams } from './tools.js';
+import {
+  resolveCompanionForRender,
+  runAnalyze,
+  runInfo as runInfoModel,
+  runSkeleton,
+  type AnalyzeToolParams,
+  type ModelFileRef,
+  type SkeletonToolParams,
+} from './tools.js';
 import type { ViewMode } from './core/viewstate.js';
 
 /** 构建期注入的插件版本（0.9.4；源码直跑时为 undefined → 'dev'）。自定义环境需要版本号时用它。 */
@@ -22,8 +29,11 @@ function cliVersion(): string {
 const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
 用法：
-  kinemesh info <file>
+  kinemesh info <file> [--mesh <mesh-file>]
       输出模型结构信息 JSON（动画片段/骨骼/网格/贴图/包围盒/单位体检）。
+      --mesh <file>            独立 mesh 文件（动作-only 资产用）：附带该网格文件的结构信息 + 绑定体检
+                               （自动识别谁提供网格/动画、试算骨骼名命中数）；不带时若文件没有网格，
+                               会给同资产候选网格文件提示。
 
   kinemesh analyze <file> [选项]
       对动画片段做动作分析，产出中间文件目录；stdout 返回 {ok,dir,files,summaryDigest}。
@@ -51,6 +61,8 @@ const USAGE = `kinemesh — 3D 模型/动画资源的分析 CLI
 
   kinemesh render <file> [选项]
       按视角 + 帧号渲染 PNG（写入输出目录，stdout 返回绝对路径数组）。
+      --mesh <mesh-file>       独立 mesh 文件（动作-only 资产用）：用它的网格做渲染主体，动画按骨骼名
+                               自动绑定（只覆盖部分骨骼也可以）；不带时自动识别同资产网格文件。
       --clip <name>            动画片段名（先 info 查）；静态模型省略
       --frames 0,15,30         帧号列表（逗号分隔，≤64 个）；或 --frame 30 单帧
       --view-preset <name>     front / side / back / three-quarter / orbit8（八方位连拍）
@@ -81,10 +93,10 @@ interface ParsedArgv {
 
 /** 各子命令的合法 flag（含互为别名的 --out / --out-dir）；未知选项三段式报错而非静默忽略 */
 const KNOWN_FLAGS: Record<string, string[]> = {
-  info: [],
+  info: ['mesh'],
   analyze: ['clip', 'out', 'out-dir', 'range', 'sample-fps', 'joints', 'detail', 'curves-for', 'smooth', 'loop-mode', 'normalize', 'vocab', 'bone-map'],
   skeleton: ['shots', 'bone-map', 'out', 'out-dir'],
-  render: ['clip', 'frames', 'frame', 'view-preset', 'azimuth', 'elevation', 'distance', 'target', 'fov', 'mode', 'bone-labels', 'width', 'height', 'out-dir', 'out'],
+  render: ['mesh', 'clip', 'frames', 'frame', 'view-preset', 'azimuth', 'elevation', 'distance', 'target', 'fov', 'mode', 'bone-labels', 'width', 'height', 'out-dir', 'out'],
 };
 
 /** --out / --out-dir 互为别名：analyze/skeleton 规范为 --out，render 规范为 --out-dir */
@@ -156,13 +168,32 @@ function emit(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
-async function runInfo(fileArg: string | undefined): Promise<number> {
+/** --mesh 解析（0.10.0）：undefined = 未给；null = 读取失败（已输出三段式） */
+async function readMeshFlag(flags: Record<string, string>): Promise<ModelFileRef | undefined | null> {
+  const raw = flags.mesh;
+  if (raw === undefined || raw === '' || raw === 'true') {
+    if (raw === 'true') {
+      fail('--mesh 缺少文件路径。', '--mesh <mesh-file>，例如 --mesh basic/xxx_skin.fbx。', '解析 mesh 参数');
+      return null;
+    }
+    return undefined;
+  }
+  const loaded = await readModel(raw);
+  if (loaded === null) return null;
+  return { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs };
+}
+
+async function runInfo(fileArg: string | undefined, flags: Record<string, string>): Promise<number> {
   const loaded = await readModel(fileArg);
   if (loaded === null) return 1;
+  const mesh = await readMeshFlag(flags);
+  if (mesh === null) return 1;
   try {
-    // M6f：info 的场景构造路径（FBX/OBJ 无 fastInfo）走 path+mtime 进程内缓存
-    const report = await analyzeModelCached(loaded.abs, loaded.data, path.basename(loaded.abs));
-    emit({ ok: true, ...report });
+    const result = await runInfoModel(
+      { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs },
+      mesh,
+    );
+    emit(result);
     return 0;
   } catch (error) {
     if (error instanceof KinemeshError) return fail(error.message, error.guidance, `分析 ${loaded.abs}`);
@@ -231,6 +262,8 @@ async function runRender(fileArg: string | undefined, flags: Record<string, stri
   if (boneLabels === null) return 1;
   const loaded = await readModel(fileArg);
   if (loaded === null) return 1;
+  const mesh = await readMeshFlag(flags);
+  if (mesh === null) return 1;
   const view = buildView(flags);
   const viewInput = {
     view,
@@ -239,9 +272,12 @@ async function runRender(fileArg: string | undefined, flags: Record<string, stri
     clip: flags.clip,
   };
   try {
+    const primary: ModelFileRef = { data: loaded.data, fileName: path.basename(loaded.abs), abs: loaded.abs };
+    const companion = await resolveCompanionForRender(primary, mesh);
     const result = await renderScreenshots({
       data: loaded.data,
-      fileName: path.basename(loaded.abs),
+      fileName: primary.fileName,
+      companion: companion.companion,
       viewInput,
       frames,
       width: numberFlag(flags, 'width'),
@@ -249,7 +285,14 @@ async function runRender(fileArg: string | undefined, flags: Record<string, stri
       outDir: flags['out-dir'] === undefined ? undefined : expandHome(flags['out-dir']),
       boneLabels,
     });
-    emit({ ok: true, images: result.images, count: result.images.length, warnings: result.warnings, hint: '用读图工具逐张查看后再给结论。' });
+    emit({
+      ok: true,
+      images: result.images,
+      count: result.images.length,
+      warnings: [...companion.warnings, ...result.warnings],
+      ...(result.binding === undefined || result.binding === null ? {} : { binding: result.binding }),
+      hint: '用读图工具逐张查看后再给结论。',
+    });
     return 0;
   } catch (error) {
     if (error instanceof KinemeshError) return fail(error.message, error.guidance, `渲染 ${loaded.abs}`);
@@ -377,7 +420,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     normalizeFlagAliases(command, flags);
   }
-  if (command === 'info') return runInfo(positional[0]);
+  if (command === 'info') return runInfo(positional[0], flags);
   if (command === 'analyze') return runAnalyzeCli(positional[0], flags);
   if (command === 'skeleton') return runSkeletonCli(positional[0], flags);
   if (command === 'render') return runRender(positional[0], flags);
@@ -421,3 +464,4 @@ if (invokedDirectly) {
       process.exit(1);
     });
 }
+

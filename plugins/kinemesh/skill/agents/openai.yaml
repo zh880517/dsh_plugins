@@ -2,8 +2,8 @@
 # 规范见 Codex 内置 skill-creator 的 references/openai_yaml.md；Claude 侧忽略本文件。
 interface:
   display_name: "动析 kinemesh"
-  short_description: "游戏模型/动画资源分析与截图：片段清单、骨骼网格体检、动作分析、关键帧截图"
+  short_description: "游戏模型/动画资源分析与截图：片段清单、骨骼网格体检、动作分析、关键帧截图；动作不带 mesh 可绑定独立网格文件"
   brand_color: "#4C8BF5"
-  default_prompt: "Use $kinemesh to inspect this model: list clips with kinemesh_info, run kinemesh_analyze for motion facts, then kinemesh_render the key frames and read the images."
+  default_prompt: "Use $kinemesh to inspect this model: list clips with kinemesh_info, run kinemesh_analyze for motion facts, then kinemesh_render the key frames and read the images. If the motion file has no mesh, pass mesh=<skin fbx> to kinemesh_render (or let it auto-detect the mesh in the same asset)."
 policy:
   allow_implicit_invocation: true

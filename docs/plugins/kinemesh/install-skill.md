@@ -82,7 +82,7 @@ curl -fL -o "$dest/cli/kinemesh.cjs"   "$base/cli/kinemesh.cjs"
 ### 3. 验证 CLI（这一步一定要做）
 
 ```powershell
-node "$dest\cli\kinemesh.cjs" --version      # 期望输出 kinemesh 0.9.x
+node "$dest\cli\kinemesh.cjs" --version      # 期望输出 kinemesh 0.10.x
 node "$dest\cli\kinemesh.cjs" --help         # 期望打印用法（info / analyze / skeleton / render）
 ```
 
@@ -134,7 +134,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.claude\skills\kinemesh" `
 ## 自检清单（Agent 装完逐项确认并回报用户）
 
 - [ ] 目标目录里三个文件都在：`SKILL.md`、`agents/openai.yaml`、`cli/kinemesh.cjs`
-- [ ] `node cli/kinemesh.cjs --version` 输出 `kinemesh 0.9.x`（不是 `dev`、不是空）
+- [ ] `node cli/kinemesh.cjs --version` 输出 `kinemesh 0.10.x`（不是 `dev`、不是空）
 - [ ] `node cli/kinemesh.cjs --help` 打印用法（含 `info` / `analyze` / `skeleton` / `render`）
 - [ ] 若有模型文件：`info <file>` 返回 `{"ok":true,...}`
 - [ ] 告诉用户已装到哪个目录、需要重启客户端

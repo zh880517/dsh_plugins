@@ -1,11 +1,11 @@
 // /kinemesh 路由：模型字节、info JSON、analyze 唤醒（followup）与 404/409、
 // 会话模型清单（M6e /session-models）与预览曲线数据源（M6e /analysis）。
 // 用假 ctx / 假 req / 假 res 直接驱动 host.ts 的 handler（与 aiworkflow host-routes 同一套做法）。
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { buildAnimatedCubeGltf, buildBinaryFbx, buildCubeObj, encodeGlb } from '../support/kinemesh-fixtures.js';
+import { buildAnimatedCubeGltf, buildBinaryFbx, buildCubeObj, buildSkinnedMeshOnlyGltf, encodeGlb } from '../support/kinemesh-fixtures.js';
 import { apply } from '../../plugins/kinemesh/src/host.js';
 import { loadModelScene } from '../../plugins/kinemesh/src/core/analyze-file.js';
 import { sceneBoundsHeight } from '../../plugins/kinemesh/src/core/analyze/scene-info.js';
@@ -191,6 +191,48 @@ describe('/kinemesh 路由', () => {
     await invoke(route, 'POST', '/kinemesh/analyze', { path: 'b.fbx', sessionId: 's2' });
     const ids = followups.map((item) => (item.message as { id: string }).id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  // ———————— 0.10.0：独立 mesh 文件（预览自动识别候选 + 发送时带 mesh 路径） ————————
+
+  it('GET /kinemesh/companions：动画-only 文件返回同资产候选网格文件', async () => {
+    const root = path.join(workDir, 'asset600');
+    await mkdir(path.join(root, 'hit'), { recursive: true });
+    await mkdir(path.join(root, 'basic'), { recursive: true });
+    const anim = path.join(root, 'hit', 'shake.fbx');
+    await writeFile(anim, '');
+    await writeFile(path.join(root, 'basic', 'asset600_skin.glb'), Buffer.from(encodeGlb(buildSkinnedMeshOnlyGltf())));
+    const { route } = setup();
+    const { res, text } = await invoke(route, 'GET', `/kinemesh/companions?path=${encodeURIComponent(anim)}`);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(text) as { ok: boolean; candidates: Array<{ name: string; path: string; reason: string }> };
+    expect(body.ok).toBe(true);
+    expect(body.candidates[0]?.name).toBe('asset600_skin.glb');
+    expect(body.candidates[0]?.reason).toContain('_skin');
+  });
+
+  it('GET /kinemesh/companions：缺 path → 400，文件不存在 → 404', async () => {
+    const { route } = setup();
+    const missing = await invoke(route, 'GET', '/kinemesh/companions');
+    expect(missing.res.statusCode).toBe(400);
+    const gone = await invoke(route, 'GET', `/kinemesh/companions?path=${encodeURIComponent(path.join(workDir, 'no-such.fbx'))}`);
+    expect(gone.res.statusCode).toBe(404);
+  });
+
+  it('POST /kinemesh/analyze：带 mesh 参数时消息里写明绑定网格文件（AI 据此给 render 传 mesh）', async () => {
+    const { route, followups } = setup({ agents: { s1: {} } });
+    const { res } = await invoke(route, 'POST', '/kinemesh/analyze', {
+      path: glbPath,
+      mesh: gltfGlbPath,
+      sessionId: 's1',
+      clip: 'Take 001',
+      frame: 0,
+    });
+    expect(res.statusCode).toBe(200);
+    const message = followups[0]?.message as { content: Array<{ text: string }> };
+    expect(message.content[0]?.text).toContain('绑定网格文件');
+    expect(message.content[0]?.text).toContain('cube-anim.glb');
+    expect(message.content[0]?.text).toContain('mesh 参数');
   });
 });
 

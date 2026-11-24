@@ -45,7 +45,7 @@ curl.exe -fL -o "$dest\cli\kinemesh.cjs"   "$base/cli/kinemesh.cjs"
 **校验（必做）**，然后重启客户端（Claude/Codex 启动时扫技能目录）：
 
 ```bash
-node "$DEST/cli/kinemesh.cjs" --version   # 期望 kinemesh 0.9.x
+node "$DEST/cli/kinemesh.cjs" --version   # 期望 kinemesh 0.10.x
 node "$DEST/cli/kinemesh.cjs" --help      # 期望打印 info/analyze/skeleton/render
 node "$DEST/cli/kinemesh.cjs" info <模型文件>   # 有模型时冒烟，期望 {"ok":true,...}
 ```
@@ -85,6 +85,10 @@ git+https://github.com/zh880517/dsh_plugins.git#main&path:/plugins/kinemesh
   bones-overlay，**省略 mode 时按模型自动选**（无 mesh→骨架；贴图解不出来→素模；有可用贴图→default）；
   只给视角预设时**逐帧按身体包围盒自动取景**（带位移的动作不会跑出画面）。需要本机
   playwright + chromium（`npm i playwright && npx playwright install chromium`）。
+- **独立 mesh 文件绑定（0.10.0）**：动作文件不带 mesh 时（游戏里动作单独导出的常见情况），
+  `kinemesh_render` / `kinemesh_info` 加 `mesh` 参数（CLI `--mesh`）用独立网格文件做渲染主体，
+  动画**按骨骼名自动绑定**（部分骨骼的附加动画也支持，未命中骨骼保持 rest）；不传时自动识别同资产
+  网格文件（`basic/*_skin.fbx` 等）并绑定。预览面板同样自动识别并显示「mesh 文件名 · 命中骨骼数」。
 - **预览面板（0.6.0 起三入口）**：左侧侧边栏「动析」打开**独立预览页**（拖转视角、播放条
   首帧/逐帧/播放暂停/末帧、轨道条拖帧 + 强度曲线、播放速度 0.1×～2×、显示方式=素模/贴图/线框
   + 独立「叠加骨架」、载入后自动选显示模式、「锁定位移 / 锁定旋转」去掉 root motion、角色根节点
@@ -103,10 +107,12 @@ Agent 用法（DSH 工具 / 第三方 CLI 任选）：
 ```
 kinemesh_info({ "path": "D:/assets/characters/hero.fbx" })
 kinemesh_render({ "path": "D:/assets/characters/hero.fbx", "clip": "Run", "frames": [0, 15, 30], "viewPreset": "front" })
+kinemesh_render({ "path": "D:/assets/characters/hero/hit.fbx", "mesh": "D:/assets/characters/hero/basic/hero_skin.fbx", "clip": "Take 001", "frames": [0, 2] })
 ```
 
 ```bash
 node cli/kinemesh.cjs info D:/assets/characters/hero.fbx   # 第三方 Agent 用 CLI 的等价写法
+node cli/kinemesh.cjs render D:/assets/characters/hero/hit.fbx --mesh D:/assets/characters/hero/basic/hero_skin.fbx --frames 0,2
 ```
 
 [完整文档](../../docs/plugins/kinemesh/README.md) ·
