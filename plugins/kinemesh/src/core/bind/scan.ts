@@ -159,7 +159,7 @@ export async function findCompanionMeshes(
       depth: probe.depth,
       reason:
         stats.meshBones > 0
-          ? `骨骼命中 ${stats.matchedBones}/${stats.meshBones}（${Math.round(coverage * 100)}%）`
+          ? `骨骼名匹配 ${stats.matchedBones} 个（覆盖率 ${Math.round(coverage * 100)}%）`
           : '文件里有网格（骨骼名需解析确认）',
     });
   }

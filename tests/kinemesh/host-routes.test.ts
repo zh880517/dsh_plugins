@@ -213,7 +213,7 @@ describe('/kinemesh 路由', () => {
     const target = body.candidates.find((candidate) => candidate.name === 'asset600_skin.glb');
     expect(target).toBeDefined();
     expect(target!.matchedBones).toBeGreaterThan(0);
-    expect(target!.reason).toContain('骨骼命中');
+    expect(target!.reason).toContain('骨骼名匹配');
   });
 
   it('GET /kinemesh/companions：缺 path → 400，文件不存在 → 404', async () => {

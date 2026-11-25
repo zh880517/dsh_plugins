@@ -166,7 +166,7 @@ export async function runInfo(primary: ModelFileRef, mesh?: ModelFileRef): Promi
     warnings.push(
       '该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件' +
         (candidates.length > 0
-          ? `；同资产内容扫描候选（按骨骼覆盖率）：${candidates
+          ? `；同资产内容扫描候选（覆盖率 = 命中骨骼名数 / 文件里可识别的骨骼名数）：${candidates
               .slice(0, 3)
               .map((candidate) => `「${candidate.name}」${candidate.reason}`)
               .join('、')}（可直接作为 mesh 参数）`

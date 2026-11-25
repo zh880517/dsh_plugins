@@ -31713,7 +31713,7 @@ async function findCompanionMeshes(absPath, animationBoneNames, options = {}) {
 			meshBones: stats.meshBones,
 			coverage,
 			depth: probe.depth,
-			reason: stats.meshBones > 0 ? `骨骼命中 ${stats.matchedBones}/${stats.meshBones}（${Math.round(coverage * 100)}%）` : "文件里有网格（骨骼名需解析确认）"
+			reason: stats.meshBones > 0 ? `骨骼名匹配 ${stats.matchedBones} 个（覆盖率 ${Math.round(coverage * 100)}%）` : "文件里有网格（骨骼名需解析确认）"
 		});
 	}
 	matches.sort((left, right) => {
@@ -36251,7 +36251,7 @@ async function runInfo(primary, mesh) {
 	const warnings = [...report.warnings];
 	if (report.meshes.length === 0) {
 		const candidates = await listCompanionCandidates(primary);
-		warnings.push("该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件" + (candidates.length > 0 ? `；同资产内容扫描候选（按骨骼覆盖率）：${candidates.slice(0, 3).map((candidate) => `「${candidate.name}」${candidate.reason}`).join("、")}（可直接作为 mesh 参数）` : "") + "。");
+		warnings.push("该文件没有网格（动画-only）：带网格预览/截图可用 mesh 参数指定网格文件" + (candidates.length > 0 ? `；同资产内容扫描候选（覆盖率 = 命中骨骼名数 / 文件里可识别的骨骼名数）：${candidates.slice(0, 3).map((candidate) => `「${candidate.name}」${candidate.reason}`).join("、")}（可直接作为 mesh 参数）` : "") + "。");
 	}
 	return {
 		ok: true,
